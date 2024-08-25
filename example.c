@@ -6,15 +6,19 @@ s8 blurb = text(
                 and "quotes" escaped.
                 );
 
-int main(int argc, char *argv[]) {
-  i32 cap = 1 << 10;
-  arena a = {0}; // zero-initalise
+arena malloc_arena(size cap) {
+  arena a = {0}; // zero-initialise
   a.beg = malloc(cap);
-  // ugh Apple https://stackoverflow.com/questions/64126942/malloc-nano-zone-abandoned-due-to-inability-to-preallocate-reserved-vm-space
-  a.end = a.beg + cap;
+  a.end = a.beg ? a.beg + cap : 0;
+  return a;
+}
+
+int main(int argc, char *argv[]) {
+  arena store = malloc_arena(1 << 10);
+  byte *memory = store.beg; // unnecessary here https://nullprogram.com/blog/2023/09/27/
 
   i32 bcap = 1 << 10;
-  u8 *buf = new(&a, u8, bcap);
+  u8 *buf = new(&store, u8, bcap);
 
   bufout stdout[1] = {0}; // zero-initialise single bufout struct and return pointer to it
   stdout->cap = 10;
@@ -23,4 +27,5 @@ int main(int argc, char *argv[]) {
   flush(stdout);
 
   oswrite(1, stdout->buf, stdout->len); // 1 is os stdout fd, nominally "implementation-defined"?
+  free(memory); // unnecessary see above
 }

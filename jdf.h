@@ -11,7 +11,7 @@
   - restrict when necessary
   - typedef all structures
   - static all functions except for entry points (adjusted so this header works)
-  (alternative to #include "style.c" into every translation unit...)
+  (alternative to #include "jdf.c" into every translation unit...)
   - structure returns instead of out parameters; initialise with {0} as per C99
 */
 
@@ -39,26 +39,47 @@ typedef size_t    usize;
 #define lengthof(s) (countof(s) - 1)
 #define new(a, t, n) (t *)alloc(a, sizeof(t), alignof(t), n)
 
+/*
+  Avoiding #include <stdlib.h> here, try:
+  arena malloc_arena(size cap) {
+    arena a = {0}; // zero-initialise
+    a.beg = malloc(cap);
+    a.end = a.beg ? a.beg + cap : 0;
+    return a;
+  }
+
+  Consider:
+  arena a = malloc_arena(12345);
+  byte *arena_memory = a.beg; // immediately after malloc_arena
+  ...
+  free(arena_memory); // noop if null pointer
+ */
 typedef struct {
   byte *beg;
   byte *end;
 } arena;
 
 void oom(void);
-/* Allocate space within arena. Use via `new` macro. */
+
+// Allocate space within arena. Use via `new` macro.
 byte *alloc(arena *a, size objsize, size align, size count);
+
 void copy(u8 *restrict dst, u8 *restrict src, size len);
 
-/* To enable assertions in release builds, put UBSan in trap mode with
-   -fsanitize-trap and then enable at least -fsanitize=unreachable. */
+/*
+  To enable assertions in release builds,
+  put UBSan in trap mode with -fsanitize-trap
+  and then enable at least -fsanitize=unreachable.
+*/
 #define assert(c) while (!(c)) __builtin_unreachable()
 
-/* Wrap C string literal into s8 string.*/
+// Wrap C string literal into s8 string.
 #define s8(s) (s8){(u8 *)s, lengthof(s)}
-/* Multiline without quotes. Collapses whitespace. */
+
+// Multiline without quotes. Collapses whitespace.
 #define text(...) s8(#__VA_ARGS__) // https://stackoverflow.com/a/17996915/780743
 
-/* Basic UTF-8 string. Not null terminated! */
+// Basic UTF-8 string. Not null terminated!
 typedef struct {
   u8 *buf;
   size len;
