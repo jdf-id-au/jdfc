@@ -3,7 +3,7 @@
 void oom(void) {
   static u8 msg[] = "out of memory\n";
   oswrite(2, (u8 *)msg, lengthof(msg));
-  osfail();
+  osfail(12); // cheesy reference to ENOMEM errno
 }
 
 byte *alloc(arena *a, size objsize, size align, size count) {
@@ -24,11 +24,12 @@ void copy(u8 *restrict dst, u8 *restrict src, size len) {
 
 // ───────────────────────────────────────────────────────────────────── Strings
 
-// doesn't check arg validity; end-exclusive
 s8 s8span(u8 *beg, u8 *end) {
   s8 s = {0};
-  s.buf = beg;
-  s.len = end - beg;
+  if (beg && end && end > beg) {
+    s.buf = beg;
+    s.len = end - beg;
+  }
   return s;
 }
 
@@ -41,7 +42,6 @@ s8 s8slice(s8 src, size from, size to) {
   s.len = t - f;
   return s;
 }
-  
 
 b32 s8equal(s8 a, s8 b) {
   if (a.len != b.len) return 0;
@@ -56,6 +56,26 @@ size s8cmp(s8 a, s8 b) {
     if (d) return d;
   }
   return a.len - b.len;
+}
+
+u8 *s8find(s8 haystack, s8 needle) {
+  u8 *found = 0;
+   // init first, cond before loop, iter after loop
+  for (u8 *h = haystack.buf; !found && (h < haystack.buf + haystack.len); h++) {
+    for (u8 *n = needle.buf;
+         (n < needle.buf + needle.len) && (h < haystack.buf + haystack.len);
+         n++) {
+      if (*h == *n) {
+        if (!found) found = h;
+        h++;
+      } else {
+        if (found) h = found;
+        found = 0;
+        break;
+      }
+    }
+  }
+  return found;
 }
 
 // Why `size`?
@@ -104,13 +124,20 @@ void flush(bufout *b) {
     }
 }
 
-#ifndef _WIN32
+// no stdio.h means no printf
+void error(i32 code, s8 msg) {
+  oswrite(2, (u8 *)msg.buf, msg.len);
+  oswrite(2, (u8 *)"\n", 1);
+  osfail(code);
+}
+
+#ifndef _WIN32 // ╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴ _WIN32
 
 #include <stdlib.h>
 #include <unistd.h>
 
-void osfail(void) {
-  _exit(1);
+void osfail(i32 code) {
+  _exit(code); // reason for not just `exit`?
 }
 
 i32 osread(i32 fd, u8 *buf, i32 cap) {

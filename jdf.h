@@ -33,14 +33,15 @@ typedef char      byte;
 typedef ptrdiff_t size;
 typedef size_t    usize;
 
-#define sizeof(x) (size)sizeof(x)
+//#define sizeof(x) (size)sizeof(x) // unnecessary?
 #define alignof(x) (size)_Alignof(x)
 #define countof(a) (sizeof(a) / sizeof(*(a)))
 #define lengthof(s) (countof(s) - 1)
 #define new(a, t, n) (t *)alloc(a, sizeof(t), alignof(t), n)
 
 /*
-  Avoiding #include <stdlib.h> here, try:
+  Avoiding #include <stdlib.h> here, (although it is #ifndef _WIN32).
+  Try:
   arena malloc_arena(size cap) {
     arena a = {0}; // zero-initialise
     a.beg = malloc(cap);
@@ -96,10 +97,10 @@ typedef struct {
 
 s8 s8span(u8 *beg, u8 *end);
 // offsets may be positive or negative (i.e. from start or end, respectively)
-// src is copied (for consistent api)
 s8 s8slice(s8 s, size from, size to);
 b32 s8equal(s8 a, s8 b);
 size s8cmp(s8 a, s8 b);
+u8 *s8find(s8 haystack, s8 needle);
 size s8hash(s8 s);
 s8 s8clone(arena *a, s8 s);
 void s8write(bufout *b, s8 s);
@@ -108,8 +109,9 @@ void s8writeln(bufout *b, s8 s);
 // ──────────────────────────────────────────────────────────── Operating System
 
 void flush(bufout *b);
+void error(i32 code, s8 msg);
 
-void osfail(void);
+void osfail(i32 code);
 i32 osread(i32 fd, u8 *buf, i32 cap);
 b32 oswrite(i32 fd, u8 *buf, i32 len);
 
