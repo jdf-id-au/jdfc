@@ -73,6 +73,15 @@ void copy(u8 *restrict dst, u8 *restrict src, size len);
 */
 #define assert(c) while (!(c)) __builtin_unreachable()
 
+typedef struct {
+  u8 *buf;
+  i32 len;
+  i32 cap;
+  b32 err;
+} bufout;
+
+// ───────────────────────────────────────────────────────────────────── Strings
+
 // Wrap C string literal into s8 string.
 #define s8(s) (s8){(u8 *)s, lengthof(s)}
 
@@ -85,20 +94,20 @@ typedef struct {
   size len;
 } s8;
 
-typedef struct {
-  u8 *buf;
-  i32 len;
-  i32 cap;
-  b32 err;
-} bufout;
-
 s8 s8span(u8 *beg, u8 *end);
+// offsets may be positive or negative (i.e. from start or end, respectively)
+// src is copied (for consistent api)
+s8 s8slice(s8 s, size from, size to);
 b32 s8equal(s8 a, s8 b);
 size s8cmp(s8 a, s8 b);
 size s8hash(s8 s);
 s8 s8clone(arena *a, s8 s);
-void flush(bufout *b);
 void s8write(bufout *b, s8 s);
+void s8writeln(bufout *b, s8 s);
+
+// ──────────────────────────────────────────────────────────── Operating System
+
+void flush(bufout *b);
 
 void osfail(void);
 i32 osread(i32 fd, u8 *buf, i32 cap);

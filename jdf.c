@@ -20,13 +20,28 @@ byte *alloc(arena *a, size objsize, size align, size count) {
 void copy(u8 *restrict dst, u8 *restrict src, size len) {
   for (size i = 0; i < len; i++) dst[i] = src[i];
 }
-  
+
+
+// ───────────────────────────────────────────────────────────────────── Strings
+
+// doesn't check arg validity; end-exclusive
 s8 s8span(u8 *beg, u8 *end) {
   s8 s = {0};
   s.buf = beg;
   s.len = end - beg;
   return s;
 }
+
+s8 s8slice(s8 src, size from, size to) {
+  s8 s = {.buf = src.buf};
+  size f = (from < 0) ? src.len + from : from;
+  size t = (to > 0) ? to : src.len + to;
+  if (t < f) return s; // refuse to slice backwards
+  s.buf += f;
+  s.len = t - f;
+  return s;
+}
+  
 
 b32 s8equal(s8 a, s8 b) {
   if (a.len != b.len) return 0;
@@ -61,14 +76,6 @@ s8 s8clone(arena *a, s8 s) {
   return c;
 }
 
-// Should these indicate success?
-void flush(bufout *b) {
-  if (!b->err && b->len) {
-      b->err = !oswrite(1, b->buf, b->len);
-      b->len = 0;
-    }
-}
-
 void s8write(bufout *b, s8 s) {
   u8 *buf = s.buf;
   u8 *end = s.buf + s.len;
@@ -82,7 +89,23 @@ void s8write(bufout *b, s8 s) {
   }
 }
 
+void s8writeln(bufout *b, s8 s) {
+  s8write(b, s);
+  s8write(b, s8("\n"));
+}
+
+// ──────────────────────────────────────────────────────────── Operating system
+
+// Should these indicate success?
+void flush(bufout *b) {
+  if (!b->err && b->len) {
+      b->err = !oswrite(1, b->buf, b->len);
+      b->len = 0;
+    }
+}
+
 #ifndef _WIN32
+
 #include <stdlib.h>
 #include <unistd.h>
 

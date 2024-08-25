@@ -23,16 +23,20 @@ size MiB(u32 k) {
 
 int main(int argc, char *argv[]) {
   arena store = malloc_arena(KiB(1));
-  byte *memory = store.beg; // unnecessary here https://nullprogram.com/blog/2023/09/27/
-
+  s8 frag = s8("escaped.");
+  s8 span = s8span(blurb.buf + (blurb.len - 8), blurb.buf + blurb.len);
+  s8 slice = s8slice(blurb, -8, 0);
+  
   u8 *buf = new(&store, u8, KiB(1));
-
-  bufout stdout[1] = {0}; // zero-initialise single bufout struct and return pointer to it
-  stdout->cap = 64;
+  bufout stdout[1] = {0};
+  stdout->cap=64;
   stdout->buf = buf;
-  s8writeln(stdout, blurb);
+  s8writeln(stdout, frag);
+  s8writeln(stdout, span);
+  s8writeln(stdout, slice);
   flush(stdout);
-
-  oswrite(1, stdout->buf, stdout->len); // 1 is os stdout fd, nominally "implementation-defined"?
-  free(memory); // unnecessary see above
+  oswrite(1, stdout->buf, stdout->len);
+  
+  assert(!s8cmp(frag, span));
+  assert(!s8cmp(frag, slice));
 }
