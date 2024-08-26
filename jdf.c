@@ -62,6 +62,7 @@ size s8cmp(s8 a, s8 b) {
 }
 
 u8 *s8find(s8 haystack, s8 needle) {
+  if (!haystack.buf || !needle.buf) return 0;
   u8 *found = 0;
   u8 *end = lastof(haystack);
   // init first, cond before loop, iter after loop

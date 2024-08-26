@@ -95,6 +95,8 @@ typedef struct {
 
 // ───────────────────────────────────────────────────────────────────── Strings
 
+enum errors {EPARSING = 1000, EMEMORY, EREF};
+
 // Basic UTF-8 string. Not null terminated!
 sized(s8, u8);
 linked(s8s, s8);
