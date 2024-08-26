@@ -6,6 +6,14 @@ void oom(void) {
   osfail(12); // cheesy reference to ENOMEM errno
 }
 
+size KiB(u32 n) {
+  return (1<<10) * n;
+}
+
+size MiB(u32 n) {
+  return (1<<20) * n;
+}
+
 byte *alloc(arena *a, size objsize, size align, size count) {
   size avail = a->end - a->beg;
   size padding = -(uptr)a->beg & (align - 1);
@@ -20,7 +28,6 @@ byte *alloc(arena *a, size objsize, size align, size count) {
 void copy(u8 *restrict dst, u8 *restrict src, size len) {
   for (size i = 0; i < len; i++) dst[i] = src[i];
 }
-
 
 // ───────────────────────────────────────────────────────────────────── Strings
 

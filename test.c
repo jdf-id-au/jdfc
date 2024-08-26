@@ -13,14 +13,6 @@ arena malloc_arena(size cap) {
   return a;
 }
 
-size KiB(u32 n) {
-  return (1<<10) * n;
-}
-
-size MiB(u32 n) {
-  return (1<<20) * n;
-}
-
 // TODO more descriptive testing ??framework
 int main(int argc, char *argv[]) {
   arena store = malloc_arena(KiB(2));

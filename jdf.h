@@ -1,11 +1,11 @@
 /*
   Trying to reject incidental complexity, including at build time.
-  
-  After Wellons https://nullprogram.com/blog/2023/10/08/
-  all a bit controversial https://old.reddit.com/r/C_Programming/comments/173e0vn/nullprogram_my_personal_c_coding_style_as_of_late/
-  esp wrt risk of name collision on public facing things.
-  Consider fancy leading unicode character pseudonamespace?
 
+  After Wellons https://nullprogram.com/blog/2023/10/08/
+  and https://nullprogram.com/blog/2023/09/27/ .
+  All a bit controversial https://old.reddit.com/r/C_Programming/comments/173e0vn/nullprogram_my_personal_c_coding_style_as_of_late/
+  esp wrt risk of name collision on public facing things.
+  
   - omit const (controversial!)
   - literal 0 for null pointers
   - restrict when necessary
@@ -55,11 +55,15 @@ typedef size_t    usize;
     return a;
   }
 
-  Consider:
+  Consider (although usually unnecessary given expected usage pattern):
   arena a = malloc_arena(12345);
-  byte *arena_memory = a.beg; // immediately after malloc_arena
+  // immediately after malloc_arena, or (untested) value of first new()
+  byte *arena_memory = a.beg;
   ...
   free(arena_memory); // noop if null pointer
+
+  Pass "store" arena by reference, and "scratch" by value.
+  This effectively resets the scratch *beg pointer on fn return.
  */
 typedef struct {
   byte *beg;
@@ -67,7 +71,8 @@ typedef struct {
 } arena;
 
 void oom(void);
-
+size KiB(u32 n);
+size MiB(u32 n);
 // Allocate space within arena. Use via `new` macro.
 byte *alloc(arena *a, size objsize, size align, size count);
 
@@ -95,6 +100,7 @@ sized(s8, u8);
 linked(s8s, s8);
 
 // Wrap C string literal into s8 string.
+// Function macro shares name with type, which is permitted. 
 #define s8(s) (s8){(u8 *)s, lengthof(s)}
 
 // Multiline without quotes. Collapses whitespace.

@@ -3,10 +3,5 @@
 # -g3 debug level 3
 
 test: test.c jdf.c
-	cc -std=c17 -g3 -pedantic -Wall -Wextra -fPIC \
-		-fsanitize=address,undefined $^ -o $@
+	cc -std=c17 -g3 -pedantic -Wall -Wextra -fPIC -fsanitize=address,undefined $^ -o $@
 	MallocNanoZone='0' ./test
-
-example: example.c jdf.c
-	time cc -std=c17 -g3 -pedantic -Wall -Wextra -fPIC -fsanitize=address,undefined $^ -o $@
-	MallocNanoZone='0' ./example
