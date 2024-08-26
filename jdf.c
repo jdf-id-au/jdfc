@@ -25,12 +25,8 @@ void copy(u8 *restrict dst, u8 *restrict src, size len) {
 // ───────────────────────────────────────────────────────────────────── Strings
 
 s8 s8span(u8 *beg, u8 *end) {
-  s8 s = {0};
-  if (beg && end && end > beg) {
-    s.buf = beg;
-    s.len = end - beg;
-  }
-  return s;
+  if (beg && end && end > beg) return (s8){.buf = beg, .len = end - beg};
+  return (s8){0};
 }
 
 s8 s8slice(s8 src, size from, size to) {
@@ -60,10 +56,11 @@ size s8cmp(s8 a, s8 b) {
 
 u8 *s8find(s8 haystack, s8 needle) {
   u8 *found = 0;
-   // init first, cond before loop, iter after loop
-  for (u8 *h = haystack.buf; !found && (h < haystack.buf + haystack.len); h++) {
+  u8 *end = lastof(haystack);
+  // init first, cond before loop, iter after loop
+  for (u8 *h = haystack.buf; !found && (h < end); h++) {
     for (u8 *n = needle.buf;
-         (n < needle.buf + needle.len) && (h < haystack.buf + haystack.len);
+         (n < needle.buf + needle.len) && (h < end);
          n++) {
       if (*h == *n) {
         if (!found) found = h;
@@ -78,6 +75,25 @@ u8 *s8find(s8 haystack, s8 needle) {
   return found;
 }
 
+b32 whitespace(u8 c) {
+  switch (c) {
+  case ' ':
+  case '\t':
+  case '\n':
+  case '\r':
+    return 1;
+  }
+  return 0;
+}
+
+s8 s8trim(s8 src) {
+  u8 *beg = src.buf;
+  u8 *end = lastof(src);
+  while (beg < end && whitespace(*beg)) beg++;
+  while (end > beg && whitespace(*(end - 1))) end--;
+  return s8span(beg, end);
+}
+
 // Why `size`?
 size s8hash(s8 s) {
   u64 h = 0x100;
@@ -89,11 +105,40 @@ size s8hash(s8 s) {
 }
 
 s8 s8clone(arena *a, s8 s) {
-  s8 c = {0};
-  c.buf = new(a, u8, s.len);
-  c.len = s.len;
+  s8 c = (s8) {
+    .buf = new (a, u8, s.len),
+    .len = s.len
+  };
   copy(c.buf, s.buf, s.len);
   return c;
+}
+
+s8 s8concat(arena *a, s8 **ss, size len) {
+  size tot = 0;
+  for (size i = 0; i < len; i++) tot += ss[i]->len;
+  u8 *buf = new(a, u8, tot);
+  u8 *beg = buf;
+  for (size i = 0; i < len; i++) {
+    copy(beg, ss[i]->buf, ss[i]->len);
+    beg += ss[i]->len;
+  }
+  return (s8){.buf = buf, .len = tot};
+}
+
+s8 s8sconcat(arena *a, s8s *ss) {
+  size tot = 0;
+  s8s *cur = ss;
+  do {
+    tot += cur->val->len;
+  } while ((cur = cur->next));
+  u8 *buf = new(a, u8, tot);
+  u8 *beg = buf;
+  cur = ss;
+  do {
+    copy(beg, cur->val->buf, cur->val->len);
+    beg += cur->val->len;
+  } while ((cur = cur->next));
+  return (s8){.buf = buf, .len = tot};
 }
 
 void s8write(bufout *b, s8 s) {

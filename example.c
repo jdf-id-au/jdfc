@@ -13,12 +13,12 @@ arena malloc_arena(size cap) {
   return a;
 }
 
-size KiB(u32 k) {
-  return (1<<10) * k;
+size KiB(u32 n) {
+  return (1<<10) * n;
 }
 
-size MiB(u32 k) {
-  return (1<<20) * k;
+size MiB(u32 n) {
+  return (1<<20) * n;
 }
 
 int main(int argc, char *argv[]) {
