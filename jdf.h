@@ -114,11 +114,14 @@ s8 s8span(u8 *beg, u8 *end);
 s8 s8slice(s8 s, size from, size to);
 b32 s8equal(s8 a, s8 b);
 size s8cmp(s8 a, s8 b);
+size s8hash(s8 s);
 u8 *s8find(s8 haystack, s8 needle);
 s8 s8trim(s8 s);
-size s8hash(s8 s);
+s8 s8fill(arena *a, u8 with, size count);
 s8 s8clone(arena *a, s8 s);
 s8 s8concat(arena *a, s8 **s, size len);
+// Can cope with no starting `maybe`.
+s8s *s8sappend(arena *a, s8s *maybe, s8 *s);
 s8 s8sconcat(arena *a, s8s *s);
 void s8write(bufout *b, s8 s);
 void s8writeln(bufout *b, s8 s);
@@ -128,7 +131,9 @@ void s8writeln(bufout *b, s8 s);
 void flush(bufout *b);
 void error(i32 code, s8 msg);
 void debug(s8 msg); // unbuffered
-void debin(void *val, size len);
+void debytes_impl(void *val, size len);
+// silly portmaneau
+#define debytes(ptr) debug(s8(#ptr)); debytes_impl(ptr, sizeof(*(ptr)))
 
 void osfail(i32 code);
 i32 osread(i32 fd, u8 *buf, i32 cap);

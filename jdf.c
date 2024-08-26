@@ -14,6 +14,7 @@ size MiB(u32 n) {
   return (1<<20) * n;
 }
 
+// TODO could report memory usage afterward
 byte *alloc(arena *a, size objsize, size align, size count) {
   size avail = a->end - a->beg;
   size padding = -(uptr)a->beg & (align - 1);
@@ -61,6 +62,16 @@ size s8cmp(s8 a, s8 b) {
   return a.len - b.len;
 }
 
+// Why `size`?
+size s8hash(s8 s) {
+  u64 h = 0x100;
+  for (size i = 0; i < s.len; i++) {
+    h ^= s.buf[i];
+    h *= 1111111111111111111u; // nineteen ones
+  }
+  return (h ^ h>>32) & (u32)-1;
+}
+
 u8 *s8find(s8 haystack, s8 needle) {
   if (!haystack.buf || !needle.buf) return 0;
   u8 *found = 0;
@@ -102,14 +113,10 @@ s8 s8trim(s8 src) {
   return s8span(beg, end);
 }
 
-// Why `size`?
-size s8hash(s8 s) {
-  u64 h = 0x100;
-  for (size i = 0; i < s.len; i++) {
-    h ^= s.buf[i];
-    h *= 1111111111111111111u; // nineteen ones
-  }
-  return (h ^ h>>32) & (u32)-1;
+s8 s8fill(arena *a, u8 with, size count) {
+  u8 *buf = new (a, u8, count);
+  for (size i = 0; i < count; i++) *(buf + i) = with;
+  return (s8){.buf = buf, .len = count};
 }
 
 s8 s8clone(arena *a, s8 s) {
@@ -131,6 +138,13 @@ s8 s8concat(arena *a, s8 **ss, size len) {
     beg += ss[i]->len;
   }
   return (s8){.buf = buf, .len = tot};
+}
+
+s8s *s8sappend(arena *a, s8s *maybe, s8 *s) {
+  s8s *cur = new(a, s8s, 1);
+  cur->val = s;
+  if (maybe) maybe->next = cur;
+  return cur;
 }
 
 s8 s8sconcat(arena *a, s8s *ss) {
@@ -190,17 +204,19 @@ void debug(s8 msg) { // ╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴�
   oswrite(2, (u8 *)"]\n", 2);
 }
 
-void denib(byte nib) {
+
+// have you heard of a debugger!?
+void denibbles(byte nib) {
   if (nib < 0xa) oswrite(2, &(u8){nib + '0'}, 1);
   else oswrite(2, &(u8){nib - 0xa + 'a'}, 1);
 }
 
-void debin(void *val, size len) {
+void debytes_impl(void *val, size len) {
   byte *b = (byte *)val;
   oswrite(2, (u8 *)"0x", 2);
   for (size i = len - 1; i >= 0; i--) { // hardcoded little-endian
-    denib(*(b + i) >> 4 & 0xF); // upper nibble
-    denib(*(b + i) & 0xF);      // lower nibble
+    denibbles(*(b + i) >> 4 & 0xF); // upper nibble
+    denibbles(*(b + i) & 0xF);      // lower nibble
     if (i > 0 && i % 4 == 0 && i % 8 != 0)
       oswrite(2, (u8 *)" ", 1);
     if (i > 0 && i % 8 == 0)

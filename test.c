@@ -50,8 +50,7 @@ int main(int argc, char *argv[]) {
   assert(s8equal(frag, slice));
   assert(s8equal(frag, trimmed));
 
-  u64 i = 0x1;
   debug(s8("Debug a value:"));
-  debin(&i, sizeof(i));
+  debytes(&(u64){0xabcd000012340000});
   error(0, s8("Finished"));
 }
