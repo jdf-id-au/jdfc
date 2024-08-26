@@ -127,6 +127,8 @@ void s8writeln(bufout *b, s8 s);
 
 void flush(bufout *b);
 void error(i32 code, s8 msg);
+void debug(s8 msg); // unbuffered
+void debin(void *val, size len);
 
 void osfail(i32 code);
 i32 osread(i32 fd, u8 *buf, i32 cap);

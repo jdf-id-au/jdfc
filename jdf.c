@@ -184,6 +184,31 @@ void error(i32 code, s8 msg) {
   osfail(code);
 }
 
+void debug(s8 msg) { // ╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴ debug
+  oswrite(2, (u8 *)"[", 1);
+  oswrite(2, (u8 *)msg.buf, msg.len);
+  oswrite(2, (u8 *)"]\n", 2);
+}
+
+void denib(byte nib) {
+  if (nib < 0xa) oswrite(2, &(u8){nib + '0'}, 1);
+  else oswrite(2, &(u8){nib - 0xa + 'a'}, 1);
+}
+
+void debin(void *val, size len) {
+  byte *b = (byte *)val;
+  oswrite(2, (u8 *)"0x", 2);
+  for (size i = len - 1; i >= 0; i--) { // hardcoded little-endian
+    denib(*(b + i) >> 4 & 0xF); // upper nibble
+    denib(*(b + i) & 0xF);      // lower nibble
+    if (i > 0 && i % 4 == 0 && i % 8 != 0)
+      oswrite(2, (u8 *)" ", 1);
+    if (i > 0 && i % 8 == 0)
+      oswrite(2, (u8 *)"\n  ", 3);
+  }
+  oswrite(2, (u8 *)"\n", 1);
+}
+
 #ifndef _WIN32 // ╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴ _WIN32
 
 #include <stdlib.h>

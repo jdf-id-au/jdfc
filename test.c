@@ -16,11 +16,14 @@ arena malloc_arena(size cap) {
 // TODO more descriptive testing ??framework
 int main(int argc, char *argv[]) {
   arena store = malloc_arena(KiB(2));
+  u8 *end = lastof(blurb);
   s8 frag = s8("escaped.");
-  s8 span = s8span(blurb.buf + (blurb.len - 8), blurb.buf + blurb.len);
+  s8 span = s8span(blurb.buf + (blurb.len - 8), end);
   s8 slice = s8slice(blurb, -8, 0);
   u8 *found = s8find(blurb, s8("whitespace"));
-  s8 found_to_end = s8span(found, blurb.buf + blurb.len);
+  u8 *f2 = s8find(blurb, s8(" "));
+  s8 found_to_end = s8span(found, end);
+  s8 f2_to_end = s8span(f2, end);
   s8 trimmed = s8trim(s8("   escaped.                "));
   
   u8 *buf = new(&store, u8, KiB(1));
@@ -33,6 +36,7 @@ int main(int argc, char *argv[]) {
   s8writeln(stdout, span);
   s8writeln(stdout, slice);
   s8writeln(stdout, found_to_end);
+  s8writeln(stdout, f2_to_end);
   s8writeln(stdout, trimmed);
   // compound literal initialising array of pointers to s8; type should be sized
   s8 *concs[] = {&frag, &found_to_end, &trimmed, &s8("all concatenated")};
@@ -45,6 +49,9 @@ int main(int argc, char *argv[]) {
   assert(s8equal(frag, span));
   assert(s8equal(frag, slice));
   assert(s8equal(frag, trimmed));
-  
+
+  u64 i = 0x1;
+  debug(s8("Debug a value:"));
+  debin(&i, sizeof(i));
   error(0, s8("Finished"));
 }
