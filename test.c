@@ -39,7 +39,7 @@ int main(int argc, char *argv[]) {
   s8writeln(stdout, f2_to_end);
   s8writeln(stdout, trimmed);
   // compound literal initialising array of pointers to s8; type should be sized
-  s8 *concs[] = {&frag, &found_to_end, &trimmed, &s8("all concatenated")};
+  s8 concs[] = {frag, found_to_end, trimmed, s8("all concatenated")};
   s8writeln(stdout, s8concat(&store, concs, countof(concs)));
   flush(stdout);
   oswrite(1, stdout->buf, stdout->len);

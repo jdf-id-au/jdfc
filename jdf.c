@@ -94,12 +94,16 @@ u8 *s8find(s8 haystack, s8 needle) {
   return found;
 }
 
-b32 whitespace(u8 c) {
+// https://www.reddit.com/r/C_Programming/comments/kzouxh/isspace_ctypeh_considered_harmful/
+// e.g. /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/ctype.h
+b32 whitespace(u8 c) { // too cool for ctype.h isspace
   switch (c) {
   case ' ':
   case '\t':
+  case '\v':
   case '\n':
   case '\r':
+  case '\f':
     return 1;
   }
   return 0;
@@ -128,37 +132,32 @@ s8 s8clone(arena *a, s8 s) {
   return c;
 }
 
-s8 s8concat(arena *a, s8 **ss, size len) {
+s8 s8concat(arena *a, s8 *ss, size len) {
   size tot = 0;
-  for (size i = 0; i < len; i++) tot += ss[i]->len;
+  for (size i = 0; i < len; i++) tot += ss[i].len;
   u8 *buf = new(a, u8, tot);
   u8 *beg = buf;
   for (size i = 0; i < len; i++) {
-    copy(beg, ss[i]->buf, ss[i]->len);
-    beg += ss[i]->len;
+    copy(beg, ss[i].buf, ss[i].len);
+    beg += ss[i].len;
   }
   return (s8){.buf = buf, .len = tot};
 }
 
-s8s *s8sappend(arena *a, s8s *maybe, s8 *s) {
-  s8s *cur = new(a, s8s, 1);
-  cur->val = s;
-  if (maybe) maybe->next = cur;
-  return cur;
-}
+vappend_impl(s8s, s8) // needs to correspond to `vlist(...)` in header
 
 s8 s8sconcat(arena *a, s8s *ss) {
   size tot = 0;
   s8s *cur = ss;
   do {
-    tot += cur->val->len;
+    tot += cur->val.len;
   } while ((cur = cur->next));
   u8 *buf = new(a, u8, tot);
   u8 *beg = buf;
   cur = ss;
   do {
-    copy(beg, cur->val->buf, cur->val->len);
-    beg += cur->val->len;
+    copy(beg, cur->val.buf, cur->val.len);
+    beg += cur->val.len;
   } while ((cur = cur->next));
   return (s8){.buf = buf, .len = tot};
 }
@@ -191,7 +190,6 @@ void flush(bufout *b) {
     }
 }
 
-// no stdio.h means no printf
 void error(i32 code, s8 msg) {
   oswrite(2, (u8 *)msg.buf, msg.len);
   oswrite(2, (u8 *)"\n", 1);
@@ -204,14 +202,13 @@ void debug(s8 msg) { // ╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴�
   oswrite(2, (u8 *)"]\n", 2);
 }
 
-
 // have you heard of a debugger!?
 void denibbles(byte nib) {
   if (nib < 0xa) oswrite(2, &(u8){nib + '0'}, 1);
   else oswrite(2, &(u8){nib - 0xa + 'a'}, 1);
 }
 
-void debytes_impl(void *val, size len) {
+void debytes_impl(void *val, size len) { // too cool for stdio.h printf
   byte *b = (byte *)val;
   oswrite(2, (u8 *)"0x", 2);
   for (size i = len - 1; i >= 0; i--) { // hardcoded little-endian

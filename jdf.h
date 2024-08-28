@@ -43,7 +43,37 @@ typedef size_t    usize;
 #define sized(tn, mt) typedef struct { mt *buf; size len; } tn
 // last of sized value
 #define lastof(v) v.buf + v.len
-#define linked(tn, mt) typedef struct tn tn; struct tn { mt *val; tn *next; }
+#define vappend_decl(tn, mt) tn *tn##vappend(arena *a, tn *maybe, mt m)
+#define vappend_impl(tn, mt) vappend_decl(tn, mt) {                            \
+    tn *cur = new (a, tn, 1);                                                  \
+    cur->val = m;                                                              \
+    if (maybe) maybe->next = cur;                                              \
+    return cur;                                                                \
+  }
+// linked list of values; call corresponding vappend_impl macro in .c file
+#define vlist(tn, mt)                                                          \
+  typedef struct tn tn;                                                        \
+  struct tn {                                                                  \
+    mt val;                                                                    \
+    tn *next;                                                                  \
+  };                                                                           \
+  vappend_decl(tn, mt)
+
+// linked list of references; call corresponding rappend_impl macro in .c file
+#define rappend_decl(tn, mt) tn *tn##rappend(arena *a, tn *maybe, mt *m)
+#define rappend_impl(tn, mt) rappend_decl(tn, mt) {                            \
+    tn *cur = new (a, tn, 1);                                                  \
+    cur->val = m;                                                              \
+    if (maybe) maybe->next = cur;                                              \
+    return cur;                                                                \
+  }
+#define rlist(tn, mt)                                                          \
+  typedef struct tn tn;                                                        \
+  struct tn {                                                                  \
+    mt *val;                                                                   \
+    tn *next;                                                                  \
+  };                                                                           \
+  rappend_decl(tn, mt)
 
 /*
   Avoiding #include <stdlib.h> here, (although it is #ifndef _WIN32).
@@ -97,9 +127,8 @@ typedef struct {
 
 enum errors {EPARSING = 1000, EMEMORY, EREF};
 
-// Basic UTF-8 string. Not null terminated!
-sized(s8, u8);
-linked(s8s, s8);
+sized(s8, u8); // Basic UTF-8 string. Not null terminated!
+vlist(s8s, s8);
 
 // Wrap C string literal into s8 string.
 // Function macro shares name with type, which is permitted. 
@@ -119,9 +148,8 @@ u8 *s8find(s8 haystack, s8 needle);
 s8 s8trim(s8 s);
 s8 s8fill(arena *a, u8 with, size count);
 s8 s8clone(arena *a, s8 s);
-s8 s8concat(arena *a, s8 **s, size len);
+s8 s8concat(arena *a, s8 *ss, size len);
 // Can cope with no starting `maybe`.
-s8s *s8sappend(arena *a, s8s *maybe, s8 *s);
 s8 s8sconcat(arena *a, s8s *s);
 void s8write(bufout *b, s8 s);
 void s8writeln(bufout *b, s8 s);
