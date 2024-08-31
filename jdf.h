@@ -127,9 +127,10 @@ typedef struct {
   u8 *buf; // buffer itself, e.g. allocated with `new` macro
   size len; // current length of buffer contents
   size cap; // capacity of buffer, set at initialisation
+  i32 fd; // 1 stdout, 2 stderr
   b32 err;
 } bufout;
-#define bufout(a, n) (bufout){.cap = n, .buf = new(a, u8, n)}
+#define bufout(a, n, f) (bufout){.cap = n, .buf = new(a, u8, n), .fd = f}
 
 // ───────────────────────────────────────────────────────────────────── Strings
 

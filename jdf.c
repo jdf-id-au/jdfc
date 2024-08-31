@@ -198,7 +198,7 @@ s8 s8sconcat(arena *a, s8s *ss) {
 // Should these indicate success?
 void flush(bufout *b) {
   if (!b->err && b->len) {
-      b->err = !oswrite(1, b->buf, b->len);
+      b->err = !oswrite(b->fd, b->buf, b->len);
       b->len = 0;
     }
 }
