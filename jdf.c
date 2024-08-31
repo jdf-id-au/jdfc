@@ -144,24 +144,6 @@ s8 s8concat(arena *a, s8 *ss, size len) {
   return (s8){.buf = buf, .len = tot};
 }
 
-vappend_impl(s8s, s8) // needs to correspond to `vlist(...)` in header
-
-s8 s8sconcat(arena *a, s8s *ss) {
-  size tot = 0;
-  s8s *cur = ss;
-  do {
-    tot += cur->val.len;
-  } while ((cur = cur->next));
-  u8 *buf = new(a, u8, tot);
-  u8 *beg = buf;
-  cur = ss;
-  do {
-    copy(beg, cur->val.buf, cur->val.len);
-    beg += cur->val.len;
-  } while ((cur = cur->next));
-  return (s8){.buf = buf, .len = tot};
-}
-
 void s8write(bufout *b, s8 s) {
   u8 *buf = s.buf;
   u8 *end = s.buf + s.len;
@@ -178,6 +160,27 @@ void s8write(bufout *b, s8 s) {
 void s8writeln(bufout *b, s8 s) {
   s8write(b, s);
   s8write(b, s8("\n"));
+}
+
+// ╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴ List of strings
+
+count_impl(s8s)
+vappend_impl(s8s, s8) // corresponding to `vlist(s8s, s8)` in header
+
+s8 s8sconcat(arena *a, s8s *ss) {
+  size tot = 0;
+  s8s *cur = ss;
+  do {
+    tot += cur->val.len;
+  } while ((cur = cur->next));
+  u8 *buf = new(a, u8, tot);
+  u8 *beg = buf;
+  cur = ss;
+  do {
+    copy(beg, cur->val.buf, cur->val.len);
+    beg += cur->val.len;
+  } while ((cur = cur->next));
+  return (s8){.buf = buf, .len = tot};
 }
 
 // ──────────────────────────────────────────────────────────── Operating system
@@ -222,10 +225,17 @@ void debytes_impl(void *val, size len) { // too cool for stdio.h printf
   oswrite(2, (u8 *)"\n", 1);
 }
 
-#ifndef _WIN32 // ╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴ _WIN32
+#ifndef _WIN32 // ╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴ not _WIN32
 
-#include <stdlib.h>
+#include <stdlib.h> // plus malloc.h on Windows?
 #include <unistd.h>
+
+arena malloc_arena(size cap) {
+  arena a = {0}; // zero-initialise
+  a.beg = malloc(cap);
+  a.end = a.beg ? a.beg + cap : 0;
+  return a;
+}
 
 void osfail(i32 code) {
   _exit(code); // reason for not just `exit`?
@@ -244,4 +254,4 @@ b32 oswrite(i32 fd, u8 *buf, i32 len) {
   return 1;
 }
 
-#endif // _WIN32
+#endif // not _WIN32

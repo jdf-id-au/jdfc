@@ -6,13 +6,6 @@ s8 blurb = text(This will be included with whitespace collapsed
                 and "quotes" escaped.
                 );
 
-arena malloc_arena(size cap) {
-  arena a = {0}; // zero-initialise
-  a.beg = malloc(cap);
-  a.end = a.beg ? a.beg + cap : 0;
-  return a;
-}
-
 // TODO more descriptive testing ??framework
 int main(int argc, char *argv[]) {
   arena store = malloc_arena(KiB(2));
@@ -41,6 +34,7 @@ int main(int argc, char *argv[]) {
   // compound literal initialising array of pointers to s8; type should be sized
   s8 concs[] = {frag, found_to_end, trimmed, s8("all concatenated")};
   s8writeln(stdout, s8concat(&store, concs, countof(concs)));
+  s8writeln(stdout, s8concat(&store, (s8[]){s8("sadness "), s8("really")}, 2));
   flush(stdout);
   oswrite(1, stdout->buf, stdout->len);
 
