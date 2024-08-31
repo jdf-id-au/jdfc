@@ -124,11 +124,12 @@ void copy(u8 *restrict dst, u8 *restrict src, size len);
 #define assert(c) while (!(c)) __builtin_unreachable()
 
 typedef struct {
-  u8 *buf;
-  size len;
-  size cap;
+  u8 *buf; // buffer itself, e.g. allocated with `new` macro
+  size len; // current length of buffer contents
+  size cap; // capacity of buffer, set at initialisation
   b32 err;
 } bufout;
+#define bufout(a, n) (bufout){.cap = n, .buf = new(a, u8, n)}
 
 // ───────────────────────────────────────────────────────────────────── Strings
 
@@ -148,6 +149,7 @@ b32 s8equal(s8 a, s8 b);
 size s8cmp(s8 a, s8 b);
 size s8hash(s8 s);
 u8 *s8find(s8 haystack, s8 needle);
+u8 *s8findc(s8 haystack, u8 needle);
 s8 s8trim(s8 s);
 s8 s8fill(arena *a, u8 with, size count);
 s8 s8clone(arena *a, s8 s);

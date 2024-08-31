@@ -76,7 +76,7 @@ u8 *s8find(s8 haystack, s8 needle) {
   if (!haystack.buf || !needle.buf) return 0;
   u8 *found = 0;
   u8 *end = lastof(haystack);
-  // init first, cond before loop, iter after loop
+  // init first; cond before loop; iter after loop
   for (u8 *h = haystack.buf; !found && (h < end); h++) {
     for (u8 *n = needle.buf;
          (n < needle.buf + needle.len) && (h < end);
@@ -91,6 +91,16 @@ u8 *s8find(s8 haystack, s8 needle) {
       }
     }
   }
+  return found;
+}
+
+u8 *s8findc(s8 haystack, u8 needle) {
+  if (!haystack.buf) return 0; // allows \0 needle
+  u8 *found = 0;
+  u8 *end = lastof(haystack);
+  for (u8 *h = haystack.buf; !found && (h < end); h++)
+    if (*h == needle)
+      found = h;
   return found;
 }
 
