@@ -61,39 +61,39 @@ enum errors {EPARSING = 1000, EMEMORY, EREF};
     return c;                                   \
   }
 
-#define vappend_decl(tn, t) tn *tn##append(arena *a, tn *maybe, t m) // values
-#define vappend_impl(tn, t)                     \
-  vappend_decl(tn, t) {                         \
+#define value_append_decl(tn, t) tn *tn##append(arena *a, tn *maybe, t m)
+#define value_append_impl(tn, t)                \
+  value_append_decl(tn, t) {                    \
     tn *cur = new (a, tn, 1);                   \
     cur->val = m;                               \
     if (maybe) maybe->next = cur;               \
     return cur;                                 \
   }
-#define vlist(tn, t)                            \
+#define value_list(tn, t)                       \
   typedef struct tn tn;                         \
   struct tn {                                   \
     t val;                                      \
     tn *next;                                   \
   };                                            \
   count_decl(tn);                               \
-  vappend_decl(tn, t)
+  value_append_decl(tn, t)
 
-#define rappend_decl(tn, t) tn *tn##append(arena *a, tn *maybe, t *m) // refs
-#define rappend_impl(tn, t)                     \
-  rappend_decl(tn, t) {                         \
+#define ref_append_decl(tn, t) tn *tn##append(arena *a, tn *maybe, t *m)
+#define ref_append_impl(tn, t)                  \
+  ref_append_decl(tn, t) {                      \
     tn *cur = new (a, tn, 1);                   \
     cur->val = m;                               \
     if (maybe) maybe->next = cur;               \
     return cur;                                 \
   }
-#define rlist(tn, t)                            \
+#define ref_list(tn, t)                         \
   typedef struct tn tn;                         \
   struct tn {                                   \
     t *val;                                     \
     tn *next;                                   \
   };                                            \
   count_decl(tn);                               \
-  rappend_decl(tn, t)
+  ref_append_decl(tn, t)
 
 // ─────────────────────────────────────────────────────────────────────── Arena
 
@@ -160,7 +160,7 @@ void s8writeln(bufout *b, s8 s);
 
 // ╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴ List of strings
 
-vlist(s8s, s8);
+value_list(s8s, s8);
 s8 s8sconcat(arena *a, s8s *s);
 
 // ──────────────────────────────────────────────────────────── Operating System

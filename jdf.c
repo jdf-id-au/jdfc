@@ -175,7 +175,7 @@ void s8writeln(bufout *b, s8 s) {
 // ╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴ List of strings
 
 count_impl(s8s)
-vappend_impl(s8s, s8) // corresponding to `vlist(s8s, s8)` in header
+value_append_impl(s8s, s8) // corresponding to `value_list(s8s, s8)` in header
 
 s8 s8sconcat(arena *a, s8s *ss) {
   size tot = 0;
