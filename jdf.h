@@ -151,7 +151,7 @@ size s8cmp(s8 a, s8 b);
 size s8hash(s8 s);
 u8 *s8find(s8 haystack, s8 needle);
 u8 *s8findc(s8 haystack, u8 needle);
-s8 s8wrap(char *cstr, size maxlen); // Wrap decayed C string into s8 string.
+s8 s8wrap(const char *cstr, size maxlen); // Wrap decayed C string into s8 string.
 s8 s8trim(s8 s);
 s8 s8fill(arena *a, u8 with, size count);
 s8 s8clone(arena *a, s8 s);

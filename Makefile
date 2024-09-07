@@ -6,12 +6,12 @@ CFLAGS=-std=c17 -g3 \
 -pedantic -Wall -Wextra \
 -fPIC -fsanitize=address,undefined
 
+test: test.c libjdf.a
+	cc $(CFLAGS) -L. -ljdf $^ -o $@
+	MallocNanoZone='0' ./test
+
 jdf.o: jdf.c
 	cc $(CFLAGS) -c $^ -o $@
 
 libjdf.a: jdf.o
 	ar -rcs $@ $^
-
-test: test.c libjdf.a
-	cc $(CFLAGS) -L. -ljdf $^ -o $@
-	MallocNanoZone='0' ./test

@@ -104,7 +104,8 @@ u8 *s8findc(s8 haystack, u8 needle) {
   return 0;
 }
 
-s8 s8wrap(char *cstr, size maxlen) {
+s8 s8wrap(const char *cstr, size maxlen) {
+  if (!cstr) return (s8){0};
   u8 *beg = (u8 *)cstr;
   u8 *end = beg;
   while (*end != '\0' && (end-beg) < maxlen) end++;
@@ -162,8 +163,9 @@ s8 s8concat(arena *a, s8 *ss, size len) {
 }
 
 void s8write(bufout *b, s8 s) {
+  if (!s.buf) return;
   u8 *buf = s.buf;
-  u8 *end = s.buf + s.len;
+  u8 *end = endof(s);
   while (!b->err && (buf < end)) {
     i32 avail = b->cap - b->len;
     i32 count = (avail < end - buf) ? avail : (i32)(end - buf);
