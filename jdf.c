@@ -104,10 +104,11 @@ u8 *s8findc(s8 haystack, u8 needle) {
   return 0;
 }
 
-s8 s8wrap(u8 *cstr, size maxlen) {
-  u8 *end = cstr;
-  while (*end != '\0' && (end-cstr) < maxlen) end++;
-  return s8span(cstr, end); 
+s8 s8wrap(char *cstr, size maxlen) {
+  u8 *beg = (u8 *)cstr;
+  u8 *end = beg;
+  while (*end != '\0' && (end-beg) < maxlen) end++;
+  return s8span(beg, end); 
 }
 
 // https://www.reddit.com/r/C_Programming/comments/kzouxh/isspace_ctypeh_considered_harmful/
