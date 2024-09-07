@@ -130,7 +130,7 @@ typedef struct {
   i32 fd; // 1 stdout, 2 stderr
   b32 err;
 } bufout;
-#define bufout(a, n, f) (bufout){.cap = n, .buf = new(a, u8, n), .fd = f}
+#define bufout(a, n, f) &(bufout){.buf = new(a, u8, n), .cap = n, .fd = f}
 
 // ───────────────────────────────────────────────────────────────────── Strings
 
@@ -155,8 +155,8 @@ s8 s8trim(s8 s);
 s8 s8fill(arena *a, u8 with, size count);
 s8 s8clone(arena *a, s8 s);
 s8 s8concat(arena *a, s8 *ss, size len);
-void s8write(bufout *b, s8 s);
-void s8writeln(bufout *b, s8 s);
+void s8write(bufout *b, s8 s); // caller needs to flush
+void s8writeln(bufout *b, s8 s); // caller needs to flush
 
 // ╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴ List of strings
 

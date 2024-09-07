@@ -19,10 +19,7 @@ int main(int argc, char *argv[]) {
   s8 f2_to_end = s8span(f2, end);
   s8 trimmed = s8trim(s8("   escaped.                "));
   
-  u8 *buf = new(&store, u8, KiB(1));
-  bufout stdout[1] = {0};
-  stdout->cap=64;
-  stdout->buf = buf;
+  bufout *stdout = bufout(&store, 64, 1);
   s8writeln(stdout, s8("Demonstrate s8 string functions:"));
   s8writeln(stdout, blurb);
   s8writeln(stdout, frag);
