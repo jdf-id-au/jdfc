@@ -75,11 +75,12 @@ size s8hash(s8 s) {
 u8 *s8find(s8 haystack, s8 needle) {
   if (!haystack.buf || !needle.buf) return 0;
   u8 *found = 0;
-  u8 *end = lastof(haystack);
+  u8 *he = endof(haystack);
+  u8 *ne = endof(needle);
   // init first; cond before loop; iter after loop
-  for (u8 *h = haystack.buf; !found && (h < end); h++) {
+  for (u8 *h = haystack.buf; !found && (h < he); h++) {
     for (u8 *n = needle.buf;
-         (n < needle.buf + needle.len) && (h < end);
+         n < ne && h < he;
          n++) {
       if (*h == *n) {
         if (!found) found = h;
@@ -95,13 +96,18 @@ u8 *s8find(s8 haystack, s8 needle) {
 }
 
 u8 *s8findc(s8 haystack, u8 needle) {
-  if (!haystack.buf) return 0; // allows \0 needle
-  u8 *found = 0;
-  u8 *end = lastof(haystack);
-  for (u8 *h = haystack.buf; !found && (h < end); h++)
+  if (!haystack.buf) return 0; // allow \0 needle
+  u8 *end = endof(haystack);
+  for (u8 *h = haystack.buf; h < end; h++)
     if (*h == needle)
-      found = h;
-  return found;
+      return h;
+  return 0;
+}
+
+s8 s8wrap(u8 *cstr, size maxlen) {
+  u8 *end = cstr;
+  while (*end != '\0' && (end-cstr) < maxlen) end++;
+  return s8span(cstr, end); 
 }
 
 // https://www.reddit.com/r/C_Programming/comments/kzouxh/isspace_ctypeh_considered_harmful/
@@ -121,7 +127,7 @@ b32 whitespace(u8 c) { // too cool for ctype.h isspace
 
 s8 s8trim(s8 src) {
   u8 *beg = src.buf;
-  u8 *end = lastof(src);
+  u8 *end = endof(src);
   while (beg < end && whitespace(*beg)) beg++;
   while (end > beg && whitespace(*(end - 1))) end--;
   return s8span(beg, end);
@@ -248,7 +254,7 @@ arena malloc_arena(size cap) {
 }
 
 void osfail(i32 code) {
-  _exit(code); // reason for not just `exit`?
+  _exit(code); // terminate without cleanup https://stackoverflow.com/a/5423108/780743
 }
 
 i32 osread(i32 fd, u8 *buf, i32 cap) {

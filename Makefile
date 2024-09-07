@@ -12,6 +12,6 @@ jdf.o: jdf.c
 libjdf.a: jdf.o
 	ar -rcs $@ $^
 
-test: test.c
+test: test.c libjdf.a
 	cc $(CFLAGS) -L. -ljdf $^ -o $@
 	MallocNanoZone='0' ./test

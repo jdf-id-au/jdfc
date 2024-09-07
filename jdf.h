@@ -43,7 +43,7 @@ typedef size_t    usize;
 #define lengthof(s) (countof(s) - 1)
 #define new(a, t, n) (t *)alloc(a, sizeof(t), alignof(t), n) // arena, type, number
 #define sized(tn, t) typedef struct { t *buf; size len; } tn // new type name, el type
-#define lastof(v) v.buf + v.len // last of sized value
+#define endof(v) v.buf + v.len // last of sized value
 
 enum errors {EPARSING = 1000, EMEMORY, EREF};
 
@@ -151,6 +151,7 @@ size s8cmp(s8 a, s8 b);
 size s8hash(s8 s);
 u8 *s8find(s8 haystack, s8 needle);
 u8 *s8findc(s8 haystack, u8 needle);
+s8 s8wrap(u8 *cstr, size maxlen);
 s8 s8trim(s8 s);
 s8 s8fill(arena *a, u8 with, size count);
 s8 s8clone(arena *a, s8 s);
