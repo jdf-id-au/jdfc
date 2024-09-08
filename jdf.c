@@ -2,7 +2,7 @@
 
 void oom(void) {
   static u8 msg[] = "out of memory\n";
-  oswrite(2, (u8 *)msg, lengthof(msg));
+  oswrite(2, (u8 *)msg, countof(msg) - 1);
   osfail(12); // cheesy reference to ENOMEM errno
 }
 
@@ -190,7 +190,7 @@ s8s *s8swrap(arena *a, const char **cstrs, size nstrs, size maxlen) {
   s8s *head = 0;
   s8s *cur = 0;
   for (size i = 0; i < nstrs; i++) {
-    cur = s8sappend(a, head, s8wrap(cstrs[i], maxlen));
+    cur = s8sappend(a, cur, s8wrap(cstrs[i], maxlen));
     head = head ? head : cur;
   }
   return head;

@@ -35,12 +35,10 @@ typedef size_t    usize;
 
 #pragma GCC diagnostic push // also understood by clang
 #pragma GCC diagnostic ignored "-Wkeyword-macro"
-#define sizeof(x) (size)sizeof(x) // casting from ?impl-defined unsigned int type
 #pragma GCC diagnostic pop
 
 #define alignof(x) (size)_Alignof(x) // casting from size_t
-#define countof(a) (sizeof(a) / sizeof(*(a))) // relies on a not having decayed
-#define lengthof(s) (countof(s) - 1)
+#define countof(expr) (sizeof expr)/(sizeof *expr)
 #define new(a, t, n) (t *)alloc(a, sizeof(t), alignof(t), n) // arena, type, number
 #define sized(tn, t) typedef struct { t *buf; size len; } tn // new type name, el type
 #define endof(v) v.buf + v.len // last of sized value
@@ -140,7 +138,8 @@ typedef struct {
 // ───────────────────────────────────────────────────────────────────── Strings
 
 sized(s8, u8); // Basic UTF-8 string. Not null terminated!
-#define s8(s) (s8){(u8 *)s, lengthof(s)} // Wrap C string literal into s8 string.
+// Wrap C string literal into s8 string.
+#define s8(s) (s8){(u8 *)s, countof(s) - 1}
 
 /*
   Multiline without quotes. Collapses whitespace.
@@ -167,7 +166,7 @@ void s8writeln(bufout *b, s8 s); // caller needs to flush
 // ╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴ List of strings
 
 value_list(s8s, s8);
-// Wrap comma separated C string literals into s8s linked list.
+// Wrap compound literal array of C string literals into s8s linked list.
 #define s8s(a, ss, maxlen) s8swrap(a, ss, countof(ss), maxlen)
 s8s *s8swrap(arena *a, const char **cstrs, size nstrs, size maxlen);
 s8 s8sconcat(arena *a, s8s *s);
