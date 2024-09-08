@@ -146,6 +146,8 @@ sized(s8, u8); // Basic UTF-8 string. Not null terminated!
   IDE may be annoying about it, try fundamental-mode.
 */ 
 #define text(...) s8(#__VA_ARGS__) // https://stackoverflow.com/a/17996915/780743
+#define string_array(...) ((char *[]) {__VA_ARGS__}) // array of pointers to char
+#define counted_strings(...) string_array(__VA_ARGS__), countof(string_array(__VA_ARGS__)) // kind of splat tuple
 
 s8 s8span(u8 *beg, u8 *end);
 // offsets may be positive or negative (i.e. from start or end, respectively)
@@ -166,8 +168,7 @@ void s8writeln(bufout *b, s8 s); // caller needs to flush
 // ╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴ List of strings
 
 value_list(s8s, s8);
-// Wrap compound literal array of C string literals into s8s linked list.
-#define s8s(a, ss, maxlen) s8swrap(a, ss, countof(ss), maxlen)
+#define s8s(a, ...) s8swrap(a, counted_strings(__VA_ARGS__), 128)
 s8s *s8swrap(arena *a, const char **cstrs, size nstrs, size maxlen);
 s8 s8sconcat(arena *a, s8s *s);
 

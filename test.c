@@ -23,8 +23,7 @@ int main(int argc, char *argv[]) {
   bufout *stdout = bufout(&store, 64, 1);
   s8writeln(stdout, s8("Demonstrate s8 string functions:"));
   flush(stdout);
-  char *cstrs[] = {"hello", " ", "there"};
-  s8s *ss = s8s(&store, cstrs, 128);
+  s8s *ss = s8s(&store, "hello", "there", "somethnig");
   s8writeln(stdout, s8sconcat(&store, ss)); 
   s8writeln(stdout, blurb);
   s8writeln(stdout, frag);
