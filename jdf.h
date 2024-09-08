@@ -61,6 +61,11 @@ enum errors {EPARSING = 1000, EMEMORY, EREF};
     return c;                                   \
   }
 
+/*
+  Append value `m` to list node `maybe`.
+  If list node doesn't exist, start new list.
+  Caller needs to retain list head.
+*/
 #define value_append_decl(tn, t) tn *tn##append(arena *a, tn *maybe, t m)
 #define value_append_impl(tn, t)                \
   value_append_decl(tn, t) {                    \
@@ -162,6 +167,9 @@ void s8writeln(bufout *b, s8 s); // caller needs to flush
 // ╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴ List of strings
 
 value_list(s8s, s8);
+// Wrap comma separated C string literals into s8s linked list.
+#define s8s(a, ss, maxlen) s8swrap(a, ss, countof(ss), maxlen)
+s8s *s8swrap(arena *a, const char **cstrs, size nstrs, size maxlen);
 s8 s8sconcat(arena *a, s8s *s);
 
 // ──────────────────────────────────────────────────────────── Operating System

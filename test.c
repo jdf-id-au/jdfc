@@ -9,6 +9,7 @@ s8 blurb = text(This will be included with whitespace collapsed
 // TODO more descriptive testing ??framework
 int main(int argc, char *argv[]) {
   arena store = malloc_arena(KiB(2));
+  
   u8 *end = endof(blurb);
   s8 frag = s8("escaped.");
   s8 span = s8span(blurb.buf + (blurb.len - 8), end);
@@ -18,9 +19,13 @@ int main(int argc, char *argv[]) {
   s8 found_to_end = s8span(found, end);
   s8 f2_to_end = s8span(f2, end);
   s8 trimmed = s8trim(s8("   escaped.                "));
-  
+
   bufout *stdout = bufout(&store, 64, 1);
   s8writeln(stdout, s8("Demonstrate s8 string functions:"));
+  flush(stdout);
+  char *cstrs[] = {"hello", "there"};
+  s8s *ss = s8s(&store, cstrs, 128);
+  s8writeln(stdout, s8sconcat(&store, ss)); 
   s8writeln(stdout, blurb);
   s8writeln(stdout, frag);
   s8writeln(stdout, span);
