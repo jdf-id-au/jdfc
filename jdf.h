@@ -148,6 +148,8 @@ sized(s8, u8); // Basic UTF-8 string. Not null terminated!
 #define text(...) s8(#__VA_ARGS__) // https://stackoverflow.com/a/17996915/780743
 #define string_array(...) ((char *[]) {__VA_ARGS__}) // array of pointers to char
 #define counted_strings(...) string_array(__VA_ARGS__), countof(string_array(__VA_ARGS__)) // kind of splat tuple
+#define s8_array(...) ((s8 []) {__VA_ARGS__})
+#define counted_s8s(...) s8_array(__VA_ARGS__), countof(s8_array(__VA_ARGS__))
 
 s8 s8span(u8 *beg, u8 *end);
 // offsets may be positive or negative (i.e. from start or end, respectively)
