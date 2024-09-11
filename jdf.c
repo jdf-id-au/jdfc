@@ -183,8 +183,8 @@ void s8writeln(bufout *b, s8 s) {
 
 // ╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴ List of strings
 
-count_impl(s8s)
-value_append_impl(s8s, s8) // corresponding to `value_list(s8s, s8)` in header
+count_impl(s8s) // s8scount
+value_append_impl(s8s, s8) // s8sappend, corresponding to `value_list(s8s, s8)` in header
 
 s8s *s8swrap(arena *a, const char **cstrs, size nstrs, size maxlen) {
   s8s *head = 0;

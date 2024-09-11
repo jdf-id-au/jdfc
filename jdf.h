@@ -47,7 +47,7 @@ enum errors {EPARSING = 1000, EMEMORY, EREF};
 
 // ──────────────────────────────────────────────────────────────── Linked lists
 
-#define count_decl(tn) size count##tn(tn *v)
+#define count_decl(tn) size tn##count(tn *v)
 #define count_impl(tn)                          \
   count_decl(tn) {                              \
     size c = 0;                                 \
@@ -137,7 +137,7 @@ typedef struct {
 
 // ───────────────────────────────────────────────────────────────────── Strings
 
-sized(s8, u8); // Basic UTF-8 string. Not null terminated!
+sized(s8, u8); // s8: Basic UTF-8 string. Not null terminated!
 // Wrap C string literal into s8 string.
 #define s8(s) (s8){(u8 *)s, countof(s) - 1}
 
@@ -157,19 +157,19 @@ s8 s8slice(s8 s, size from, size to);
 b32 s8equal(s8 a, s8 b);
 size s8cmp(s8 a, s8 b);
 size s8hash(s8 s);
-u8 *s8find(s8 haystack, s8 needle);
-u8 *s8findc(s8 haystack, u8 needle);
+u8 *s8find(s8 haystack, s8 needle); // find string
+u8 *s8findc(s8 haystack, u8 needle); // find char
 s8 s8wrap(const char *cstr, size maxlen); // Wrap decayed C string into s8 string.
 s8 s8trim(s8 s);
 s8 s8fill(arena *a, u8 with, size count);
-s8 s8clone(arena *a, s8 s);
+s8 s8clone(arena *a, s8 s); // copies buf
 s8 s8concat(arena *a, s8 *ss, size len);
 void s8write(bufout *b, s8 s); // caller needs to flush
 void s8writeln(bufout *b, s8 s); // caller needs to flush
 
 // ╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴ List of strings
 
-value_list(s8s, s8);
+value_list(s8s, s8); // s8s, s8scount, s8sappend
 #define s8s(a, ...) s8swrap(a, counted_strings(__VA_ARGS__), 128)
 s8s *s8swrap(arena *a, const char **cstrs, size nstrs, size maxlen);
 s8 s8sconcat(arena *a, s8s *s);
