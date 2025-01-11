@@ -13,8 +13,8 @@ test: test.c libjdf.a
 run: test
 	MallocNanoZone='0' ./test
 
-jdf.o: jdf.c
-	cc $(CFLAGS) -c $^ -o $@
+jdf.o: jdf.c jdf.h
+	cc $(CFLAGS) -c jdf.c -o jdf.o
 
 libjdf.a: jdf.o
 	ar -rcs $@ $^

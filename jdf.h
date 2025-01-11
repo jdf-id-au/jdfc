@@ -1,6 +1,4 @@
 /*
-  Trying to reject incidental complexity, including at build time.
-
   After Wellons https://nullprogram.com/blog/2023/10/08/
   and https://nullprogram.com/blog/2023/09/27/ .
   All a bit controversial https://old.reddit.com/r/C_Programming/comments/173e0vn/nullprogram_my_personal_c_coding_style_as_of_late/
@@ -41,7 +39,7 @@ typedef size_t    usize;
 #define countof(expr) (sizeof expr)/(sizeof *expr)
 #define new(a, t, n) (t *)alloc(a, sizeof(t), alignof(t), n) // arena, type, number
 #define sized(tn, t) typedef struct { t *buf; size len; } tn // new type name, el type
-#define endof(v) v.buf + v.len // last of sized value
+#define endof(v) v.buf + v.len // just beyond last of sized value
 
 enum errors {EPARSING = 1000, EMEMORY, EREF};
 
@@ -142,13 +140,17 @@ sized(s8, u8); // s8: Basic UTF-8 string. Not null terminated!
 #define s8(s) (s8){(u8 *)s, countof(s) - 1}
 
 /*
-  Multiline without quotes. Collapses whitespace.
+  Make one s8 from unquoted multiline text, after collapsing whitespace.
   IDE may be annoying about it, try fundamental-mode.
 */ 
 #define text(...) s8(#__VA_ARGS__) // https://stackoverflow.com/a/17996915/780743
+// Mainly to simplify `counted_strings`.
 #define string_array(...) ((char *[]) {__VA_ARGS__}) // array of pointers to char
-#define counted_strings(...) string_array(__VA_ARGS__), countof(string_array(__VA_ARGS__)) // kind of splat tuple
+// Splats two arguments: string array and number of strings.
+#define counted_strings(...) string_array(__VA_ARGS__), countof(string_array(__VA_ARGS__))
+// Mainly to simplify `counted_s8s`.
 #define s8_array(...) ((s8 []) {__VA_ARGS__})
+// Splats two arguments: s8 array and number of s8s.
 #define counted_s8s(...) s8_array(__VA_ARGS__), countof(s8_array(__VA_ARGS__))
 
 s8 s8span(u8 *beg, u8 *end);

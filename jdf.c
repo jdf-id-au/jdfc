@@ -41,7 +41,7 @@ s8 s8slice(s8 src, size from, size to) {
   s8 s = {.buf = src.buf};
   size f = (from < 0) ? src.len + from : from;
   size t = (to > 0) ? to : src.len + to;
-  if (t < f) return s; // refuse to slice backwards
+  if (t < f) return src; // refuse to slice backwards; TODO error semantic?
   s.buf += f;
   s.len = t - f;
   return s;
@@ -230,9 +230,9 @@ void error(i32 code, s8 msg) {
 }
 
 void debug(s8 msg) { // ╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴ debug
-  oswrite(2, (u8 *)"[", 1);
+  oswrite(2, (u8 *)"[ ", 2);
   oswrite(2, (u8 *)msg.buf, msg.len);
-  oswrite(2, (u8 *)"]\n", 2);
+  oswrite(2, (u8 *)" ]\n", 3);
 }
 
 // have you heard of a debugger!?

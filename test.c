@@ -15,15 +15,15 @@ int main(int argc, char *argv[]) {
   s8 span = s8span(blurb.buf + (blurb.len - 8), end);
   s8 slice = s8slice(blurb, -8, 0);
   u8 *found = s8find(blurb, s8("whitespace"));
-  u8 *f2 = s8find(blurb, s8(" "));
   s8 found_to_end = s8span(found, end);
+  u8 *f2 = s8findc(blurb, '"');
   s8 f2_to_end = s8span(f2, end);
   s8 trimmed = s8trim(s8("   escaped.                "));
 
   bufout *stdout = bufout(&store, 64, 1);
   s8writeln(stdout, s8("Demonstrate s8 string functions:"));
   flush(stdout);
-  s8s *ss = s8s(&store, "hello", "there", "somethnig");
+  s8s *ss = s8s(&store, "three ", "concatenated ", "cstrings (via s8s)");
   s8writeln(stdout, s8sconcat(&store, ss)); 
   s8writeln(stdout, blurb);
   s8writeln(stdout, frag);
@@ -33,7 +33,7 @@ int main(int argc, char *argv[]) {
   s8writeln(stdout, f2_to_end);
   s8writeln(stdout, trimmed);
   // compound literal initialising array of pointers to s8; type should be sized
-  s8 concs[] = {frag, found_to_end, trimmed, s8("all concatenated")};
+  s8 concs[] = {s8("concatenated s8s: "), frag, found_to_end, trimmed};
   s8writeln(stdout, s8concat(&store, concs, countof(concs)));
   s8writeln(stdout, s8concat(&store, (s8[]){s8("sadness "), s8("really")}, 2));
   flush(stdout);
