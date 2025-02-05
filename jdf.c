@@ -17,6 +17,24 @@ size MiB(u32 n) {
 // TODO could report memory usage afterward
 byte *alloc(arena *a, size objsize, size align, size count) {
   size avail = a->end - a->beg;
+  /*
+   Padding is how far the next aligned address is beyond the beginning of the arena.
+   (The "beginning" of the arena advances as data is added, and is really the beginning of the remaining avilable space.)
+
+   Use wrapping unsigned integer negation of the beginning address to measure what's left rather than what's in use.
+   Calculate how far this address is beyond the previous aligned address using modulo:
+   
+     addr % align == addr & (align - 1) // because align is a power of 2 (i.e. > 0)
+
+   Example with u4 address and 4 byte alignment:
+          0x  0   4   8   c   
+         beg  ---------->..... 0xb 0b1011
+        -beg  .....<---------- 0x5 0b0101
+       align  |   |   |   |    4   0b0100
+     align-1                       0b0011
+     padding      x            1   0b0001 == -beg & (align-1)
+      giving  ----------->.... 0xc 0b1100
+   */
   size padding = -(uptr)a->beg & (align - 1);
   if (count > (avail - padding)/objsize) oom();
   size total = count * objsize;
