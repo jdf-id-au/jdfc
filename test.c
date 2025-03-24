@@ -7,7 +7,7 @@ s8 blurb = text(This will be included with whitespace collapsed
 
 // TODO more descriptive testing ??framework
 int main(int argc, char *argv[]) {
-  arena store = malloc_arena(KiB(2));
+  arena store = alloc_arena(KiB(2));
   
   u8 *end = endof(blurb);
   s8 frag = s8("escaped.");

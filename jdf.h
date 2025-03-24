@@ -39,7 +39,7 @@ typedef size_t    usize;
 #define ARRAY(tn, t) typedef struct { t *buf; size len; } tn; // new type name, el type
 #define endof(v) v.buf + v.len // just beyond last of sized value
 
-enum errors {EPARSING = 1000, EMEMORY, EREF};
+enum Error { EPARSING = 1000, EMEMORY, EREF };
 
 // ──────────────────────────────────────────────────────────────── Linked lists
 
@@ -163,8 +163,15 @@ typedef struct {
 
 ARRAY(s8, u8) // s8: Basic UTF-8 string. Not null terminated!
 // Wrap C string literal into s8 string.
-#define s8(s) (s8){(u8 *)s, countof(s) - 1}
+#define s8(s) (s8) { (u8 *)s, countof(s) - 1 }
+VALUE_LIST(s8s, s8) // s8s: List of strings. s8s, s8scount, s8sappend
 
+#ifdef _WIN32
+ARRAY(s16, c16)
+#define s16(s) (s16) { (c16 *)s, countof(s) - 1 }
+// TODO what about all the fns?!
+#endif
+     
 /*
   Make one s8 from unquoted multiline text, after collapsing whitespace.
   IDE may be annoying about it, try fundamental-mode.
@@ -295,6 +302,7 @@ s8 s8clone(arena *a, s8 s) {
   return c;
 }
 
+// Concatenate array of strings
 s8 s8concat(arena *a, s8 *ss, size len) {
   size tot = 0;
   for (size i = 0; i < len; i++) tot += ss[i].len;
@@ -304,6 +312,24 @@ s8 s8concat(arena *a, s8 *ss, size len) {
     copy(beg, ss[i].buf, ss[i].len);
     beg += ss[i].len;
   }
+  return (s8){.buf = buf, .len = tot};
+}
+
+// Concatenate list of strings
+s8 s8sconcat(arena *a, s8s *ss) {
+  assert(ss);
+  size tot = 0;
+  s8s *cur = ss;
+  do {
+    tot += cur->val.len;
+  } while ((cur = cur->next));
+  u8 *buf = new(a, u8, tot);
+  u8 *beg = buf;
+  cur = ss;
+  do {
+    copy(beg, cur->val.buf, cur->val.len);
+    beg += cur->val.len;
+  } while ((cur = cur->next));
   return (s8){.buf = buf, .len = tot};
 }
 
@@ -329,29 +355,6 @@ void s8writeln(bufout *b, s8 s) {
   s8write(b, s);
   s8write(b, s8("\n"));
 }
-
-
-// ╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴ List of strings
-
-VALUE_LIST(s8s, s8) // s8s, s8scount, s8sappend
-     
-s8 s8sconcat(arena *a, s8s *ss) {
-  assert(ss);
-  size tot = 0;
-  s8s *cur = ss;
-  do {
-    tot += cur->val.len;
-  } while ((cur = cur->next));
-  u8 *buf = new(a, u8, tot);
-  u8 *beg = buf;
-  cur = ss;
-  do {
-    copy(beg, cur->val.buf, cur->val.len);
-    beg += cur->val.len;
-  } while ((cur = cur->next));
-  return (s8){.buf = buf, .len = tot};
-}
-
 
 // ──────────────────────────────────────────────────────────── Operating System
 
@@ -400,12 +403,55 @@ void debytes_impl(void *val, size len) { // too cool for stdio.h printf
 
 #define debytes(ptr) debug(s8(#ptr)); debytes_impl(ptr, sizeof(*(ptr))) // silly portmaneau
 
-#ifndef _WIN32 // ╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴ not _WIN32
+#ifdef _WIN32 // ╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴ _WIN32
 
+typedef struct { int dummy; } *handle;
+#define W32(r) __declspec(dllimport) r __stdcall
+W32(byte *) VirtualAlloc(byte *, usize, u32, u32);
+W32(handle) GetStdHandle(u32);
+W32(b32) ReadFile(handle, u8 *, u32, u32 *, void *);            
+W32(b32) WriteFile(handle, u8 *, u32, u32 *, void *);
+W32(void) ExitProcess(u32);
+
+arena alloc_arena(size cap) {
+  arena a = {0};
+  // https://learn.microsoft.com/en-us/windows/win32/api/memoryapi/nf-memoryapi-virtualalloc
+  // lpAddress = system determines where to allocate
+  // dwSize = size in bytes
+  // flAllocationType =  MEM_COMMIT + MEM_RESERVE
+  // flProtect = PAGE_READWRITE
+
+  a.beg = VirtualAlloc(0, cap, 0x3000, 4);
+  a.end = a.beg ? a.beg + cap : 0;
+  return a;
+}
+
+void osfail(i32 code) {
+  ExitProcess(code); // TOOD check vs 1
+}
+
+i32 osread(i32 fb, u8 *buf, i32 cap) {
+  handle stdin = GetStdHandle(-10 - fd);
+  u32 len;
+  ReadFile(stdin, buf, cap, &len, 0);
+  return len;
+}
+
+b32 oswrite(i32 fd, u8 *buf, i32 len) {
+  handle stdout = GetStdHandle(-10 - fd);
+  u32 dummy;
+  return WriteFile(stdout, buf, len, &dummy, 0);
+}
+
+// https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-exitprocess
+// void mainCRTStartup(void) { stuff; ExitProcess(code); }
+        
+#else // ╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴ not _WIN32
+ 
 #include <stdlib.h> // plus malloc.h on Windows?
 #include <unistd.h>
 
-arena malloc_arena(size cap) {
+arena alloc_arena(size cap) {
   arena a = {0}; // zero-initialise struct; memory itself is zeroed in `alloc`
   a.beg = malloc(cap);
   a.end = a.beg ? a.beg + cap : 0;
@@ -428,6 +474,8 @@ b32 oswrite(i32 fd, u8 *buf, i32 len) {
   }
   return 1;
 }
+
+// int main(void) { stuff; return r; }
 
 #endif // ╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴
 
