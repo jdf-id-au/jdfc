@@ -40,7 +40,7 @@ typedef size_t    usize;
 #define alignof(x) (size)_Alignof(x) // casting from size_t
 #define countof(arrayptr) (size)(sizeof(arrayptr) / sizeof(*(arrayptr))) // casting from size_t
 #define new(a, t, n) (t *)alloc(a, sizeof(t), alignof(t), n) // arena, type, number
-#define array_type(tn, t) typedef struct { t *buf; size len; } tn // new type name, el type
+#define ARRAY(tn, t) typedef struct { t *buf; size len; } tn; // new type name, el type
 #define endof(v) v.buf + v.len // just beyond last of sized value
 
 enum errors {EPARSING = 1000, EMEMORY, EREF};
@@ -57,12 +57,10 @@ enum errors {EPARSING = 1000, EMEMORY, EREF};
     }                                           \
     return c;                                   \
   }
-
 /*
   Append value `m` to list node `maybe`.
   If list node doesn't exist, start new list.
   Caller needs to retain list head.
-  Capitalised macros don't need trailing semicolon.
 */
 #define VALUE_APPEND(tn, t)                     \
   tn *tn##append(arena *a, tn *maybe, t m) {    \
@@ -71,6 +69,7 @@ enum errors {EPARSING = 1000, EMEMORY, EREF};
     if (maybe) maybe->next = cur;               \
     return cur;                                 \
   }
+// Define new linked list type tn, el type t, with <tn>count and <tn>append.
 #define VALUE_LIST(tn, t)                       \
   typedef struct tn tn;                         \
   struct tn {                                   \
@@ -80,13 +79,14 @@ enum errors {EPARSING = 1000, EMEMORY, EREF};
   COUNT(tn)                                     \
   VALUE_APPEND(tn, t)
 
-#define REF_APPEND(tn, t)                       \
+#define REFERENCE_APPEND(tn, t)                 \
   tn *tn##append(arena *a, tn *maybe, t *m) {   \
     tn *cur = new (a, tn, 1);                   \
     cur->val = m;                               \
     if (maybe) maybe->next = cur;               \
     return cur;                                 \
   }
+// Define new linked list type tn, el type *t, with <tn>count and <tn>append.
 #define REFERENCE_LIST(tn, t)                   \
   typedef struct tn tn;                         \
   struct tn {                                   \
@@ -94,7 +94,7 @@ enum errors {EPARSING = 1000, EMEMORY, EREF};
     tn *next;                                   \
   };                                            \
   COUNT(tn)                                     \
-  REF_APPEND(tn, t)
+  REFERENCE_APPEND(tn, t)
 
 // ─────────────────────────────────────────────────────────────────────── Arena
 
@@ -173,7 +173,7 @@ typedef struct {
 
 // ───────────────────────────────────────────────────────────────────── Strings
 
-array_type(s8, u8); // s8: Basic UTF-8 string. Not null terminated!
+ARRAY(s8, u8) // s8: Basic UTF-8 string. Not null terminated!
 // Wrap C string literal into s8 string.
 #define s8(s) (s8){(u8 *)s, countof(s) - 1}
 
@@ -182,14 +182,6 @@ array_type(s8, u8); // s8: Basic UTF-8 string. Not null terminated!
   IDE may be annoying about it, try fundamental-mode.
 */ 
 #define text(...) s8(#__VA_ARGS__) // https://stackoverflow.com/a/17996915/780743
-// Mainly to simplify `counted_strings`.
-#define string_array(...) ((char *[]) {__VA_ARGS__}) // array of pointers to char
-// Splats two arguments: string array and number of strings.
-#define counted_strings(...) string_array(__VA_ARGS__), countof(string_array(__VA_ARGS__))
-// Mainly to simplify `counted_s8s`.
-#define s8_array(...) ((s8 []) {__VA_ARGS__})
-// Splats two arguments: s8 array and number of s8s.
-#define counted_s8s(...) s8_array(__VA_ARGS__), countof(s8_array(__VA_ARGS__))
 
 // Slice using pointers
 s8 s8span(u8 *beg, u8 *end) {
