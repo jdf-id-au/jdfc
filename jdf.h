@@ -47,9 +47,8 @@ enum errors {EPARSING = 1000, EMEMORY, EREF};
 
 // ──────────────────────────────────────────────────────────────── Linked lists
 
-#define count_decl(tn) size tn##count(tn *v)
-#define count_impl(tn)                          \
-  count_decl(tn) {                              \
+#define COUNT(tn)                               \
+  size tn##count(tn *v) {                       \
     size c = 0;                                 \
     tn *cur = v;                                \
     while (cur->next) {                         \
@@ -63,40 +62,39 @@ enum errors {EPARSING = 1000, EMEMORY, EREF};
   Append value `m` to list node `maybe`.
   If list node doesn't exist, start new list.
   Caller needs to retain list head.
+  Capitalised macros don't need trailing semicolon.
 */
-#define value_append_decl(tn, t) tn *tn##append(arena *a, tn *maybe, t m)
-#define value_append_impl(tn, t)                \
-  value_append_decl(tn, t) {                    \
+#define VALUE_APPEND(tn, t)                     \
+  tn *tn##append(arena *a, tn *maybe, t m) {    \
     tn *cur = new (a, tn, 1);                   \
     cur->val = m;                               \
     if (maybe) maybe->next = cur;               \
     return cur;                                 \
   }
-#define value_list_type(tn, t)                  \
+#define VALUE_LIST(tn, t)                       \
   typedef struct tn tn;                         \
   struct tn {                                   \
     t val;                                      \
     tn *next;                                   \
   };                                            \
-  count_decl(tn);                               \
-  value_append_decl(tn, t)
+  COUNT(tn)                                     \
+  VALUE_APPEND(tn, t)
 
-#define ref_append_decl(tn, t) tn *tn##append(arena *a, tn *maybe, t *m)
-#define ref_append_impl(tn, t)                  \
-  ref_append_decl(tn, t) {                      \
+#define REF_APPEND(tn, t)                       \
+  tn *tn##append(arena *a, tn *maybe, t *m) {   \
     tn *cur = new (a, tn, 1);                   \
     cur->val = m;                               \
     if (maybe) maybe->next = cur;               \
     return cur;                                 \
   }
-#define ref_list_type(tn, t)                    \
+#define REFERENCE_LIST(tn, t)                   \
   typedef struct tn tn;                         \
   struct tn {                                   \
     t *val;                                     \
     tn *next;                                   \
   };                                            \
-  count_decl(tn);                               \
-  ref_append_decl(tn, t)
+  COUNT(tn)                                     \
+  REF_APPEND(tn, t)
 
 // ─────────────────────────────────────────────────────────────────────── Arena
 
@@ -355,21 +353,7 @@ void s8writeln(bufout *b, s8 s) {
 
 // ╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴ List of strings
 
-value_list_type(s8s, s8); // s8s, s8scount, s8sappend
-#define s8s(a, ...) s8swrap(a, counted_strings(__VA_ARGS__), 128)
-
-count_impl(s8s) // s8scount
-value_append_impl(s8s, s8) // s8sappend, corresponding to `value_list(s8s, s8)` in header
-
-s8s *s8swrap(arena *a, char **cstrs, size nstrs, size maxlen) {
-  s8s *head = 0;
-  s8s *cur = 0;
-  for (size i = 0; i < nstrs; i++) {
-    cur = s8sappend(a, cur, s8wrap(cstrs[i], maxlen));
-    head = head ? head : cur;
-  }
-  return head;
-}
+VALUE_LIST(s8s, s8) // s8s, s8scount, s8sappend
      
 s8 s8sconcat(arena *a, s8s *ss) {
   assert(ss);

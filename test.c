@@ -22,8 +22,6 @@ int main(int argc, char *argv[]) {
   bufout *stdout = bufout(&store, 64, 1);
   s8writeln(stdout, s8("Demonstrate s8 string functions:"));
   flush(stdout);
-  s8s *ss = s8s(&store, "three ", "concatenated ", "cstrings (via s8s)");
-  s8writeln(stdout, s8sconcat(&store, ss)); 
   s8writeln(stdout, blurb);
   s8writeln(stdout, frag);
   s8writeln(stdout, span);
