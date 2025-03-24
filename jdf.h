@@ -1,14 +1,13 @@
 /*
   After Wellons https://nullprogram.com/blog/2023/10/08/
   and https://nullprogram.com/blog/2023/09/27/ .
-  All a bit controversial https://old.reddit.com/r/C_Programming/comments/173e0vn/nullprogram_my_personal_c_coding_style_as_of_late/
-  esp wrt risk of name collision on public facing things.
+  See discussion https://old.reddit.com/r/C_Programming/comments/173e0vn/nullprogram_my_personal_c_coding_style_as_of_late/ .
   
   - omit const (controversial!)
   - literal 0 for null pointers
   - restrict when necessary
   - typedef all structures
-  - static all functions except for entry points (not applied here)
+  - static all functions except for entry points (not applied here; less meaningful in single translation unit build)
   - structure returns instead of out parameters; initialise with {0} as per C99
 */
 
@@ -235,7 +234,7 @@ u8 *s8find(s8 haystack, s8 needle) {
         if (!found) found = h;
         h++;
       } else {
-        if (found) h = found;
+        if (found) h = found; // will then be incremented by outer loop
         found = 0;
         break;
       }
