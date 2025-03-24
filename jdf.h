@@ -51,25 +51,15 @@ enum errors {EPARSING = 1000, EMEMORY, EREF};
   size tn##count(tn *v) {                       \
     size c = 0;                                 \
     tn *cur = v;                                \
-    while (cur->next) {                         \
-      c++;                                      \
-      cur = cur->next;                          \
-    }                                           \
+    while ((cur = cur->next)) c++;              \
     return c;                                   \
   }
 /*
-  Append value `m` to list node `maybe`.
-  If list node doesn't exist, start new list.
-  Caller needs to retain list head.
+   Define new linked list type tn, el type t, with <tn>count and <tn>append.
+   <tn>append appends value `m` to list node `maybe`.
+   If list node doesn't exist, starts a new list.
+   Caller needs to retain list head.
 */
-#define VALUE_APPEND(tn, t)                     \
-  tn *tn##append(arena *a, tn *maybe, t m) {    \
-    tn *cur = new (a, tn, 1);                   \
-    cur->val = m;                               \
-    if (maybe) maybe->next = cur;               \
-    return cur;                                 \
-  }
-// Define new linked list type tn, el type t, with <tn>count and <tn>append.
 #define VALUE_LIST(tn, t)                       \
   typedef struct tn tn;                         \
   struct tn {                                   \
@@ -77,10 +67,7 @@ enum errors {EPARSING = 1000, EMEMORY, EREF};
     tn *next;                                   \
   };                                            \
   COUNT(tn)                                     \
-  VALUE_APPEND(tn, t)
-
-#define REFERENCE_APPEND(tn, t)                 \
-  tn *tn##append(arena *a, tn *maybe, t *m) {   \
+  tn *tn##append(arena *a, tn *maybe, t m) {    \
     tn *cur = new (a, tn, 1);                   \
     cur->val = m;                               \
     if (maybe) maybe->next = cur;               \
@@ -94,7 +81,12 @@ enum errors {EPARSING = 1000, EMEMORY, EREF};
     tn *next;                                   \
   };                                            \
   COUNT(tn)                                     \
-  REFERENCE_APPEND(tn, t)
+  tn *tn##append(arena *a, tn *maybe, t *m) {   \
+    tn *cur = new (a, tn, 1);                   \
+    cur->val = m;                               \
+    if (maybe) maybe->next = cur;               \
+    return cur;                                 \
+  }
 
 // ─────────────────────────────────────────────────────────────────────── Arena
 
