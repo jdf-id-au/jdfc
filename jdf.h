@@ -9,7 +9,6 @@
   - restrict when necessary
   - typedef all structures
   - static all functions except for entry points (not applied here)
-  (alternative to #include "jdf.c" into every translation unit...)
   - structure returns instead of out parameters; initialise with {0} as per C99
 */
 
@@ -20,6 +19,9 @@
 #include <stdint.h>
 
 typedef uint8_t   u8;
+#ifdef _WIN32
+typedef char16_t  c16;
+#endif
 typedef int32_t   b32; // 0 false, 1 true
 typedef int32_t   i32;
 typedef uint32_t  u32;
@@ -36,9 +38,9 @@ typedef size_t    usize;
 #pragma GCC diagnostic pop
 
 #define alignof(x) (size)_Alignof(x) // casting from size_t
-#define countof(expr) (sizeof expr)/(sizeof *expr)
+#define countof(arrayptr) (size)(sizeof(arrayptr) / sizeof(*(arrayptr))) // casting from size_t
 #define new(a, t, n) (t *)alloc(a, sizeof(t), alignof(t), n) // arena, type, number
-#define sized(tn, t) typedef struct { t *buf; size len; } tn // new type name, el type
+#define array_type(tn, t) typedef struct { t *buf; size len; } tn // new type name, el type
 #define endof(v) v.buf + v.len // just beyond last of sized value
 
 enum errors {EPARSING = 1000, EMEMORY, EREF};
@@ -108,12 +110,50 @@ typedef struct {
 } arena;
 
 void oom(void);
-size KiB(u32 n);
-size MiB(u32 n);
-// Allocate space within arena. Use via `new` macro.
-byte *alloc(arena *a, size objsize, size align, size count);
 
-void copy(u8 *restrict dst, u8 *restrict src, size len);
+size KiB(u32 n) {
+  return (1<<10) * n;
+}
+
+size MiB(u32 n) {
+  return (1<<20) * n;
+}
+
+// TODO could report memory usage afterward
+// TODO could visualise correctness of padding algorithm
+// Allocate space within arena. Use via `new` macro.
+byte *alloc(arena *a, size objsize, size align, size count) {
+  size avail = a->end - a->beg;
+  /*
+   Padding is how far the next aligned address is beyond the beginning of the arena.
+   (The "beginning" of the arena advances as data is added, and is really the beginning of the remaining avilable space.)
+
+   Use wrapping unsigned integer negation of the beginning address to measure what's left rather than what's in use.
+   Calculate how far this address is beyond the previous aligned address using modulo:
+   
+     addr % align == addr & (align - 1) // because align is a power of 2 (i.e. > 0)
+
+   Example with u4 address and 4 byte alignment:
+          0x  0   4   8   c   
+         beg  ---------->..... 0xb 0b1011
+        -beg  .....<---------- 0x5 0b0101
+       align  |   |   |   |    4   0b0100
+     align-1                       0b0011
+     padding      x            1   0b0001 == -beg & (align-1)
+      giving  ----------->.... 0xc 0b1100
+   */
+  size padding = -(uptr)a->beg & (align - 1);
+  if (count > (avail - padding)/objsize) oom();
+  size total = count * objsize;
+  byte *p = a->beg + padding;
+  a->beg += padding + total;
+  for (size i = 0; i < total; i++) p[i] = 0;
+  return p;
+}
+
+void copy(u8 *restrict dst, u8 *restrict src, size len) {
+  for (size i = 0; i < len; i++) dst[i] = src[i];
+}
 
 /*
   To enable assertions in release builds,
@@ -135,7 +175,7 @@ typedef struct {
 
 // ───────────────────────────────────────────────────────────────────── Strings
 
-sized(s8, u8); // s8: Basic UTF-8 string. Not null terminated!
+array_type(s8, u8); // s8: Basic UTF-8 string. Not null terminated!
 // Wrap C string literal into s8 string.
 #define s8(s) (s8){(u8 *)s, countof(s) - 1}
 
@@ -153,46 +193,283 @@ sized(s8, u8); // s8: Basic UTF-8 string. Not null terminated!
 // Splats two arguments: s8 array and number of s8s.
 #define counted_s8s(...) s8_array(__VA_ARGS__), countof(s8_array(__VA_ARGS__))
 
-s8 s8span(u8 *beg, u8 *end);
+s8 s8span(u8 *beg, u8 *end) {
+  if (beg && end && end > beg) return (s8){.buf = beg, .len = end - beg};
+  return (s8){0};
+}
+
 // offsets may be positive or negative (i.e. from start or end, respectively)
-s8 s8slice(s8 s, size from, size to);
-b32 s8equal(s8 a, s8 b);
-size s8cmp(s8 a, s8 b);
-size s8hash(s8 s);
-u8 *s8find(s8 haystack, s8 needle); // find string
-u8 *s8findc(s8 haystack, u8 needle); // find char
-s8 s8wrap(const char *cstr, size maxlen); // Wrap decayed C string into s8 string.
-s8 s8trim(s8 s);
-s8 s8fill(arena *a, u8 with, size count);
-s8 s8clone(arena *a, s8 s); // copies buf
-s8 s8concat(arena *a, s8 *ss, size len);
-void s8write(bufout *b, s8 s); // caller needs to flush
-void s8writeln(bufout *b, s8 s); // caller needs to flush
+s8 s8slice(s8 src, size from, size to) {
+  s8 s = {.buf = src.buf};
+  size f = (from < 0) ? src.len + from : from;
+  size t = (to > 0) ? to : src.len + to;
+  if (t < f) return src; // refuse to slice backwards; TODO error semantic?
+  s.buf += f;
+  s.len = t - f;
+  return s;
+}
+
+b32 s8equal(s8 a, s8 b) {
+  if (a.len != b.len) return 0;
+  for (size i = 0; i < a.len ; i++) if (a.buf[i] != b.buf[i]) return 0;
+  return 1;
+}
+
+size s8cmp(s8 a, s8 b) {
+  size len = (a.len < b.len) ? a.len : b.len;
+  for (size i = 0; i < len; i++) {
+    size d = a.buf[i] - b.buf[i];
+    if (d) return d;
+  }
+  return a.len - b.len;
+}
+
+// Why `size`?
+size s8hash(s8 s) {
+  u64 h = 0x100;
+  for (size i = 0; i < s.len; i++) {
+    h ^= s.buf[i];
+    h *= 1111111111111111111u; // nineteen ones
+  }
+  return (h ^ h>>32) & (u32)-1;
+}
+
+// Find string
+u8 *s8find(s8 haystack, s8 needle) {
+  if (!haystack.buf || !needle.buf) return 0;
+  u8 *found = 0;
+  u8 *he = endof(haystack);
+  u8 *ne = endof(needle);
+  // init first; cond before loop; iter after loop
+  for (u8 *h = haystack.buf; !found && (h < he); h++) {
+    for (u8 *n = needle.buf;
+         n < ne && h < he;
+         n++) {
+      if (*h == *n) {
+        if (!found) found = h;
+        h++;
+      } else {
+        if (found) h = found;
+        found = 0;
+        break;
+      }
+    }
+  }
+  return found;
+}
+
+// Find char
+u8 *s8findc(s8 haystack, u8 needle) {
+  if (!haystack.buf) return 0; // allow \0 needle
+  u8 *end = endof(haystack);
+  for (u8 *h = haystack.buf; h < end; h++)
+    if (*h == needle)
+      return h;
+  return 0;
+}
+
+// Wrap decayed C string into s8 string
+s8 s8wrap(const char *cstr, size maxlen) {
+  if (!cstr) return (s8){0};
+  u8 *beg = (u8 *)cstr;
+  u8 *end = beg;
+  while (*end != '\0' && (end-beg) < maxlen) end++;
+  return s8span(beg, end); 
+}
+
+// https://www.reddit.com/r/C_Programming/comments/kzouxh/isspace_ctypeh_considered_harmful/
+// e.g. /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX.sdk/usr/include/ctype.h
+b32 whitespace(u8 c) { // too cool for ctype.h isspace
+  switch (c) {
+  case ' ':
+  case '\t':
+  case '\v':
+  case '\n':
+  case '\r':
+  case '\f':
+    return 1;
+  }
+  return 0;
+}
+
+s8 s8trim(s8 src) {
+  u8 *beg = src.buf;
+  u8 *end = endof(src);
+  while (beg < end && whitespace(*beg)) beg++;
+  while (end > beg && whitespace(*(end - 1))) end--;
+  return s8span(beg, end);
+}
+
+s8 s8fill(arena *a, u8 with, size count) {
+  u8 *buf = new (a, u8, count);
+  for (size i = 0; i < count; i++) *(buf + i) = with;
+  return (s8){.buf = buf, .len = count};
+}
+
+// Copies buf
+s8 s8clone(arena *a, s8 s) {
+  s8 c = (s8) {
+    .buf = new (a, u8, s.len),
+    .len = s.len
+  };
+  copy(c.buf, s.buf, s.len);
+  return c;
+}
+
+s8 s8concat(arena *a, s8 *ss, size len) {
+  size tot = 0;
+  for (size i = 0; i < len; i++) tot += ss[i].len;
+  u8 *buf = new(a, u8, tot);
+  u8 *beg = buf;
+  for (size i = 0; i < len; i++) {
+    copy(beg, ss[i].buf, ss[i].len);
+    beg += ss[i].len;
+  }
+  return (s8){.buf = buf, .len = tot};
+}
+
+void flush(bufout *b);
+
+// Caller needs to flush
+void s8write(bufout *b, s8 s) {
+  if (!s.buf) return;
+  u8 *buf = s.buf;
+  u8 *end = endof(s);
+  while (!b->err && (buf < end)) {
+    i32 avail = b->cap - b->len;
+    i32 count = (avail < end - buf) ? avail : (i32)(end - buf);
+    copy(b->buf + b->len, buf, count);
+    buf += count;
+    b->len += count;
+    if (b->len == b->cap) flush(b);
+  }
+}
+
+// Caller needs to flush
+void s8writeln(bufout *b, s8 s) {
+  s8write(b, s);
+  s8write(b, s8("\n"));
+}
+
 
 // ╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴ List of strings
 
 value_list(s8s, s8); // s8s, s8scount, s8sappend
 #define s8s(a, ...) s8swrap(a, counted_strings(__VA_ARGS__), 128)
-s8s *s8swrap(arena *a, const char **cstrs, size nstrs, size maxlen);
-s8 s8sconcat(arena *a, s8s *s);
+
+count_impl(s8s) // s8scount
+value_append_impl(s8s, s8) // s8sappend, corresponding to `value_list(s8s, s8)` in header
+
+s8s *s8swrap(arena *a, const char **cstrs, size nstrs, size maxlen) {
+  s8s *head = 0;
+  s8s *cur = 0;
+  for (size i = 0; i < nstrs; i++) {
+    cur = s8sappend(a, cur, s8wrap(cstrs[i], maxlen));
+    head = head ? head : cur;
+  }
+  return head;
+}
+     
+s8 s8sconcat(arena *a, s8s *ss) {
+  assert(ss);
+  size tot = 0;
+  s8s *cur = ss;
+  do {
+    tot += cur->val.len;
+  } while ((cur = cur->next));
+  u8 *buf = new(a, u8, tot);
+  u8 *beg = buf;
+  cur = ss;
+  do {
+    copy(beg, cur->val.buf, cur->val.len);
+    beg += cur->val.len;
+  } while ((cur = cur->next));
+  return (s8){.buf = buf, .len = tot};
+}
+
 
 // ──────────────────────────────────────────────────────────── Operating System
 
-void flush(bufout *b);
-void error(i32 code, s8 msg);
+b32 oswrite(i32 fd, u8 *buf, i32 len);
+void osfail(i32 code);
 
-void debug(s8 msg); // unbuffered
-void debytes_impl(void *val, size len);
-// silly portmaneau
-#define debytes(ptr) debug(s8(#ptr)); debytes_impl(ptr, sizeof(*(ptr)))
+// Should these indicate success?
+void flush(bufout *b) {
+  if (!b->err && b->len) {
+      b->err = !oswrite(b->fd, b->buf, b->len);
+      b->len = 0;
+    }
+}
+
+void error(i32 code, s8 msg) {
+  oswrite(2, (u8 *)msg.buf, msg.len);
+  oswrite(2, (u8 *)"\n", 1);
+  osfail(code);
+}
+
+void debug(s8 msg) { // ╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴ debug
+  oswrite(2, (u8 *)"[ ", 2);
+  oswrite(2, (u8 *)msg.buf, msg.len);
+  oswrite(2, (u8 *)" ]\n", 3);
+}
+
+// have you heard of a debugger!?
+void denibbles(byte nib) {
+  if (nib < 0xa) oswrite(2, &(u8){nib + '0'}, 1);
+  else oswrite(2, &(u8){nib - 0xa + 'a'}, 1);
+}
+
+void debytes_impl(void *val, size len) { // too cool for stdio.h printf
+  byte *b = (byte *)val;
+  oswrite(2, (u8 *)"0x", 2);
+  for (size i = len - 1; i >= 0; i--) { // hardcoded little-endian
+    denibbles(*(b + i) >> 4 & 0xF); // upper nibble
+    denibbles(*(b + i) & 0xF);      // lower nibble
+    if (i > 0 && i % 4 == 0 && i % 8 != 0)
+      oswrite(2, (u8 *)" ", 1);
+    if (i > 0 && i % 8 == 0)
+      oswrite(2, (u8 *)"\n  ", 3);
+  }
+  oswrite(2, (u8 *)"\n", 1);
+}
+
+#define debytes(ptr) debug(s8(#ptr)); debytes_impl(ptr, sizeof(*(ptr))) // silly portmaneau
 
 #ifndef _WIN32 // ╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴ not _WIN32
 
-arena malloc_arena(size cap);
-void osfail(i32 code);
-i32 osread(i32 fd, u8 *buf, i32 cap);
-b32 oswrite(i32 fd, u8 *buf, i32 len);
+#include <stdlib.h> // plus malloc.h on Windows?
+#include <unistd.h>
 
-#endif // not _WIN32
+arena malloc_arena(size cap) {
+  arena a = {0}; // zero-initialise struct; memory itself is zeroed in `alloc`
+  a.beg = malloc(cap);
+  a.end = a.beg ? a.beg + cap : 0;
+  return a;
+}
+
+void osfail(i32 code) {
+  _exit(code); // terminate without cleanup https://stackoverflow.com/a/5423108/780743
+}
+
+i32 osread(i32 fd, u8 *buf, i32 cap) {
+  return (i32)read(fd, buf, cap);
+}
+
+b32 oswrite(i32 fd, u8 *buf, i32 len) {
+  for (i32 off = 0; off < len; ) {
+    i32 r = (i32)write(fd, buf + off, len - off);
+    if (r < 1) return 0;
+    off += r;
+  }
+  return 1;
+}
+
+#endif // ╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴
+
+void oom(void) {
+  static u8 msg[] = "out of memory\n";
+  oswrite(2, (u8 *)msg, countof(msg) - 1);
+  osfail(12); // cheesy reference to ENOMEM errno
+}
 
 #endif // jdf_h

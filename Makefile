@@ -7,14 +7,8 @@ CFLAGS=-std=c17 -g3 \
 -pedantic -Wall -Wextra \
 -fPIC -fsanitize=address,undefined
 
-test: test.c libjdf.a
-	cc $(CFLAGS) -L. -ljdf $^ -o $@
+test: test.c
+	cc $(CFLAGS) $^ -o $@
 
 run: test
 	MallocNanoZone='0' ./test
-
-jdf.o: jdf.c jdf.h
-	cc $(CFLAGS) -c jdf.c -o jdf.o
-
-libjdf.a: jdf.o
-	ar -rcs $@ $^
