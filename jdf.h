@@ -72,7 +72,7 @@ enum errors {EPARSING = 1000, EMEMORY, EREF};
     if (maybe) maybe->next = cur;               \
     return cur;                                 \
   }
-#define value_list(tn, t)                       \
+#define value_list_type(tn, t)                  \
   typedef struct tn tn;                         \
   struct tn {                                   \
     t val;                                      \
@@ -89,7 +89,7 @@ enum errors {EPARSING = 1000, EMEMORY, EREF};
     if (maybe) maybe->next = cur;               \
     return cur;                                 \
   }
-#define ref_list(tn, t)                         \
+#define ref_list_type(tn, t)                    \
   typedef struct tn tn;                         \
   struct tn {                                   \
     t *val;                                     \
@@ -193,12 +193,13 @@ array_type(s8, u8); // s8: Basic UTF-8 string. Not null terminated!
 // Splats two arguments: s8 array and number of s8s.
 #define counted_s8s(...) s8_array(__VA_ARGS__), countof(s8_array(__VA_ARGS__))
 
+// Slice using pointers
 s8 s8span(u8 *beg, u8 *end) {
   if (beg && end && end > beg) return (s8){.buf = beg, .len = end - beg};
   return (s8){0};
 }
 
-// offsets may be positive or negative (i.e. from start or end, respectively)
+// Slice using offsets, which may be positive or negative (i.e. from start or end, respectively)
 s8 s8slice(s8 src, size from, size to) {
   s8 s = {.buf = src.buf};
   size f = (from < 0) ? src.len + from : from;
@@ -354,13 +355,13 @@ void s8writeln(bufout *b, s8 s) {
 
 // ╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴ List of strings
 
-value_list(s8s, s8); // s8s, s8scount, s8sappend
+value_list_type(s8s, s8); // s8s, s8scount, s8sappend
 #define s8s(a, ...) s8swrap(a, counted_strings(__VA_ARGS__), 128)
 
 count_impl(s8s) // s8scount
 value_append_impl(s8s, s8) // s8sappend, corresponding to `value_list(s8s, s8)` in header
 
-s8s *s8swrap(arena *a, const char **cstrs, size nstrs, size maxlen) {
+s8s *s8swrap(arena *a, char **cstrs, size nstrs, size maxlen) {
   s8s *head = 0;
   s8s *cur = 0;
   for (size i = 0; i < nstrs; i++) {

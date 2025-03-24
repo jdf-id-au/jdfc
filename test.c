@@ -1,4 +1,3 @@
-#include <stdlib.h>
 #include "jdf.h"
 
 s8 blurb = text(This will be included with whitespace collapsed
