@@ -33,10 +33,6 @@ typedef char      byte;
 typedef ptrdiff_t size;
 typedef size_t    usize;
 
-#pragma GCC diagnostic push // also understood by clang
-#pragma GCC diagnostic ignored "-Wkeyword-macro"
-#pragma GCC diagnostic pop
-
 #define alignof(x) (size)_Alignof(x) // casting from size_t
 #define countof(arrayptr) (size)(sizeof(arrayptr) / sizeof(*(arrayptr))) // casting from size_t
 #define new(a, t, n) (t *)alloc(a, sizeof(t), alignof(t), n) // arena, type, number
@@ -383,7 +379,7 @@ void debug(s8 msg) { // ╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴�
 }
 
 // have you heard of a debugger!?
-void denibbles(byte nib) {
+void denibble(byte nib) {
   if (nib < 0xa) oswrite(2, &(u8){nib + '0'}, 1);
   else oswrite(2, &(u8){nib - 0xa + 'a'}, 1);
 }
@@ -392,8 +388,8 @@ void debytes_impl(void *val, size len) { // too cool for stdio.h printf
   byte *b = (byte *)val;
   oswrite(2, (u8 *)"0x", 2);
   for (size i = len - 1; i >= 0; i--) { // hardcoded little-endian
-    denibbles(*(b + i) >> 4 & 0xF); // upper nibble
-    denibbles(*(b + i) & 0xF);      // lower nibble
+    denibble(*(b + i) >> 4 & 0xF); // upper nibble
+    denibble(*(b + i) & 0xF);      // lower nibble
     if (i > 0 && i % 4 == 0 && i % 8 != 0)
       oswrite(2, (u8 *)" ", 1);
     if (i > 0 && i % 8 == 0)
