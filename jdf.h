@@ -170,10 +170,11 @@ ARRAY(s16, c16)
 #define s16(s) (s16) { (c16 *)s, countof(s) - 1 }
 // TODO what about all the fns?!
 #endif
-     
+
 /*
   Make one s8 from unquoted multiline text, after collapsing whitespace.
   IDE may be annoying about it, try fundamental-mode.
+  Compare with s8("first line"⏎"second line"⏎"etc").
 */ 
 #define text(...) s8(#__VA_ARGS__) // https://stackoverflow.com/a/17996915/780743
 

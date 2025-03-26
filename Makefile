@@ -12,3 +12,6 @@ test: test.c
 
 run: test
 	MallocNanoZone='0' ./test
+
+http: httptest.c
+	cc $(CFLAGS) $^ -o $@
