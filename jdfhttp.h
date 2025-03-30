@@ -1,5 +1,7 @@
 // No, don't!
-// Starting at https://medium.com/@justup1080/tutorial-creating-a-minimalist-http-server-in-c-2303d140c725
+// Starting at
+// https://medium.com/@justup1080/tutorial-creating-a-minimalist-http-server-in-c-2303d140c725
+// Really you'd use mongoose or similar...
 
 #include "jdf.h"
 
