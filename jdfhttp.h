@@ -24,7 +24,7 @@ struct Server {
   int service;
   int protocol;
   int backlog;
-  u_long interface;
+  u_long interface; // unused struct member?
   int socket;
   struct sockaddr_in address;
   void (*launch)(Server *server);
@@ -38,17 +38,17 @@ Server make_server(int domain, int port, int service, int protocol,
     .service = service,
     .protocol = protocol,
     .backlog = backlog,
-    //.interface?
+    .socket = socket(domain, service, protocol),
     .address = {.sin_family = domain,
                 .sin_port = htons(port), // convert byte order
-                .sin_addr = {.s_addr = htonl(interface)}},
-    .socket = socket(domain, service, protocol)
+                .sin_addr = {.s_addr = htonl(interface)}}
   };
   if (server.socket < 0) {
     perror("Socket creation failed");
     exit(EXIT_FAILURE);
   }
-  if (bind(server.socket, (struct sockaddr *)&server.address,
+  if (bind(server.socket,
+           (struct sockaddr *)&server.address,
            sizeof(server.address)) < 0) {
     perror("Socket binding failed");
     exit(EXIT_FAILURE);
@@ -67,7 +67,9 @@ void launch(Server *server) {
 
   while (1) {
     printf("Await connection\n");
-    int new_socket = accept(server->socket, (struct sockaddr *)&server->address,
+    // No threading or async...
+    int new_socket = accept(server->socket,
+                            (struct sockaddr *)&server->address,
                             (socklen_t *)&addrlen);
     if (new_socket < 0) {
       perror("Socket connection failed");
@@ -78,7 +80,9 @@ void launch(Server *server) {
       perror("Socket read failed");
       exit(EXIT_FAILURE);
     }
+    // No parsing...
     oswrite(1, (u8 *)&buffer, bytes_read);
+    // No protocol awareness...
     char *response = "HTTP/1.1 200 OK\r\n"
                     "Content-Type: text/html; charset=UTF-8\r\n\r\n"
                     "<!doctype html>\r\n"
