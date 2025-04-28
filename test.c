@@ -63,12 +63,20 @@ int main(int argc, char *argv[]) {
   s8rs *tail = s8rsappend(&store, rs, &s8("second"));
   tail = s8rsappend(&store, tail, &s8("third"));
   tail = s8rsappend(&store, tail, &s8("fourth"));
+  tail = s8rsappend(&store, tail, &s8("fifth"));
+  tail = s8rsappend(&store, tail, &s8("sixth"));
   printf("rs has %ti entries\n", s8rscount(rs));
+
+  s8s8 *al = s8s8assoc(&store, 0, &s8("a"), &s8("b"));
+  al = s8s8assoc(&store, al, &s8("c"), &s8("d"));
+  al = s8s8assoc(&store, al, &s8("e"), &s8("f"));
+  al = s8s8assoc(&store, al, &s8("g"), &s8("h"));
   
-  s8s8 *al = s8s8assoc(&store, 0, rs->val, rs->next->val);
-  s8s8assoc(&store, al, rs->next->next->val, rs->next->next->next->val);
-  s8s8assoc(&store, al, &s8("first"), 0);
-  s8 *match = s8s8get(al, &s8("third"));
+  printf("al has %ti entries\n", s8s8count(al));
+  al = s8s8dissoc(al, &s8("a"));
+  printf("al now has %ti entries\n", s8s8count(al));
+
+  s8 *match = s8s8get(al, &s8("e"));
   assert(match);
   s8writeln(stdout, *match);
   flush(stdout);
