@@ -19,8 +19,7 @@
 
 #define BUFFER_SIZE 16384
 
-typedef struct Server Server;
-struct Server {
+typedef struct {
   int domain;
   int port;
   int service;
@@ -29,7 +28,8 @@ struct Server {
   int socket;
   struct sockaddr_in address;
   struct ev_loop *loop;
-};
+  // handler function pointer?
+} Server;
 
 Server make_server(int domain, int port, int service, int protocol,
                    int backlog, u_long interface) {
@@ -72,7 +72,7 @@ int set_non_blocking(int sockfd) {
 
 void read_client(EV_P_ ev_io *w, int events) {
   Server *server = (Server *)w->data;
-  u8 buffer[BUFFER_SIZE] = {0}; // FIXME does this initialiser zero whole array?
+  u8 buffer[BUFFER_SIZE] = {0}; // does this actually zero the whole array? lsp hint is {[0]=0}
   ssize_t bytes_read = read(w->fd, buffer, BUFFER_SIZE - 1);
   if (bytes_read == 0) { // client closed connection
     ev_io_stop(EV_A_ w);
@@ -89,8 +89,17 @@ void read_client(EV_P_ ev_io *w, int events) {
       free(w);
     }
   } else {
-  // No parsing... try llhttp (which depends on llvm...)
-  //oswrite(1, (u8 *)&buffer, bytes_read);
+    /* TODO concept:
+       - validate +- encode request
+       - add request to queue, tracking source ?socket (mitigate against recycling!)
+       - worker thread/s consume request and add response to another queue (queues need mutexes, or maybe Wellons' fancy lockfree queue)
+       - server loop sends response to correct socket
+
+       Number of worker threads could be sched_getaffinity() -1 on linux, or sysctlbyname("machdep.cpu.core_count") -1 on macOS.
+
+     */ 
+    // No parsing... try llhttp (which depends on llvm...)
+    oswrite(1, (u8 *)&buffer, bytes_read);
     char *response = "HTTP/1.1 200 OK\r\n"
                     "Content-Type: text/html; charset=UTF-8\r\n\r\n"
                     "<!doctype html>\r\n"
