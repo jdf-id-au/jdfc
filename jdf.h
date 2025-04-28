@@ -3,7 +3,7 @@
   and https://nullprogram.com/blog/2023/09/27/ .
   See discussion https://old.reddit.com/r/C_Programming/comments/173e0vn/nullprogram_my_personal_c_coding_style_as_of_late/ .
   
-  - omit const (controversial!)
+  - generally omit const (controversial!)
   - literal 0 for null pointers
   - restrict when necessary
   - typedef all structures
@@ -37,8 +37,14 @@ typedef size_t    usize;
 #define new(a, t, n) (t *)alloc(a, sizeof(t), alignof(t), n) // arena, type, number
 #define ARRAY(tn, t) typedef struct { t *buf; size len; } tn; // new type name, el type
 #define endof(v) v.buf + v.len // just beyond last of sized value
+/*
+  To enable assertions in release builds,
+  put UBSan in trap mode with -fsanitize-trap
+  and then enable at least -fsanitize=unreachable.
 
-enum Error { EPARSING = 1000, EMEMORY, EREF };
+  FIXME would be better with error message...
+*/
+#define assert(c) while (!(c)) __builtin_unreachable()
 
 // ──────────────────────────────────────────────────────────────── Linked lists
 
@@ -68,7 +74,9 @@ enum Error { EPARSING = 1000, EMEMORY, EREF };
     if (maybe) maybe->next = cur;               \
     return cur;                                 \
   }
-// Define new linked list type tn, el type *t, with <tn>count and <tn>append.
+/*
+  Define new linked list type tn, el type *t, with <tn>count and <tn>append.
+*/
 #define REFERENCE_LIST(tn, t)                   \
   typedef struct tn tn;                         \
   struct tn {                                   \
@@ -87,76 +95,63 @@ enum Error { EPARSING = 1000, EMEMORY, EREF };
 
 /*
   Pass "store" arena by reference, and "scratch" by value.
-  This effectively resets the scratch *beg pointer on fn return.
+  This effectively resets the scratch *cur pointer on fn return.
 */
 typedef struct {
-  byte *beg;
-  byte *end;
+  // https://stackoverflow.com/a/21476937/780743
+  byte *const beg; // original start of arena
+  byte *      cur; // cursor/current start of free space
+  byte *const end; // allocated end of arena
 } arena;
 
-void oom(void);
-
-size KiB(u32 n) {
-  return (1<<10) * n;
-}
-
-size MiB(u32 n) {
-  return (1<<20) * n;
-}
-
-// TODO could report memory usage afterward
 // TODO could visualise correctness of padding algorithm
 // Allocate space within arena. Use via `new` macro.
 byte *alloc(arena *a, size objsize, size align, size count) {
-  size avail = a->end - a->beg;
+  size avail = a->end - a->cur;
   /*
-   Padding is how far the next aligned address is beyond the beginning of the arena.
-   (The "beginning" of the arena advances as data is added, and is really the beginning of the remaining avilable space.)
-
-   Use wrapping unsigned integer negation of the beginning address to measure what's left rather than what's in use.
-   Calculate how far this address is beyond the previous aligned address using modulo:
+    Padding is how far the next aligned address is beyond the cursor.
+   
+    Use wrapping unsigned integer negation of the cursor address to measure what's left rather than what's in use.
+    Calculate how far this address is beyond the previous aligned address using modulo:
    
      addr % align == addr & (align - 1) // because align is a power of 2 (i.e. > 0)
 
-   Example with u4 address and 4 byte alignment:
+     Example with u4 address and 4 byte alignment:
           0x  0   4   8   c   
-         beg  ---------->..... 0xb 0b1011
-        -beg  .....<---------- 0x5 0b0101
+         cur  ---------->..... 0xb 0b1011
+        -cur  .....<---------- 0x5 0b0101
        align  |   |   |   |    4   0b0100
      align-1                       0b0011
-     padding      x            1   0b0001 == -beg & (align-1)
+     padding      x            1   0b0001 == -cur & (align-1)
       giving  ----------->.... 0xc 0b1100
    */
-  size padding = -(uptr)a->beg & (align - 1);
-  if (count > (avail - padding)/objsize) oom();
+  size padding = -(uptr)a->cur & (align - 1);
+  if (count > (avail - padding)/objsize) return 0; // deliberately return null pointer if arena can't allocate requested amount!
   size total = count * objsize;
-  byte *p = a->beg + padding;
-  a->beg += padding + total;
+  byte *p = a->cur + padding;
+  a->cur += padding + total;
   for (size i = 0; i < total; i++) p[i] = 0;
   return p;
 }
 
+typedef struct {
+  size used;
+  size remaining;
+} arena_usage;
+
+arena_usage usage(arena *a) {
+  return (arena_usage){
+    .used = a.cur - a.beg,
+    .remaining = a.end - a.cur
+  };
+}
+
+size KiB(u32 n) { return (1<<10) * n; }
+size MiB(u32 n) { return (1<<20) * n; }
+
 void copy(u8 *restrict dst, u8 *restrict src, size len) {
   for (size i = 0; i < len; i++) dst[i] = src[i];
 }
-
-/*
-  To enable assertions in release builds,
-  put UBSan in trap mode with -fsanitize-trap
-  and then enable at least -fsanitize=unreachable.
-
-  FIXME would be better with error message...
-*/
-#define assert(c) while (!(c)) __builtin_unreachable()
-
-typedef struct {
-  u8 *buf; // buffer itself, e.g. allocated with `new` macro
-  size len; // current length of buffer contents
-  size cap; // capacity of buffer, set at initialisation
-  i32 fd; // 1 stdout, 2 stderr
-  b32 err;
-} bufout;
-#define bufout(a, n, f) &(bufout){.buf = new(a, u8, n), .cap = n, .fd = f}
 
 // ───────────────────────────────────────────────────────────────────── Strings
 
@@ -245,7 +240,7 @@ u8 *s8find(s8 haystack, s8 needle) {
 }
 
 // Find char
-u8 *s8findc(s8 haystack, u8 needle) {
+u8 *s8findu8(s8 haystack, u8 needle) {
   if (!haystack.buf) return 0; // allow \0 needle
   u8 *end = endof(haystack);
   for (u8 *h = haystack.buf; h < end; h++)
@@ -286,7 +281,7 @@ s8 s8trim(s8 src) {
   return s8span(beg, end);
 }
 
-s8 s8fill(arena *a, u8 with, size count) {
+s8 u8fill(arena *a, u8 with, size count) {
   u8 *buf = new (a, u8, count);
   for (size i = 0; i < count; i++) *(buf + i) = with;
   return (s8){.buf = buf, .len = count};
@@ -332,6 +327,18 @@ s8 s8sconcat(arena *a, s8s *ss) {
   } while ((cur = cur->next));
   return (s8){.buf = buf, .len = tot};
 }
+
+// ────────────────────────────────────────────────────────────────────── Output
+
+typedef struct {
+  u8 *buf; // buffer itself, e.g. allocated with `new` macro
+  size len; // current length of buffer contents
+  size cap; // capacity of buffer, set at initialisation
+  i32 fd; // 1 stdout, 2 stderr
+  b32 err;
+} bufout;
+
+#define bufout(a, n, f) &(bufout){.buf = new(a, u8, n), .cap = n, .fd = f}
 
 void flush(bufout *b);
 
@@ -409,7 +416,7 @@ typedef struct { int dummy; } *handle;
 #define W32(r) __declspec(dllimport) r __stdcall
 W32(byte *) VirtualAlloc(byte *, usize, u32, u32);
 W32(handle) GetStdHandle(u32);
-W32(b32) ReadFile(handle, u8 *, u32, u32 *, void *);            
+W32(b32) ReadFile(handle, u8 *, u32, u32 *, void *);
 W32(b32) WriteFile(handle, u8 *, u32, u32 *, void *);
 W32(void) ExitProcess(u32);
 
@@ -423,6 +430,7 @@ arena alloc_arena(size cap) {
 
   a.beg = VirtualAlloc(0, cap, 0x3000, 4);
   a.end = a.beg ? a.beg + cap : 0;
+  a.cur = a.beg;
   return a;
 }
 
@@ -440,7 +448,7 @@ i32 osread(i32 fb, u8 *buf, i32 cap) {
 b32 oswrite(i32 fd, u8 *buf, i32 len) {
   handle stdout = GetStdHandle(-10 - fd);
   u32 dummy;
-  return WriteFile(stdout, buf, len, &dummy, 0);
+  return WriteFile(stdout, buf, len, &dummy, 0); // TODO GetLastError if fails
 }
 
 // https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-exitprocess
@@ -448,13 +456,14 @@ b32 oswrite(i32 fd, u8 *buf, i32 len) {
         
 #else // ╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴ not _WIN32
  
-#include <stdlib.h> // plus malloc.h on Windows?
-#include <unistd.h>
+#include <stdlib.h> // malloc
+#include <unistd.h> // read write _exit
 
 arena alloc_arena(size cap) {
   arena a = {0}; // zero-initialise struct; memory itself is zeroed in `alloc`
   a.beg = malloc(cap);
   a.end = a.beg ? a.beg + cap : 0;
+  a.cur = a.beg;
   return a;
 }
 
@@ -469,7 +478,7 @@ i32 osread(i32 fd, u8 *buf, i32 cap) {
 b32 oswrite(i32 fd, u8 *buf, i32 len) {
   for (i32 off = 0; off < len; ) {
     i32 r = (i32)write(fd, buf + off, len - off);
-    if (r < 1) return 0;
+    if (r < 1) return 0; // TODO inspect errno
     off += r;
   }
   return 1;
