@@ -1,14 +1,15 @@
 #include "jdf.h"
+#include <stdio.h> // not reimplementing printf...
 
 s8 blurb = text(This will be included with whitespace collapsed
                 and trimmed
                 and "quotes" escaped.
                 );
 
-b32 s8refequal(s8 *a, s8 *b) { return s8equal(*a, *b); }
+b32 s8derefequal(s8 *a, s8 *b) {return a && b && s8equal(*a, *b);}
 
-ASSOCIATION_LIST(s8, s8, s8refequal)
-REFERENCE_LIST(s8refs, s8)
+ASSOCIATION_LIST(s8, s8, s8derefequal)
+LIST(s8rs, s8 *)
 
 // TODO more descriptive testing ??framework
 int main(int argc, char *argv[]) {
@@ -54,10 +55,23 @@ int main(int argc, char *argv[]) {
   debytes(&(u64){0xabcd000012340000});
 
   s8 el = s8("hello s8build");
-  debytes(&el);
-  s8 built = s8build(&scratch, &el, &s8("oh ffs"));
+  s8build(&scratch, &el, &s8(" next"));
   s8writeln(stdout, s8arena(&scratch));
   flush(stdout);
 
+  s8rs *rs = s8rsappend(&store, 0, &s8("first"));
+  s8rs *tail = s8rsappend(&store, rs, &s8("second"));
+  tail = s8rsappend(&store, tail, &s8("third"));
+  tail = s8rsappend(&store, tail, &s8("fourth"));
+  printf("rs has %ti entries\n", s8rscount(rs));
+  
+  s8s8 *al = s8s8assoc(&store, 0, rs->val, rs->next->val);
+  s8s8assoc(&store, al, rs->next->next->val, rs->next->next->next->val);
+  s8s8assoc(&store, al, &s8("first"), 0);
+  s8 *match = s8s8get(al, &s8("third"));
+  assert(match);
+  s8writeln(stdout, *match);
+  flush(stdout);
+  
   failwith(0, s8("Finished"));
 }

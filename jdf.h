@@ -53,16 +53,18 @@ typedef size_t    usize;
   size tn##count(tn *v) {                       \
     size c = 0;                                 \
     tn *cur = v;                                \
-    while ((cur = cur->next)) c++;              \
+    if (!cur) return 0;                         \
+    do { c++; } while ((cur = cur->next));      \
     return c;                                   \
   }
 /*
    Define new linked list type tn, el type t, with <tn>count and <tn>append.
+   t can be typename * for pointer (i.e. reference list).
    <tn>append appends value `m` to list node `maybe`.
    If list node doesn't exist, starts a new list.
    Caller needs to retain list head.
 */
-#define VALUE_LIST(tn, t)                       \
+#define LIST(tn, t)                             \
   typedef struct tn tn;                         \
   struct tn {                                   \
     t val;                                      \
@@ -74,23 +76,6 @@ typedef size_t    usize;
     cur->val = m;                               \
     if (maybe) maybe->next = cur;               \
     return cur;                                 \
-  }
-/*
-  Define new linked list type tn, el type *t, with <tn>count and <tn>append.
-*/
-#define REFERENCE_LIST(tn, t)                                                  \
-  typedef struct tn tn;                                                        \
-  struct tn {                                                                  \
-    t *val;                                                                    \
-    tn *next;                                                                  \
-  };                                                                           \
-  COUNT(tn)                                                                    \
-  tn *tn##append(arena *a, tn *maybe, t *m) {                                  \
-    tn *cur = new (a, tn, 1);                                                  \
-    cur->val = m;                                                              \
-    if (maybe)                                                                 \
-      maybe->next = cur;                                                       \
-    return cur;                                                                \
   }
 /*
   Define new association list type <kt><vt>, with ...count, ...assoc, ...get.
@@ -109,27 +94,41 @@ typedef size_t    usize;
   };                                                                \
   COUNT(kt##vt)                                                     \
   kt##vt *kt##vt##assoc(arena *a, kt##vt *head, kt *key, vt *val) { \
-    kt##vt *cur = head ? head : new (a, kt##vt, 1);                 \
+    kt##vt *beg = {0};                                              \
+    if (!head) {                                                    \
+      if (!val) return 0;                                           \
+      else {                                                        \
+        beg = new(a, kt##vt, 1);                                    \
+        if (!beg) return 0;                                         \
+        beg->key = key;                                             \
+        beg->val = val;                                             \
+        return beg;                                                 \
+      }                                                             \
+    }                                                               \
+    if (!key) return 0;                                             \
+    beg = head;                                                     \
+    kt##vt *cur = beg;                                              \
     kt##vt *prev = 0;                                               \
-    if (!cur) return 0;                                             \
-    for ( ; cur ; prev = cur, cur = cur->next) {                    \
+    for (; cur; prev = cur, cur = cur->next) {                      \
       if (keq(cur->key, key)) {                                     \
-        if (val) cur->val = val;                                    \
+        if (val)                                                    \
+          cur->val = val;                                           \
         else {                                                      \
           if (prev) {                                               \
             prev->next = cur->next;                                 \
           } else {                                                  \
-            assert (cur==head);                                     \
+            assert(cur == beg);                                     \
             return cur->next;                                       \
           }                                                         \
         }                                                           \
-        return head;                                                \
+        return beg;                                                 \
       }                                                             \
     }                                                               \
     cur = prev->next = new (a, kt##vt, 1);                          \
+    if (!cur) return 0;                                             \
     cur->key = key;                                                 \
     cur->val = val;                                                 \
-    return head;                                                    \
+    return beg;                                                     \
   }                                                                 \
   vt *kt##vt##get(kt##vt *head, kt *key) {                          \
     kt##vt *cur = head;                                             \
@@ -138,7 +137,6 @@ typedef size_t    usize;
     } while ((cur = cur->next));                                    \
     return 0;                                                       \
   }
-
 
 // ─────────────────────────────────────────────────────────────────────── Arena
 
