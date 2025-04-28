@@ -16,6 +16,7 @@
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <fcntl.h>
+#include <pthread.h>
 
 #define BUFFER_SIZE 16384
 
@@ -31,6 +32,12 @@ typedef struct {
   // handler function pointer?
 } Server;
 
+typedef struct {
+  int status; // http status
+  s8s headers;
+  s8 body; // TODO streaming lol
+} Response;
+
 Server make_server(int domain, int port, int service, int protocol,
                    int backlog, u_long interface) {
   Server server = {
@@ -38,7 +45,7 @@ Server make_server(int domain, int port, int service, int protocol,
       .port = port,
       .service = service,
       .protocol = protocol,
-      .backlog = backlog,
+      .backlog = backlog, // TODO learn semantics
       .socket = socket(domain, service, protocol),
       .address = {.sin_family = domain,
                   .sin_port = htons(port), // convert byte order
@@ -73,7 +80,7 @@ int set_non_blocking(int sockfd) {
 void read_client(EV_P_ ev_io *w, int events) {
   Server *server = (Server *)w->data;
   u8 buffer[BUFFER_SIZE] = {0}; // does this actually zero the whole array? lsp hint is {[0]=0}
-  ssize_t bytes_read = read(w->fd, buffer, BUFFER_SIZE - 1);
+  ssize_t bytes_read = read(w->fd, buffer, BUFFER_SIZE - 1); // TODO handle large read (>= BUFFER_SIZE)
   if (bytes_read == 0) { // client closed connection
     ev_io_stop(EV_A_ w);
     close(w->fd);

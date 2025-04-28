@@ -5,12 +5,18 @@ s8 blurb = text(This will be included with whitespace collapsed
                 and "quotes" escaped.
                 );
 
+b32 s8refequal(s8 *a, s8 *b) { return s8equal(*a, *b); }
+
+ASSOCIATION_LIST(s8, s8, s8refequal)
+REFERENCE_LIST(s8refs, s8)
+
 // TODO more descriptive testing ??framework
 int main(int argc, char *argv[]) {
   (void)argc;
   (void)argv;
   arena store = alloc_arena(KiB(2));
-  
+  arena scratch = alloc_arena(MiB(1));
+
   u8 *end = endof(blurb);
   s8 frag = s8("escaped.");
   s8 span = s8span(blurb.buf + (blurb.len - 8), end);
@@ -46,5 +52,12 @@ int main(int argc, char *argv[]) {
 
   debug(s8("Debug a value:"));
   debytes(&(u64){0xabcd000012340000});
+
+  s8 el = s8("hello s8build");
+  debytes(&el);
+  s8 built = s8build(&scratch, &el, &s8("oh ffs"));
+  s8writeln(stdout, s8arena(&scratch));
+  flush(stdout);
+
   failwith(0, s8("Finished"));
 }

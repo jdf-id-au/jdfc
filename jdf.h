@@ -16,6 +16,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <stdarg.h>
 
 typedef uint8_t   u8;
 #ifdef _WIN32
@@ -77,19 +78,67 @@ typedef size_t    usize;
 /*
   Define new linked list type tn, el type *t, with <tn>count and <tn>append.
 */
-#define REFERENCE_LIST(tn, t)                   \
-  typedef struct tn tn;                         \
-  struct tn {                                   \
-    t *val;                                     \
-    tn *next;                                   \
-  };                                            \
-  COUNT(tn)                                     \
-  tn *tn##append(arena *a, tn *maybe, t *m) {   \
-    tn *cur = new (a, tn, 1);                   \
-    cur->val = m;                               \
-    if (maybe) maybe->next = cur;               \
-    return cur;                                 \
+#define REFERENCE_LIST(tn, t)                                                  \
+  typedef struct tn tn;                                                        \
+  struct tn {                                                                  \
+    t *val;                                                                    \
+    tn *next;                                                                  \
+  };                                                                           \
+  COUNT(tn)                                                                    \
+  tn *tn##append(arena *a, tn *maybe, t *m) {                                  \
+    tn *cur = new (a, tn, 1);                                                  \
+    cur->val = m;                                                              \
+    if (maybe)                                                                 \
+      maybe->next = cur;                                                       \
+    return cur;                                                                \
   }
+/*
+  Define new association list type <kt><vt>, with ...count, ...assoc, ...get.
+  Assoc to null head to make new association list.
+  Assoc null value to drop kv pair.
+  Failed assoc (e.g. arena full) returns null.
+  Prevents duplicate keys by keq fn.
+  Does not check that head is actually head! 
+ */
+#define ASSOCIATION_LIST(kt, vt, keq)                               \
+  typedef struct kt##vt kt##vt;                                     \
+  struct kt##vt {                                                   \
+    kt *key;                                                        \
+    vt *val;                                                        \
+    kt##vt *next;                                                   \
+  };                                                                \
+  COUNT(kt##vt)                                                     \
+  kt##vt *kt##vt##assoc(arena *a, kt##vt *head, kt *key, vt *val) { \
+    kt##vt *cur = head ? head : new (a, kt##vt, 1);                 \
+    kt##vt *prev = 0;                                               \
+    if (!cur) return 0;                                             \
+    for ( ; cur ; prev = cur, cur = cur->next) {                    \
+      if (keq(cur->key, key)) {                                     \
+        if (val) cur->val = val;                                    \
+        else {                                                      \
+          if (prev) {                                               \
+            prev->next = cur->next;                                 \
+          } else {                                                  \
+            assert (cur==head);                                     \
+            return cur->next;                                       \
+          }                                                         \
+        }                                                           \
+        return head;                                                \
+      }                                                             \
+    }                                                               \
+    cur = prev->next = new (a, kt##vt, 1);                          \
+    cur->key = key;                                                 \
+    cur->val = val;                                                 \
+    return head;                                                    \
+  }                                                                 \
+  vt *kt##vt##get(kt##vt *head, kt *key) {                          \
+    kt##vt *cur = head;                                             \
+    do {                                                            \
+    if (keq(cur->key, key)) return cur->val;                        \
+    } while ((cur = cur->next));                                    \
+    return 0;                                                       \
+  }
+
 
 // ─────────────────────────────────────────────────────────────────────── Arena
 
@@ -126,7 +175,12 @@ byte *alloc(arena *a, size objsize, size align, size count) {
       giving  ----------->.... 0xc 0b1100
    */
   size padding = -(uptr)a->cur & (align - 1);
-  if (count > (avail - padding)/objsize) return 0; // deliberately return null pointer if arena can't allocate requested amount!
+  /*
+    Deliberately return null pointer if arena can't allocate requested amount!
+    This does propagate annoyingly.
+    Distinction between OOM proper and getting killed by (Linux) OOM killer?
+  */ 
+  if (count > (avail - padding)/objsize) return 0;
   size total = count * objsize;
   byte *p = a->cur + padding;
   a->cur += padding + total;
@@ -149,8 +203,9 @@ arena_usage usage(arena *a) {
 size KiB(u32 n) { return (1<<10) * n; }
 size MiB(u32 n) { return (1<<20) * n; }
 
+// Caller to check for null pointers! This silently fails!
 void copy(u8 *restrict dst, u8 *restrict src, size len) {
-  for (size i = 0; i < len; i++) dst[i] = src[i];
+  if (dst && src) for (size i = 0; i < len; i++) dst[i] = src[i];
 }
 
 // ───────────────────────────────────────────────────────────────────── Strings
@@ -158,7 +213,6 @@ void copy(u8 *restrict dst, u8 *restrict src, size len) {
 ARRAY(s8, u8) // s8: Basic UTF-8 string. Not null terminated!
 // Wrap C string literal into s8 string.
 #define s8(s) (s8) { (u8 *)s, countof(s) - 1 }
-VALUE_LIST(s8s, s8) // s8s: List of strings. s8s, s8scount, s8sappend
 
 #ifdef _WIN32
 ARRAY(s16, c16)
@@ -259,8 +313,9 @@ s8 s8wrap(const char *cstr, size maxlen) {
 }
 
 char *s8unwrap(arena *a, s8 s) {
-  u8 *buf = new (a, u8, s.len + 1);
-  copy(s.buf, buf, s.len);
+  u8 *buf = new (a, u8, s.len + 1); // is zeroed
+  if (!buf) return 0;
+  copy(buf, s.buf, s.len);
   return (char *)buf;
 }
 
@@ -287,18 +342,10 @@ s8 s8trim(s8 src) {
   return s8span(beg, end);
 }
 
-s8 u8fill(arena *a, u8 with, size count) {
-  u8 *buf = new (a, u8, count);
-  for (size i = 0; i < count; i++) *(buf + i) = with;
-  return (s8){.buf = buf, .len = count};
-}
-
 // Copies buf
 s8 s8clone(arena *a, s8 s) {
-  s8 c = (s8) {
-    .buf = new (a, u8, s.len),
-    .len = s.len
-  };
+  s8 c = (s8){.buf = new (a, u8, s.len), .len = s.len};
+  if (!c.buf) return (s8){0};
   copy(c.buf, s.buf, s.len);
   return c;
 }
@@ -307,7 +354,8 @@ s8 s8clone(arena *a, s8 s) {
 s8 s8concat(arena *a, s8 *ss, size len) {
   size tot = 0;
   for (size i = 0; i < len; i++) tot += ss[i].len;
-  u8 *buf = new(a, u8, tot);
+  u8 *buf = new (a, u8, tot);
+  if (!buf) return (s8){0};
   u8 *beg = buf;
   for (size i = 0; i < len; i++) {
     copy(beg, ss[i].buf, ss[i].len);
@@ -316,23 +364,35 @@ s8 s8concat(arena *a, s8 *ss, size len) {
   return (s8){.buf = buf, .len = tot};
 }
 
-// Concatenate list of strings
-s8 s8sconcat(arena *a, s8s *ss) {
-  assert(ss);
-  size tot = 0;
-  s8s *cur = ss;
-  do {
-    tot += cur->val.len;
-  } while ((cur = cur->next));
-  u8 *buf = new(a, u8, tot);
-  u8 *beg = buf;
-  cur = ss;
-  do {
-    copy(beg, cur->val.buf, cur->val.len);
-    beg += cur->val.len;
-  } while ((cur = cur->next));
-  return (s8){.buf = buf, .len = tot};
+// Present whole (used portion of) arena as s8.
+s8 s8arena(arena *buf) {
+  return (s8){.buf = (u8 *)buf->beg, .len = buf->cur - buf->beg};
 }
+
+s8 u8fill(arena *buf, u8 with, size count) {
+  u8 *cur = new (buf, u8, count);
+  if (!cur) return (s8){0};
+  for (size i = 0; i < count; i++) *(cur + i) = with;
+  return s8arena(buf);
+}
+
+// Variadic s8 pointers, mark end with null final arg!
+// Pass DEDICATED arena.
+s8 s8buildfn(arena *buf, ...) {
+  va_list args;
+  va_start(args, buf);
+  s8 *arg = 0;
+  u8 *cur = 0;
+  while ((arg = va_arg(args, s8 *))) {
+    cur = new (buf, u8, arg->len);
+    if (!cur) return (s8){0};
+    copy(cur, arg->buf, arg->len);
+  }
+  va_end(args);
+  return s8arena(buf);
+}
+
+#define s8build(buf, ...) s8buildfn(buf, __VA_ARGS__, 0) 
 
 // ────────────────────────────────────────────────────────────────────── Output
 
@@ -350,7 +410,7 @@ void flush(bufout *b);
 
 // Caller needs to flush
 void s8write(bufout *b, s8 s) {
-  if (!s.buf) return;
+  if (!b->buf || !s.buf) return;
   u8 *buf = s.buf;
   u8 *end = endof(s);
   while (!b->err && (buf < end)) {
