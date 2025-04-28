@@ -1,9 +1,10 @@
-// No, don't!
+// No, don't! Use mongoose instead!
 // Starting at
 // https://medium.com/@justup1080/tutorial-creating-a-minimalist-http-server-in-c-2303d140c725
-// Really you'd use mongoose or similar...
+// https://hoad.io/libev-is-neat/ 
 
 #include "jdf.h"
+#include <ev.h>
 
 #ifndef jdfhttp_h
 #define jdfhttp_h
@@ -14,8 +15,9 @@
 #include <sys/socket.h>
 #include <arpa/inet.h>
 #include <netinet/in.h>
+#include <fcntl.h>
 
-#define BUFFER_SIZE 16000
+#define BUFFER_SIZE 16384
 
 typedef struct Server Server;
 struct Server {
@@ -26,21 +28,21 @@ struct Server {
   int backlog;
   int socket;
   struct sockaddr_in address;
-  void (*launch)(Server *server);
+  struct ev_loop *loop;
 };
 
 Server make_server(int domain, int port, int service, int protocol,
-                   int backlog, u_long interface, void (*launch)(Server *server)) {
+                   int backlog, u_long interface) {
   Server server = {
-    .domain = domain,
-    .port = port,
-    .service = service,
-    .protocol = protocol,
-    .backlog = backlog,
-    .socket = socket(domain, service, protocol),
-    .address = {.sin_family = domain,
-                .sin_port = htons(port), // convert byte order
-                .sin_addr = {.s_addr = htonl(interface)}}
+      .domain = domain,
+      .port = port,
+      .service = service,
+      .protocol = protocol,
+      .backlog = backlog,
+      .socket = socket(domain, service, protocol),
+      .address = {.sin_family = domain,
+                  .sin_port = htons(port), // convert byte order
+                  .sin_addr = {.s_addr = htonl(interface)}},
   };
   if (server.socket < 0) {
     perror("Socket creation failed");
@@ -56,32 +58,39 @@ Server make_server(int domain, int port, int service, int protocol,
     perror("Socket listen failed");
     exit(EXIT_FAILURE);
   }
-  server.launch = launch;
   return server;
 }
 
-void launch(Server *server) {
-  u8 buffer[BUFFER_SIZE] = {0};
-  int addrlen = sizeof(server->address);
+int set_non_blocking(int sockfd) {
+  int flags = fcntl(sockfd, F_GETFL, 0);
+  if (fcntl(sockfd, F_SETFL, (flags < 0 ? 0 : flags) | O_NONBLOCK) == -1) {
+    perror("Failed to set nonblocking");
+    exit(EXIT_FAILURE);
+  }
+  return 0;
+}
 
-  while (1) {
-    printf("Await connection\n");
-    // No threading or async... try libev
-    int new_socket = accept(server->socket,
-                            (struct sockaddr *)&server->address,
-                            (socklen_t *)&addrlen);
-    if (new_socket < 0) {
-      perror("Socket connection failed");
-      exit(EXIT_FAILURE);
+void read_client(EV_P_ ev_io *w, int events) {
+  Server *server = (Server *)w->data;
+  u8 buffer[BUFFER_SIZE] = {0}; // FIXME does this initialiser zero whole array?
+  ssize_t bytes_read = read(w->fd, buffer, BUFFER_SIZE - 1);
+  if (bytes_read == 0) { // client closed connection
+    ev_io_stop(EV_A_ w);
+    close(w->fd);
+    free(w);
+  } else if (bytes_read < 0) {
+    if (errno == EAGAIN || errno == EWOULDBLOCK) {
+      // nothing to read yet
+    } else {
+      // something bad, do strerror(errno)
+      perror("Error reading client");
+      ev_io_stop(EV_A_ w);
+      close(w->fd);
+      free(w);
     }
-    ssize_t bytes_read = read(new_socket, buffer, BUFFER_SIZE - 1);
-    if (bytes_read < 0) {
-      perror("Socket read failed");
-      exit(EXIT_FAILURE);
-    }
-    // No parsing... try llhttp (which depends on llvm...)
-    oswrite(1, (u8 *)&buffer, bytes_read);
-    // No protocol awareness...
+  } else {
+  // No parsing... try llhttp (which depends on llvm...)
+  //oswrite(1, (u8 *)&buffer, bytes_read);
     char *response = "HTTP/1.1 200 OK\r\n"
                     "Content-Type: text/html; charset=UTF-8\r\n\r\n"
                     "<!doctype html>\r\n"
@@ -91,9 +100,39 @@ void launch(Server *server) {
                     "</head>\r\n"
                     "<body>wtf man</body>\r\n"
                     "</html>\r\n";
-    write(new_socket, response, strlen(response));
-    close(new_socket);
+    write(w->fd, response, strlen(response));
+    // not closing socket
   }
+}
+
+void accept_client(EV_P_ ev_io *w, int events) {
+  Server *server = (Server *)w->data;
+  int addrlen = sizeof(server->address);
+  int new_socket = accept(w->fd, // should be same as server->socket
+                          (struct sockaddr *)&server->address,
+                          (socklen_t *)&addrlen);
+  if (new_socket < 0) {
+    perror("Socket connection failed");
+  } else {
+    set_non_blocking(new_socket);
+    ev_io *client_watcher = (ev_io *)calloc(1, sizeof(ev_io)); // TODO arenafy?
+    if (!client_watcher) {
+      perror("Failed to allocate watcher");
+      exit(EXIT_FAILURE);
+    }
+    ev_io_init(client_watcher, read_client, new_socket, EV_READ);
+    ev_io_start(EV_A_ client_watcher);
+  }
+}
+
+void launch(Server *server) {
+  server->loop = EV_DEFAULT;
+  ev_io accept_watcher;
+  set_non_blocking(server->socket);
+  ev_io_init(&accept_watcher, accept_client, server->socket, EV_READ);
+  accept_watcher.data = server; // allows access within callbacks
+  ev_io_start(server->loop, &accept_watcher);
+  ev_run(server->loop, 0);
 }
 
 #endif // jdfhttp_h

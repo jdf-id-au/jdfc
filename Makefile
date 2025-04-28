@@ -14,4 +14,4 @@ run: test
 	MallocNanoZone='0' ./test
 
 http: httptest.c
-	cc $(CFLAGS) $^ -o $@
+	cc $(CFLAGS) -lev $^ -o $@
