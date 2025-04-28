@@ -7,6 +7,8 @@ s8 blurb = text(This will be included with whitespace collapsed
 
 // TODO more descriptive testing ??framework
 int main(int argc, char *argv[]) {
+  (void)argc;
+  (void)argv;
   arena store = alloc_arena(KiB(2));
   
   u8 *end = endof(blurb);
@@ -15,7 +17,7 @@ int main(int argc, char *argv[]) {
   s8 slice = s8slice(blurb, -8, 0);
   u8 *found = s8find(blurb, s8("whitespace"));
   s8 found_to_end = s8span(found, end);
-  u8 *f2 = s8findc(blurb, '"');
+  u8 *f2 = s8findu8(blurb, '"');
   s8 f2_to_end = s8span(f2, end);
   s8 trimmed = s8trim(s8("   escaped.                "));
 
@@ -44,5 +46,5 @@ int main(int argc, char *argv[]) {
 
   debug(s8("Debug a value:"));
   debytes(&(u64){0xabcd000012340000});
-  error(0, s8("Finished"));
+  failwith(0, s8("Finished"));
 }

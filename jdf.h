@@ -4,7 +4,7 @@
   See discussion https://old.reddit.com/r/C_Programming/comments/173e0vn/nullprogram_my_personal_c_coding_style_as_of_late/ .
   
   - generally omit const (controversial!)
-  - literal 0 for null pointers
+  - literal 0 for null pointers and false
   - restrict when necessary
   - typedef all structures
   - static all functions except for entry points (not applied here; less meaningful in single translation unit build)
@@ -100,7 +100,7 @@ typedef size_t    usize;
 typedef struct {
   // https://stackoverflow.com/a/21476937/780743
   byte *const beg; // original start of arena
-  byte *      cur; // cursor/current start of free space
+  byte *      cur; // cursor: current start of free space
   byte *const end; // allocated end of arena
 } arena;
 
@@ -141,8 +141,8 @@ typedef struct {
 
 arena_usage usage(arena *a) {
   return (arena_usage){
-    .used = a.cur - a.beg,
-    .remaining = a.end - a.cur
+    .used = a->cur - a->beg,
+    .remaining = a->end - a->cur
   };
 }
 
@@ -173,7 +173,7 @@ ARRAY(s16, c16)
 */ 
 #define text(...) s8(#__VA_ARGS__) // https://stackoverflow.com/a/17996915/780743
 
-// Slice using pointers
+// Slice using pointers, doesn't check actually within an s8!
 s8 s8span(u8 *beg, u8 *end) {
   if (beg && end && end > beg) return (s8){.buf = beg, .len = end - beg};
   return (s8){0};
@@ -184,7 +184,7 @@ s8 s8slice(s8 src, size from, size to) {
   s8 s = {.buf = src.buf};
   size f = (from < 0) ? src.len + from : from;
   size t = (to > 0) ? to : src.len + to;
-  if (t < f) return src; // refuse to slice backwards; TODO error semantic?
+  if (t < f) return (s8){0}; // refuse to slice backwards
   s.buf += f;
   s.len = t - f;
   return s;
@@ -365,24 +365,28 @@ void s8writeln(bufout *b, s8 s) {
 
 // ──────────────────────────────────────────────────────────── Operating System
 
-b32 oswrite(i32 fd, u8 *buf, i32 len);
+u32 oswrite(i32 fd, u8 *buf, i32 len);
 void osfail(i32 code);
 
 // Should these indicate success?
 void flush(bufout *b) {
   if (!b->err && b->len) {
-      b->err = !oswrite(b->fd, b->buf, b->len);
+      b->err = oswrite(b->fd, b->buf, b->len);
       b->len = 0;
     }
 }
 
-void error(i32 code, s8 msg) {
+// No heap allocation
+void failwith(i32 code, s8 msg) {
   oswrite(2, (u8 *)msg.buf, msg.len);
   oswrite(2, (u8 *)"\n", 1);
   osfail(code);
 }
 
-void debug(s8 msg) { // ╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴ debug
+// ╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴ debug
+
+// No heap allocation
+void debug(s8 msg) {
   oswrite(2, (u8 *)"[ ", 2);
   oswrite(2, (u8 *)msg.buf, msg.len);
   oswrite(2, (u8 *)" ]\n", 3);
@@ -421,17 +425,15 @@ W32(b32) WriteFile(handle, u8 *, u32, u32 *, void *);
 W32(void) ExitProcess(u32);
 
 arena alloc_arena(size cap) {
-  arena a = {0};
   // https://learn.microsoft.com/en-us/windows/win32/api/memoryapi/nf-memoryapi-virtualalloc
   // lpAddress = system determines where to allocate
   // dwSize = size in bytes
   // flAllocationType =  MEM_COMMIT + MEM_RESERVE
   // flProtect = PAGE_READWRITE
-
-  a.beg = VirtualAlloc(0, cap, 0x3000, 4);
-  a.end = a.beg ? a.beg + cap : 0;
-  a.cur = a.beg;
-  return a;
+  byte* beg = VirtualAlloc(0, cap, 0x3000, 4);
+  byte* end = beg ? beg + cap : 0;
+  if (beg) return (arena){.beg = beg, .cur = beg, .end = end};
+  else return (arena){0};
 }
 
 void osfail(i32 code) {
@@ -445,10 +447,12 @@ i32 osread(i32 fb, u8 *buf, i32 cap) {
   return len;
 }
 
-b32 oswrite(i32 fd, u8 *buf, i32 len) {
+u32 oswrite(i32 fd, u8 *buf, i32 len) {
   handle stdout = GetStdHandle(-10 - fd);
   u32 dummy;
-  return WriteFile(stdout, buf, len, &dummy, 0); // TODO GetLastError if fails
+  b32 stat = WriteFile(stdout, buf, len, &dummy, 0); // TODO GetLastError if fails
+  if (stat) return 0;
+  else return GetLastError();
 }
 
 // https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-exitprocess
@@ -458,13 +462,13 @@ b32 oswrite(i32 fd, u8 *buf, i32 len) {
  
 #include <stdlib.h> // malloc
 #include <unistd.h> // read write _exit
+#include <errno.h>
 
 arena alloc_arena(size cap) {
-  arena a = {0}; // zero-initialise struct; memory itself is zeroed in `alloc`
-  a.beg = malloc(cap);
-  a.end = a.beg ? a.beg + cap : 0;
-  a.cur = a.beg;
-  return a;
+  byte* beg = malloc(cap);
+  byte* end = beg ? beg + cap : 0;
+  if (beg) return (arena){.beg = beg, .cur = beg, .end = end};
+  else return (arena){0};
 }
 
 void osfail(i32 code) {
@@ -475,13 +479,13 @@ i32 osread(i32 fd, u8 *buf, i32 cap) {
   return (i32)read(fd, buf, cap);
 }
 
-b32 oswrite(i32 fd, u8 *buf, i32 len) {
+u32 oswrite(i32 fd, u8 *buf, i32 len) {
   for (i32 off = 0; off < len; ) {
     i32 r = (i32)write(fd, buf + off, len - off);
-    if (r < 1) return 0; // TODO inspect errno
+    if (r < 1) return errno;
     off += r;
   }
-  return 1;
+  return 0;
 }
 
 // int main(void) { stuff; return r; }
