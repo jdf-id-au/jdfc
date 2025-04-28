@@ -255,7 +255,13 @@ s8 s8wrap(const char *cstr, size maxlen) {
   u8 *beg = (u8 *)cstr;
   u8 *end = beg;
   while (*end != '\0' && (end-beg) < maxlen) end++;
-  return s8span(beg, end); 
+  return s8span(beg, end);
+}
+
+char *s8unwrap(arena *a, s8 s) {
+  u8 *buf = new (a, u8, s.len + 1);
+  copy(s.buf, buf, s.len);
+  return (char *)buf;
 }
 
 // https://www.reddit.com/r/C_Programming/comments/kzouxh/isspace_ctypeh_considered_harmful/

@@ -24,7 +24,6 @@ struct Server {
   int service;
   int protocol;
   int backlog;
-  u_long interface; // unused struct member?
   int socket;
   struct sockaddr_in address;
   void (*launch)(Server *server);
@@ -67,7 +66,7 @@ void launch(Server *server) {
 
   while (1) {
     printf("Await connection\n");
-    // No threading or async...
+    // No threading or async... try libev
     int new_socket = accept(server->socket,
                             (struct sockaddr *)&server->address,
                             (socklen_t *)&addrlen);
@@ -80,7 +79,7 @@ void launch(Server *server) {
       perror("Socket read failed");
       exit(EXIT_FAILURE);
     }
-    // No parsing...
+    // No parsing... try llhttp (which depends on llvm...)
     oswrite(1, (u8 *)&buffer, bytes_read);
     // No protocol awareness...
     char *response = "HTTP/1.1 200 OK\r\n"
