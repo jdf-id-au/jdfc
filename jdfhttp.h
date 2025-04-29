@@ -18,24 +18,8 @@
 #include <fcntl.h>
 #include <pthread.h>
 
-#define BUFFER_SIZE 16384
-
-typedef struct {
-  int domain;
-  int port;
-  int service;
-  int protocol;
-  int backlog;
-  int socket;
-  struct sockaddr_in address;
-  struct ev_loop *loop;
-  // handler function pointer?
-} Server;
-
-ASSOCIATION_LIST(s8map, s8, s8, s8equal)
-
 enum http_method { // https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Methods
-  GET, HEAD, POST, PUT, DELETE, CONNECT, OPTIONS, TRACE, PATCH
+  INVALID_METHOD, GET, HEAD, POST, PUT, DELETE, CONNECT, OPTIONS, TRACE, PATCH
 };
 
 enum http_status { // https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Status
@@ -78,12 +62,41 @@ enum http_status { // https://developer.mozilla.org/en-US/docs/Web/HTTP/Referenc
   GATEWAY_TIMEOUT,
   HTTP_VERSION_NOT_SUPPORTED
 };
+
+typedef struct {
+  int domain;
+  int port;
+  int service;
+  int protocol;
+  int backlog;
+  int socket;
+  struct sockaddr_in address;
+  struct ev_loop *loop;
+  arena store;
+  arena scratch;
+  size client_arena_cap;
+  // handler function pointer?
+} Server;
+
+typedef struct {
+  Server *server;
+  arena store;
+  arena scratch;
+} Client;
+
+ASSOCIATION_LIST(s8map, s8, s8, s8equal)
+
+enum request_error {
+  REQUEST_OK, REQUEST_EMPTY, INVALID_METHOD_LINE
+};
   
 typedef struct {
+  enum request_error error;
   enum http_method method;
   s8 uri;
-  s8map headers;
-  s8map cookies;
+  s8 protocol;
+  s8map *headers;
+  s8map *cookies;
   s8 body;
 } Request;
   
@@ -95,17 +108,23 @@ typedef struct {
 } Response;
 
 Server make_server(int domain, int port, int service, int protocol,
-                   int backlog, u_long interface) {
+                   int backlog, u_long interface, size client_arena_cap) {
+  arena store = alloc_arena(MiB(1));
+  arena scratch = alloc_arena(MiB(1));
+  if (!store.beg || !scratch.beg) failwith(1, s8("Failed to allocate server arenas."));
   Server server = {
-      .domain = domain,
-      .port = port,
-      .service = service,
-      .protocol = protocol,
-      .backlog = backlog, // TODO learn semantics
-      .socket = socket(domain, service, protocol),
-      .address = {.sin_family = domain,
-                  .sin_port = htons(port), // convert byte order
-                  .sin_addr = {.s_addr = htonl(interface)}},
+    .domain = domain,
+    .port = port,
+    .service = service,
+    .protocol = protocol,
+    .backlog = backlog, // TODO learn semantics
+    .socket = socket(domain, service, protocol),
+    .address = {.sin_family = domain,
+                .sin_port = htons(port), // convert byte order
+                .sin_addr = {.s_addr = htonl(interface)}},
+    .store = store,
+    .scratch = scratch,
+    .client_arena_cap = client_arena_cap
   };
   if (server.socket < 0) {
     perror("Socket creation failed");
@@ -133,13 +152,46 @@ int set_non_blocking(int sockfd) {
   return 0;
 }
 
+enum http_method parse_method(s8 s) {
+  if (s8equal(s, s8("GET"))) return GET;
+  if (s8equal(s, s8("HEAD"))) return HEAD;
+  if (s8equal(s, s8("POST"))) return POST;
+  if (s8equal(s, s8("PUT"))) return PUT;
+  if (s8equal(s, s8("DELETE"))) return DELETE;
+  if (s8equal(s, s8("CONNECT"))) return CONNECT;
+  if (s8equal(s, s8("OPTIONS"))) return OPTIONS;
+  if (s8equal(s, s8("TRACE"))) return TRACE;
+  if (s8equal(s, s8("PATCH"))) return PATCH;
+  return INVALID_METHOD;
+}
+
+Request parse_request(arena *store, arena scratch, s8 raw) {
+  Request req = {0};
+  s8s split = s8splitu8(store, scratch, raw, '\n', 100);
+  if (split.len < 1) { req.error = REQUEST_EMPTY; return req; }
+  s8s line0 = s8splitu8(store, scratch, split.buf[0], ' ', 2);
+  if (line0.len < 3) { req.error = INVALID_METHOD_LINE; return req; }
+  req.method = parse_method(line0.buf[0]);
+  req.uri = line0.buf[1]; // copy s8, zerocopy its buffer
+  req.protocol = line0.buf[2];
+  s8map *headers = {0};
+  for (size i = 1; i < split.len; i++) {
+    s8s header = s8split(store, scratch, split.buf[i], s8(": "), 1);
+    headers = s8mapassoc(store, headers, header.buf[0], header.buf[1]);
+  }
+  req.headers = headers;
+}
+
 void read_client(EV_P_ ev_io *w, int events) {
-  Server *server = (Server *)w->data;
-  u8 buffer[BUFFER_SIZE] = {0}; // does this actually zero the whole array? lsp hint is {[0]=0}
-  ssize_t bytes_read = read(w->fd, buffer, BUFFER_SIZE - 1); // TODO handle large read (>= BUFFER_SIZE)
+  Client *client = (Client *)w->data;
+  arena_usage scratch = usage(&client->scratch);
+  assert(!scratch.used);
+  // using scratch arena as a buffer here, instead of local array
+  ssize_t bytes_read = read(w->fd, client->scratch.beg, scratch.remaining);
   if (bytes_read == 0) { // client closed connection
     ev_io_stop(EV_A_ w);
     close(w->fd);
+    free_arena(&client->store);
     free(w);
   } else if (bytes_read < 0) {
     if (errno == EAGAIN || errno == EWOULDBLOCK) {
@@ -149,9 +201,15 @@ void read_client(EV_P_ ev_io *w, int events) {
       perror("Error reading client");
       ev_io_stop(EV_A_ w);
       close(w->fd);
+      free_arena(&client->store);
       free(w);
     }
   } else {
+    // TODO handle large read, e.g. stream to arena until finished or excessive,
+    // then handle?
+    // For now, store (copy) request in client store arena.
+    s8 raw = s8clone(&client->store, s8arena(&client->scratch));
+    Request req = parse_request(&client->store, client->scratch, raw); 
     /* TODO concept:
        - validate +- encode request
        - add request to queue, tracking source ?socket (mitigate against recycling!)
@@ -179,26 +237,37 @@ void read_client(EV_P_ ev_io *w, int events) {
 
 void accept_client(EV_P_ ev_io *w, int events) {
   Server *server = (Server *)w->data;
+  Client client = (Client){.server = (Server *)w->data};
+  
   int addrlen = sizeof(server->address);
   int new_socket = accept(w->fd, // should be same as server->socket
                           (struct sockaddr *)&server->address,
                           (socklen_t *)&addrlen);
-  if (new_socket < 0) {
-    perror("Socket connection failed");
-  } else {
+  if (new_socket < 0) perror("Socket connection failed");
+  else {
     set_non_blocking(new_socket);
-    ev_io *client_watcher = (ev_io *)calloc(1, sizeof(ev_io)); // TODO arenafy?
+    // Allocate arenas TODO monitor usage, tune
+    client.store = alloc_arena(server->client_arena_cap); // for passing by reference
+    client.scratch = alloc_arena(server->client_arena_cap); // for passing by value
+    ev_io *client_watcher = new (&client.store, ev_io, 1);
     if (!client_watcher) {
       perror("Failed to allocate watcher");
       exit(EXIT_FAILURE);
     }
+    // Circular but should be stable:
+    //   client (stack allocated) has
+    //   client.store arena (backed by heap alloc mem) which contains
+    //   client_watcher which points back to
+    //   client.
+    // I could be wrong about lifetime of client.
+    client_watcher->data = &client; // allows access within callbacks
     ev_io_init(client_watcher, read_client, new_socket, EV_READ);
     ev_io_start(EV_A_ client_watcher);
   }
 }
 
 void launch(Server *server) {
-  server->loop = EV_DEFAULT;
+  server->loop = EV_DEFAULT; // TOOD more explicitly one per server?
   ev_io accept_watcher;
   set_non_blocking(server->socket);
   ev_io_init(&accept_watcher, accept_client, server->socket, EV_READ);

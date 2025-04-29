@@ -26,38 +26,41 @@ int main(int argc, char *argv[]) {
   s8 f2_to_end = s8span(f2, end);
   s8 trimmed = s8trim(s8("   escaped.                "));
 
-  bufout *stdout = bufout(&store, 64, 1);
-  s8writeln(stdout, s8("Demonstrate s8 string functions:"));
-  flush(stdout);
-  s8writeln(stdout, blurb);
-  s8writeln(stdout, frag);
-  s8writeln(stdout, span);
-  s8writeln(stdout, slice);
-  s8writeln(stdout, found_to_end);
-  s8writeln(stdout, f2_to_end);
-  s8writeln(stdout, trimmed);
+
+  // bufout *stdout = bufout(&store, 64, 1);
+  // s8write(stdout, s8("Demonstrate s8 string functions:"));
+  // flush(stdout);
+
+  log_debug(blurb);
+  log_debug(frag);
+  log_debug(span);
+  log_debug(slice);
+  
+  log_debug(blurb);
+  log_debug(frag);
+  log_debug(span);
+  log_debug(slice);
+  log_debug(found_to_end);
+  log_debug(f2_to_end);
+  log_debug(trimmed);
   // compound literal initialising array of pointers to s8; type should be sized
   s8 concs[] = {s8("concatenated s8s: "), frag, found_to_end, trimmed};
-  s8writeln(stdout, s8concat(&store, concs, countof(concs)));
-  s8writeln(stdout, s8concat(&store, (s8[]){s8("sadness "), s8("really")}, 2));
-  flush(stdout);
-  oswrite(1, stdout->buf, stdout->len);
-
+  log_debug(s8concat(&store, concs, countof(concs)));
+  log_debug(s8concat(&store, (s8[]){s8("sadness "), s8("really")}, 2));
+  
   assert(s8find(blurb, s8("quotes")));
   assert(!s8find(blurb, s8("nopey")));
   assert(s8equal(frag, span));
   assert(s8equal(frag, slice));
   assert(s8equal(frag, trimmed));
 
-  debug(s8("Debug a value:"));
-  debytes(&(u64){0xabcd000012340000});
+  inspect(&(u64){0xabcd000012340000});
 
   s8 el = s8("hello s8build");
   // NB normally scratch arena is passed by value, but it's functioning as a buffer here...
   s8build(&scratch, &el, &s8(" next"));
-  s8writeln(stdout, s8arena(&scratch));
-  flush(stdout);
-
+  log_debug(s8arena(&scratch));
+  
   s8rs *rs = s8rsappend(&store, 0, &s8("first"));
   s8rs *tail = s8rsappend(&store, rs, &s8("second"));
   tail = s8rsappend(&store, tail, &s8("third"));
@@ -76,18 +79,19 @@ int main(int argc, char *argv[]) {
   printf("al now has %ti entries\n", s8mapcount(al));
 
   s8map *match = s8mapget(al, s8("e"));
-  if(match) s8writeln(stdout, match->val);
-  flush(stdout);
+  if(match) log_debug(match->val);
 
   // stupid example of stack allocated arena and s8 split
   // should normally both be heap allocated
   byte beg[1024] = {0};
   arena tmp = {.beg = beg, .cur = beg, .end = beg + 1024};
   s8 mess = s8("this, and that, and the other");
-  s8s spl = s8split(&tmp, scratch, &mess, ',', 4);
+  s8s spl = s8splitu8(&tmp, scratch, mess, ',', 4);
   for (size i = 0; i < spl.len; i++)
-    s8writeln(stdout, spl.buf[i]);
-  flush(stdout);
+    log_debug(spl.buf[i]);
+
+  assert(s8endswith(s8("thing some"), s8("some")));
+  assert(s8startswith(s8("thing some"), s8("thing")));
   
   failwith(0, s8("Finished"));
 }

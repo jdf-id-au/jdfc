@@ -62,8 +62,9 @@ typedef size_t    usize;
    t can be typename * for pointer (i.e. reference list).
    <tn>append appends node with value `m` to node `maybe`.
    If `maybe` doesn't exist, append starts a new list.
-   If `maybe` already has a ->next, append redirects it, orphaning tail unless caller retains it.
-   Caller needs to retain list head.
+   If `maybe` already has a ->next, append redirects it, orphaning tail unless
+caller retains it. Caller needs to retain list head.
+   Does not prevent inclusion of stack-allocated values in heap-allocated list!
    TODO could implement fns to skip variadic nodes, making new separate list; skipspan likewise.
 */
 #define LIST(tn, t)                             \
@@ -84,8 +85,8 @@ typedef size_t    usize;
   Define new association list type with ...count, ...assoc, ...dissoc, ...get.
   kt and vt can be typename * for pointer, caller provides appropriate keq fn.
   Does not check that head is actually head!
-  Does not prevent inclusion of stack-allocated kvs!
-  Make sure to use returned head.
+  Does not prevent inclusion of stack-allocated kvs in heap-allocated list!
+  Make sure to use returned head!
   Makes no attempt to compact or reorder storage within arena.
 */
 #define ASSOCIATION_LIST(tn, kt, vt, keq)                             \
@@ -161,9 +162,10 @@ typedef size_t    usize;
 */
 typedef struct {
   // https://stackoverflow.com/a/21476937/780743
-  byte *const beg; // original start of arena
-  byte *      cur; // cursor: current start of free space
-  byte *const end; // allocated end of arena
+  // easier not to have `byte *const beg` and end to facilitate free_arena
+  byte *beg; // original start of arena
+  byte *cur; // cursor: current start of free space
+  byte *end; // allocated end of arena
 } arena;
 
 // TODO could visualise correctness of padding algorithm
@@ -217,7 +219,7 @@ arena_usage usage(arena *a) {
 size KiB(u32 n) { return (1<<10) * n; }
 size MiB(u32 n) { return (1<<20) * n; }
 
-// Caller to check for null pointers! This silently fails!
+// Caller to check for null pointers! This fails silently!
 void copy(u8 *restrict dst, u8 *restrict src, size len) {
   if (dst && src) for (size i = 0; i < len; i++) dst[i] = src[i];
 }
@@ -254,7 +256,7 @@ s8 s8slice(s8 src, size from, size to) {
   s8 s = {.buf = src.buf};
   size f = (from < 0) ? src.len + from : from;
   size t = (to > 0) ? to : src.len + to;
-  if (t < f) return (s8){0}; // refuse to slice backwards, FIXME misleading failure mode...
+  if (t < f) return (s8){0}; // refuse to slice backwards, FIXME misleading failure mode... could cast to void* and check null?
   s.buf += f;
   s.len = t - f;
   return s;
@@ -319,6 +321,14 @@ u8 *s8findu8(s8 haystack, u8 needle) {
   return 0;
 }
 
+b32 s8startswith(s8 s, s8 with) {
+  return s8equal(s8slice(s, 0, with.len), with);
+}
+
+b32 s8endswith(s8 s, s8 with) {
+  return s8equal(s8slice(s, -with.len, 0), with);
+}
+
 // Wrap decayed C string into s8 string
 s8 s8wrap(const char *cstr, size maxlen) {
   if (!cstr) return (s8){0};
@@ -366,33 +376,43 @@ s8 s8clone(arena *a, s8 s) {
   return c;
 }
 
-/* Split s, returning s8spans referring to it (zero copy). */
-s8s s8split(arena *store, arena scratch, s8 *s, u8 on, size max_splits) {
+/* Split s, returning s8spans referring to it (zero copy of buffer). */
+// NB annoying choice between accepting s8 and making new s8 for no split
+// vs accepting s8* and reusing for no split; former prob marginally better
+s8s s8split(arena *store, arena scratch, s8 s, s8 on, size max_splits) {
   s8s ret = {0};
-  if (!s) return ret;
-  u8 *end = endof(*s);
-  if (s->len == 0) return (s8s){.buf = s, .len = 1}; // quirky but different from failure mode
+  u8 *end = endof(s);
+  if (s.len == 0) return ret;
   u8 **matches = new (&scratch, u8 *, max_splits);
   if (!matches) return ret; // FIXME misleading failure mode...
   size nmatches = 0;
-  for (u8 *cur = s->buf; cur && cur < end && nmatches < max_splits;) {
+  for (u8 *cur = s.buf; cur && cur < end && nmatches < max_splits;) {
     s8 rem = s8span(cur, end);
-    cur = s8findu8(rem, on);
-    if (cur) matches[nmatches++] = cur++;
+    cur = s8find(rem, on);
+    if (cur) {
+      matches[nmatches++] = cur;
+      cur += on.len;
+    }
   }
-  if (nmatches == 0) return (s8s){.buf = s, .len = 1};
   s8 *buf = new (store, s8, nmatches + 1);
   if (!buf) return ret; // FIXME misleading failure mode...
-  for (size nth = 0; nth <= nmatches; nth++) {
+  if (nmatches == 0) buf[0] = s;
+  else for (size nth = 0; nth <= nmatches; nth++) {
     if (nth == 0) {
-      buf[nth] = s8span(s->buf, matches[nth]);
+      buf[nth] = s8span(s.buf, matches[nth]);
     } else if (nth == nmatches) {
-      buf[nth] = s8span(matches[nth-1] + 1, end);
+      buf[nth] = s8span(matches[nth-1] + on.len, end);
     } else {
-      buf[nth] = s8span(matches[nth-1] + 1, matches[nth]);
+      buf[nth] = s8span(matches[nth-1] + on.len, matches[nth]);
     }
   }
   return (s8s){.buf = buf, .len = nmatches + 1};
+}
+
+// Trivially less efficient than impl calling s8findu8, but easier to maintain.
+s8s s8splitu8(arena *store, arena scratch, s8 s, u8 on, size max_splits) {
+  s8 ons = (s8){.buf = (u8[]){on}, .len = 1};
+  return s8split(store, scratch, s, ons, max_splits);
 }
 
 // Concatenate array of strings
@@ -422,7 +442,7 @@ s8 u8fill(arena *buf, u8 with, size count) {
 }
 
 // Variadic s8 pointers, mark end with null final arg!
-// Pass DEDICATED arena.
+// Pass DEDICATED arena. Can call multiple times and then s8arena separately.
 s8 s8buildfn(arena *buf, ...) {
   va_list args;
   va_start(args, buf);
@@ -430,7 +450,7 @@ s8 s8buildfn(arena *buf, ...) {
   u8 *cur = 0;
   while ((arg = va_arg(args, s8 *))) {
     cur = new (buf, u8, arg->len);
-    if (!cur) return (s8){0};
+    if (!cur) return (s8){0}; // FIXME misleading failure mode...
     copy(cur, arg->buf, arg->len);
   }
   va_end(args);
@@ -468,16 +488,7 @@ void s8write(bufout *b, s8 s) {
   }
 }
 
-// Caller needs to flush
-void s8writeln(bufout *b, s8 s) {
-  s8write(b, s);
-  s8write(b, s8("\n"));
-}
-
-// ──────────────────────────────────────────────────────────── Operating System
-
 u32 oswrite(i32 fd, u8 *buf, i32 len);
-void osfail(i32 code);
 
 // Should these indicate success?
 void flush(bufout *b) {
@@ -487,43 +498,50 @@ void flush(bufout *b) {
     }
 }
 
-// No heap allocation
+// Unbuffered, with newline
+void s8log(i32 fd, s8 s) {
+  oswrite(fd, (u8 *)s.buf, s.len);
+  oswrite(fd, (u8 *)"\n", 1);
+}
+
+#define log_debug(s) s8log(1, s)
+#define log_err(s) s8log(2, s)
+
+// ──────────────────────────────────────────────────────────── Operating System
+
+void osfail(i32 code);
+
 void failwith(i32 code, s8 msg) {
-  oswrite(2, (u8 *)msg.buf, msg.len);
-  oswrite(2, (u8 *)"\n", 1);
+  s8log(2, msg);
   osfail(code);
 }
 
 // ╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴ debug
 
-// No heap allocation
-void debug(s8 msg) {
-  oswrite(2, (u8 *)"[ ", 2);
-  oswrite(2, (u8 *)msg.buf, msg.len);
-  oswrite(2, (u8 *)" ]\n", 3);
-}
-
 // have you heard of a debugger!?
-void denibble(byte nib) {
-  if (nib < 0xa) oswrite(2, &(u8){nib + '0'}, 1);
-  else oswrite(2, &(u8){nib - 0xa + 'a'}, 1);
+void denibble(i32 fd, byte nib) {
+  if (nib < 0xa) oswrite(fd, &(u8){nib + '0'}, 1);
+  else oswrite(fd, &(u8){nib - 0xa + 'a'}, 1);
 }
 
-void debytes_impl(void *val, size len) { // too cool for stdio.h printf
+// Silly portmanteau
+void debytes(i32 fd, void *val, size len) { // too cool for stdio.h printf
   byte *b = (byte *)val;
-  oswrite(2, (u8 *)"0x", 2);
+  oswrite(fd, (u8 *)"0x", 2);
   for (size i = len - 1; i >= 0; i--) { // hardcoded little-endian
-    denibble(*(b + i) >> 4 & 0xF); // upper nibble
-    denibble(*(b + i) & 0xF);      // lower nibble
+    denibble(fd, *(b + i) >> 4 & 0xF); // upper nibble
+    denibble(fd, *(b + i) & 0xF);      // lower nibble
     if (i > 0 && i % 4 == 0 && i % 8 != 0)
-      oswrite(2, (u8 *)" ", 1);
+      oswrite(fd, (u8 *)" ", 1);
     if (i > 0 && i % 8 == 0)
-      oswrite(2, (u8 *)"\n  ", 3);
+      oswrite(fd, (u8 *)"\n  ", 3);
   }
-  oswrite(2, (u8 *)"\n", 1);
+  oswrite(fd, (u8 *)"\n", 1);
 }
 
-#define debytes(ptr) debug(s8(#ptr)); debytes_impl(ptr, sizeof(*(ptr))) // silly portmaneau
+#define inspect(ptr)                              \
+  s8log(1, s8("Contents of pointer " #ptr ":"));  \
+  debytes(1, ptr, sizeof(*(ptr)))  
 
 #ifdef _WIN32 // ╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴ _WIN32
 
@@ -545,6 +563,16 @@ arena alloc_arena(size cap) {
   byte* end = beg ? beg + cap : 0;
   if (beg) return (arena){.beg = beg, .cur = beg, .end = end};
   else return (arena){0};
+}
+
+b32 free_arena(arena *a) {
+  b32 ret;
+  if (!a) return 0;
+  if (a->beg) ret = VirtuallFree(a->beg, 0, 0x00008000); // MEM_RELEASE
+  a->beg = 0;
+  a->cur = 0;
+  a->end = 0;
+  return ret; // nonzero on success
 }
 
 void osfail(i32 code) {
@@ -582,6 +610,15 @@ arena alloc_arena(size cap) {
   else return (arena){0};
 }
 
+b32 free_arena(arena *a) {
+  if(!a) return 0;
+  if(a->beg) free(a->beg);
+  a->beg = 0;
+  a->cur = 0;
+  a->end = 0;
+  return 1;
+}
+
 void osfail(i32 code) {
   _exit(code); // terminate without cleanup https://stackoverflow.com/a/5423108/780743
 }
@@ -602,11 +639,5 @@ u32 oswrite(i32 fd, u8 *buf, i32 len) {
 // int main(void) { stuff; return r; }
 
 #endif // ╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴
-
-void oom(void) {
-  static u8 msg[] = "out of memory\n";
-  oswrite(2, (u8 *)msg, countof(msg) - 1);
-  osfail(12); // cheesy reference to ENOMEM errno
-}
 
 #endif // jdf_h
