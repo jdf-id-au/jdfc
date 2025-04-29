@@ -165,6 +165,7 @@ enum http_method parse_method(s8 s) {
   return INVALID_METHOD;
 }
 
+// would be better to use llhttp (which depends on llvm...)
 Request parse_request(arena *store, arena scratch, s8 raw) {
   Request req = {0};
   s8s split = s8splitu8(store, scratch, raw, '\n', 100);
@@ -180,18 +181,37 @@ Request parse_request(arena *store, arena scratch, s8 raw) {
     headers = s8mapassoc(store, headers, header.buf[0], header.buf[1]);
   }
   req.headers = headers;
+  s8map *cookies = {0};
+  // e.g. Cookie: name=value; name2=value2; name3=value3
+  s8map *cookiekv = s8mapget(headers, s8("Cookie"));
+  if (cookiekv) {
+    s8s cookiekvs = s8split(store, scratch, cookiekv->val, s8("; "), 32);
+    for (size i = 0; i < cookiekvs.len; i++) {
+      s8s cookie = s8splitu8(store, scratch, cookiekvs.buf[i], '=', 1);
+      if (cookie.len == 2)
+        cookies = s8mapassoc(store, cookies, cookie.buf[0], cookie.buf[1]);
+    }
+    req.cookies = cookies;
+  }
+  return req;
 }
 
+typedef struct {
+  ev_io io; // must be first, https://metacpan.org/dist/EV/view/libev/ev.pod#ASSOCIATING-CUSTOM-DATA-WITH-A-WATCHER
+  Client client;
+} client_io;
+
 void read_client(EV_P_ ev_io *w, int events) {
-  Client *client = (Client *)w->data;
-  arena_usage scratch = usage(&client->scratch);
+  Client client = ((client_io *)w)->client;
+  //printf("client address: %p", (void *)client);  
+  arena_usage scratch = usage(&client.scratch);
   assert(!scratch.used);
   // using scratch arena as a buffer here, instead of local array
-  ssize_t bytes_read = read(w->fd, client->scratch.beg, scratch.remaining);
+  ssize_t bytes_read = read(w->fd, client.scratch.beg, scratch.remaining);
   if (bytes_read == 0) { // client closed connection
     ev_io_stop(EV_A_ w);
     close(w->fd);
-    free_arena(&client->store);
+    free_arena(&client.store);
     free(w);
   } else if (bytes_read < 0) {
     if (errno == EAGAIN || errno == EWOULDBLOCK) {
@@ -201,15 +221,16 @@ void read_client(EV_P_ ev_io *w, int events) {
       perror("Error reading client");
       ev_io_stop(EV_A_ w);
       close(w->fd);
-      free_arena(&client->store);
+      free_arena(&client.store);
       free(w);
     }
   } else {
     // TODO handle large read, e.g. stream to arena until finished or excessive,
     // then handle?
     // For now, store (copy) request in client store arena.
-    s8 raw = s8clone(&client->store, s8arena(&client->scratch));
-    Request req = parse_request(&client->store, client->scratch, raw); 
+    s8 raw = s8clone(&client.store, s8arena(&client.scratch));
+    log_debug(raw);
+    Request req = parse_request(&client.store, client.scratch, raw); 
     /* TODO concept:
        - validate +- encode request
        - add request to queue, tracking source ?socket (mitigate against recycling!)
@@ -219,8 +240,6 @@ void read_client(EV_P_ ev_io *w, int events) {
        Number of worker threads could be sched_getaffinity() -1 on linux, or sysctlbyname("machdep.cpu.core_count") -1 on macOS.
 
      */ 
-    // No parsing... maybe try llhttp (which depends on llvm...)
-    oswrite(1, (u8 *)&buffer, bytes_read);
     char *response = "HTTP/1.1 200 OK\r\n"
                     "Content-Type: text/html; charset=UTF-8\r\n\r\n"
                     "<!doctype html>\r\n"
@@ -237,8 +256,6 @@ void read_client(EV_P_ ev_io *w, int events) {
 
 void accept_client(EV_P_ ev_io *w, int events) {
   Server *server = (Server *)w->data;
-  Client client = (Client){.server = (Server *)w->data};
-  
   int addrlen = sizeof(server->address);
   int new_socket = accept(w->fd, // should be same as server->socket
                           (struct sockaddr *)&server->address,
@@ -247,22 +264,20 @@ void accept_client(EV_P_ ev_io *w, int events) {
   else {
     set_non_blocking(new_socket);
     // Allocate arenas TODO monitor usage, tune
-    client.store = alloc_arena(server->client_arena_cap); // for passing by reference
-    client.scratch = alloc_arena(server->client_arena_cap); // for passing by value
-    ev_io *client_watcher = new (&client.store, ev_io, 1);
+    arena client_store = alloc_arena(server->client_arena_cap);
+    arena client_scratch = alloc_arena(server->client_arena_cap);
+    client_io *client_watcher = new (&client_store, client_io, 1);
+    client_watcher->client = (Client) {
+      .server = server,
+      .store = client_store, // for passing by reference
+      .scratch = client_scratch // for passing by value
+    };
     if (!client_watcher) {
       perror("Failed to allocate watcher");
       exit(EXIT_FAILURE);
     }
-    // Circular but should be stable:
-    //   client (stack allocated) has
-    //   client.store arena (backed by heap alloc mem) which contains
-    //   client_watcher which points back to
-    //   client.
-    // I could be wrong about lifetime of client.
-    client_watcher->data = &client; // allows access within callbacks
-    ev_io_init(client_watcher, read_client, new_socket, EV_READ);
-    ev_io_start(EV_A_ client_watcher);
+    ev_io_init(&client_watcher->io, read_client, new_socket, EV_READ);
+    ev_io_start(EV_A_ &client_watcher->io);
   }
 }
 
