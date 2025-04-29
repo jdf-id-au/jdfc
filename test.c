@@ -6,9 +6,7 @@ s8 blurb = text(This will be included with whitespace collapsed
                 and "quotes" escaped.
                 );
 
-b32 s8derefequal(s8 *a, s8 *b) {return a && b && s8equal(*a, *b);}
-
-ASSOCIATION_LIST(s8, s8, s8derefequal)
+ASSOCIATION_LIST(s8map, s8, s8, s8equal)
 LIST(s8rs, s8 *)
 
 // TODO more descriptive testing ??framework
@@ -67,18 +65,17 @@ int main(int argc, char *argv[]) {
   tail = s8rsappend(&store, tail, &s8("sixth"));
   printf("rs has %ti entries\n", s8rscount(rs));
 
-  s8s8 *al = s8s8assoc(&store, 0, &s8("a"), &s8("b"));
-  al = s8s8assoc(&store, al, &s8("c"), &s8("d"));
-  al = s8s8assoc(&store, al, &s8("e"), &s8("f"));
-  al = s8s8assoc(&store, al, &s8("g"), &s8("h"));
+  s8map *al = s8mapassoc(&store, 0, s8("a"), s8("b"));
+  al = s8mapassoc(&store, al, s8("c"), s8("d"));
+  al = s8mapassoc(&store, al, s8("e"), s8("f"));
+  al = s8mapassoc(&store, al, s8("g"), s8("h"));
   
-  printf("al has %ti entries\n", s8s8count(al));
-  al = s8s8dissoc(al, &s8("a"));
-  printf("al now has %ti entries\n", s8s8count(al));
+  printf("al has %ti entries\n", s8mapcount(al));
+  al = s8mapdissoc(al, s8("a"));
+  printf("al now has %ti entries\n", s8mapcount(al));
 
-  s8 *match = s8s8get(al, &s8("e"));
-  assert(match);
-  s8writeln(stdout, *match);
+  s8map *match = s8mapget(al, s8("e"));
+  if(match) s8writeln(stdout, match->val);
   flush(stdout);
   
   failwith(0, s8("Finished"));
