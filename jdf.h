@@ -368,6 +368,14 @@ s8 s8trim(s8 src) {
   return s8span(beg, end);
 }
 
+/* Is s only whitespace? */
+b32 s8blank(s8 s) {
+  for (size i = 0; i < s.len; i++)
+    if (!whitespace(s.buf[i]))
+      return 0;
+  return 1;
+}
+
 // Copies buf
 s8 s8clone(arena *a, s8 s) {
   s8 c = (s8){.buf = new (a, u8, s.len), .len = s.len};

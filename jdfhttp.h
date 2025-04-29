@@ -177,10 +177,13 @@ Request parse_request(arena *store, arena scratch, s8 raw) {
   req.protocol = line0.buf[2];
   s8map *headers = {0};
   for (size i = 1; i < split.len; i++) {
+    if (s8blank(split.buf[i])) break; // TODO trailing headers...??
     s8s header = s8split(store, scratch, split.buf[i], s8(": "), 1);
-    headers = s8mapassoc(store, headers, header.buf[0], header.buf[1]);
+    log_debug(split.buf[i]);
+    if (header.len == 2)
+      headers = s8mapassoc(store, headers, header.buf[0], header.buf[1]);
+    req.headers = headers;
   }
-  req.headers = headers;
   s8map *cookies = {0};
   // e.g. Cookie: name=value; name2=value2; name3=value3
   s8map *cookiekv = s8mapget(headers, s8("Cookie"));
@@ -196,23 +199,24 @@ Request parse_request(arena *store, arena scratch, s8 raw) {
   return req;
 }
 
+// io must be first
+// https://metacpan.org/dist/EV/view/libev/ev.pod#ASSOCIATING-CUSTOM-DATA-WITH-A-WATCHER
 typedef struct {
-  ev_io io; // must be first, https://metacpan.org/dist/EV/view/libev/ev.pod#ASSOCIATING-CUSTOM-DATA-WITH-A-WATCHER
+  ev_io io;
   Client client;
 } client_io;
 
 void read_client(EV_P_ ev_io *w, int events) {
   Client client = ((client_io *)w)->client;
-  //printf("client address: %p", (void *)client);  
-  arena_usage scratch = usage(&client.scratch);
-  assert(!scratch.used);
+  arena_usage scratch_usage = usage(&client.scratch);
+  assert(!scratch_usage.used);
   // using scratch arena as a buffer here, instead of local array
-  ssize_t bytes_read = read(w->fd, client.scratch.beg, scratch.remaining);
+  ssize_t bytes_read = read(w->fd, client.scratch.beg, scratch_usage.remaining);
+  client.scratch.cur = client.scratch.beg + bytes_read;
   if (bytes_read == 0) { // client closed connection
     ev_io_stop(EV_A_ w);
     close(w->fd);
     free_arena(&client.store);
-    free(w);
   } else if (bytes_read < 0) {
     if (errno == EAGAIN || errno == EWOULDBLOCK) {
       // nothing to read yet
@@ -222,7 +226,6 @@ void read_client(EV_P_ ev_io *w, int events) {
       ev_io_stop(EV_A_ w);
       close(w->fd);
       free_arena(&client.store);
-      free(w);
     }
   } else {
     // TODO handle large read, e.g. stream to arena until finished or excessive,
@@ -230,15 +233,18 @@ void read_client(EV_P_ ev_io *w, int events) {
     // For now, store (copy) request in client store arena.
     s8 raw = s8clone(&client.store, s8arena(&client.scratch));
     log_debug(raw);
-    Request req = parse_request(&client.store, client.scratch, raw); 
+    Request req = parse_request(&client.store, client.scratch, raw);
     /* TODO concept:
        - validate +- encode request
-       - add request to queue, tracking source ?socket (mitigate against recycling!)
-       - worker thread/s consume request and add response to another queue (queues need mutexes, or maybe Wellons' fancy lockfree queue)
+       - add request to queue, tracking source ?socket (mitigate against
+recycling!)
+       - worker thread/s consume request and add response to another queue
+(queues need mutexes, or maybe Wellons' fancy lockfree queue)
        - server loop sends response to correct socket
 
+       Will this need a write watcher too?
+       
        Number of worker threads could be sched_getaffinity() -1 on linux, or sysctlbyname("machdep.cpu.core_count") -1 on macOS.
-
      */ 
     char *response = "HTTP/1.1 200 OK\r\n"
                     "Content-Type: text/html; charset=UTF-8\r\n\r\n"
@@ -289,6 +295,8 @@ void launch(Server *server) {
   accept_watcher.data = server; // allows access within callbacks
   ev_io_start(server->loop, &accept_watcher);
   ev_run(server->loop, 0);
+  // FIXME sometimes have to wait before relaunching because Address already in
+  // use. Need signal handler to kill properly?
 }
 
 #endif // jdfhttp_h
