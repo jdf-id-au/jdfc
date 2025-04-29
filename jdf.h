@@ -60,95 +60,97 @@ typedef size_t    usize;
 /*
    Define new linked list type tn, el type t, with <tn>count and <tn>append.
    t can be typename * for pointer (i.e. reference list).
-   <tn>append appends value `m` to list node `maybe`.
-   If list node doesn't exist, starts a new list.
+   <tn>append appends node with value `m` to node `maybe`.
+   If `maybe` doesn't exist, append starts a new list.
+   If `maybe` already has a ->next, append redirects it, orphaning tail unless caller retains it.
    Caller needs to retain list head.
    TODO could implement fns to skip variadic nodes, making new separate list; skipspan likewise.
 */
-#define LIST(tn, t)                                                            \
-  typedef struct tn tn;                                                        \
-  struct tn {                                                                  \
-    t val;                                                                     \
-    tn *next;                                                                  \
-  };                                                                           \
-  COUNT(tn)                                                                    \
-  tn *tn##append(arena *a, tn *head, t m) {                                    \
-    tn *cur = new (a, tn, 1);                                                  \
-    cur->val = m;                                                              \
-    if (head)                                                                  \
-      head->next = cur;                                                        \
-    return cur;                                                                \
-  }                                  
+#define LIST(tn, t)                             \
+  typedef struct tn tn;                         \
+  struct tn {                                   \
+    t val;                                      \
+    tn *next;                                   \
+  };                                            \
+  COUNT(tn)                                     \
+  tn *tn##append(arena *a, tn *maybe, t m) {    \
+    tn *cur = new (a, tn, 1);                   \
+    cur->val = m;                               \
+    if (maybe)                                  \
+      maybe->next = cur;                        \
+    return cur;                                 \
+  }
 /*
   Define new association list type with ...count, ...assoc, ...dissoc, ...get.
   kt and vt can be typename * for pointer, caller provides appropriate keq fn.
   Does not check that head is actually head!
+  Does not prevent inclusion of stack-allocated kvs!
   Make sure to use returned head.
   Makes no attempt to compact or reorder storage within arena.
 */
-#define ASSOCIATION_LIST(tn, kt, vt, keq)                           \
-  typedef struct tn tn;                                             \
-  struct tn {                                                       \
-    kt key;                                                         \
-    vt val;                                                         \
-    tn *next;                                                       \
-  };                                                                \
-  COUNT(tn)                                                         \
-  /* Uniquely associate key to value. Caller must ensure kv validity.  \
-     Assoc to null head to make new association list.               \
-   Returns null pointer if new fails. */                            \
-  tn *tn##assoc(arena *a, tn *head, kt key, vt val) {               \
-    tn *beg = {0};                                                  \
-    if (!head) {                                                    \
-      beg = new (a, tn, 1);                                         \
-      if (!beg)                                                     \
-        return 0;                                                   \
-      beg->key = key;                                               \
-      beg->val = val;                                               \
-      return beg;                                                   \
-    }                                                               \
-    beg = head;                                                     \
-    tn *cur = beg;                                                  \
-    tn *prev = 0;                                                   \
-    for (; cur; prev = cur, cur = cur->next) {                      \
-      if (keq(cur->key, key)) {                                     \
-        cur->val = val;                                             \
-        return beg;                                                 \
-      }                                                             \
-    }                                                               \
-    cur = prev->next = new (a, tn, 1);                              \
-    if (!cur)                                                       \
-      return 0;                                                     \
-    cur->key = key;                                                 \
-    cur->val = val;                                                 \
-    return beg;                                                     \
-  }                                                                 \
-  tn *tn##dissoc(tn *head, kt key) {                                \
-    if (!head)                                                      \
-      return 0;                                                     \
-    tn *cur = head;                                                 \
-    tn *prev = 0;                                                   \
-    for (; cur; prev = cur, cur = cur->next) {                      \
-      if (keq(cur->key, key)) {                                     \
-        if (prev)                                                   \
-          prev->next = cur->next;                                   \
-        else {                                                      \
-          assert(cur == head);                                      \
-          return cur->next;                                         \
-        }                                                           \
-      }                                                             \
-    }                                                               \
-    return head;                                                    \
-  }                                                                 \
-  /* Return possibly-null pointer to kv pair with key match. */     \
-  tn *tn##get(tn *head, kt key) {                                   \
-      if (!head)                                                    \
-        return 0;                                                   \
-      tn *cur = head;                                               \
-    do {                                                            \
-      if (keq(cur->key, key)) return cur;                           \
-    } while ((cur = cur->next));                                    \
-    return 0;                                                       \
+#define ASSOCIATION_LIST(tn, kt, vt, keq)                             \
+  typedef struct tn tn;                                               \
+  struct tn {                                                         \
+    kt key;                                                           \
+    vt val;                                                           \
+    tn *next;                                                         \
+  };                                                                  \
+  COUNT(tn)                                                           \
+  /* Uniquely associate key to value. Caller must ensure kv validity. \
+     Assoc to null head to make new association list.                 \
+   Returns null pointer if new fails. */                              \
+  tn *tn##assoc(arena *a, tn *head, kt key, vt val) {                 \
+    tn *beg = {0};                                                    \
+    if (!head) {                                                      \
+      beg = new (a, tn, 1);                                           \
+      if (!beg)                                                       \
+        return 0;                                                     \
+      beg->key = key;                                                 \
+      beg->val = val;                                                 \
+      return beg;                                                     \
+    }                                                                 \
+    beg = head;                                                       \
+    tn *cur = beg;                                                    \
+    tn *prev = 0;                                                     \
+    for (; cur; prev = cur, cur = cur->next) {                        \
+      if (keq(cur->key, key)) {                                       \
+        cur->val = val;                                               \
+        return beg;                                                   \
+      }                                                               \
+    }                                                                 \
+    cur = prev->next = new (a, tn, 1);                                \
+    if (!cur)                                                         \
+      return 0;                                                       \
+    cur->key = key;                                                   \
+    cur->val = val;                                                   \
+    return beg;                                                       \
+  }                                                                   \
+  tn *tn##dissoc(tn *head, kt key) {                                  \
+    if (!head)                                                        \
+      return 0;                                                       \
+    tn *cur = head;                                                   \
+    tn *prev = 0;                                                     \
+    for (; cur; prev = cur, cur = cur->next) {                        \
+      if (keq(cur->key, key)) {                                       \
+        if (prev)                                                     \
+          prev->next = cur->next;                                     \
+        else {                                                        \
+          assert(cur == head);                                        \
+          return cur->next;                                           \
+        }                                                             \
+      }                                                               \
+    }                                                                 \
+    return head;                                                      \
+  }                                                                   \
+  /* Return possibly-null pointer to kv pair with key match. */       \
+  tn *tn##get(tn *head, kt key) {                                     \
+      if (!head)                                                      \
+        return 0;                                                     \
+      tn *cur = head;                                                 \
+    do {                                                              \
+      if (keq(cur->key, key)) return cur;                             \
+    } while ((cur = cur->next));                                      \
+    return 0;                                                         \
   }
 
 // ─────────────────────────────────────────────────────────────────────── Arena
