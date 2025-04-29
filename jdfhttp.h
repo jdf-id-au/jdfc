@@ -32,9 +32,65 @@ typedef struct {
   // handler function pointer?
 } Server;
 
+ASSOCIATION_LIST(s8map, s8, s8, s8equal)
+
+enum http_method { // https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Methods
+  GET, HEAD, POST, PUT, DELETE, CONNECT, OPTIONS, TRACE, PATCH
+};
+
+enum http_status { // https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Status
+  // incomplete list
+  OK = 200,
+  CREATED,
+  ACCEPTED,
+  NON_AUTHORITATIVE_INFORMATION,
+  NO_CONTENT,
+  RESET_CONTENT,
+  PARTIAL_CONTENT,
+  MULTIPLE_CHOICES = 300,
+  MOVED_PERMANENTLY,
+  FOUND,
+  SEE_OTHER,
+  NOT_MODIFIED,
+  TEMPORARY_REDIRECT = 307,
+  PERMANENT_REDIRECT,
+  BAD_REQUEST = 400,
+  UNAUTHORIZED,
+  PAYMENT_REQUIRED,
+  FORBIDDEN,
+  NOT_FOUND,
+  METHOD_NOT_ALLOWED,
+  NOT_ACCEPTABLE,
+  GONE = 410,
+  LENGTH_REQUIRED,
+  PRECONDITION_FAILED,
+  CONTENT_TOO_LARGE,
+  URI_TOO_LONG,
+  UNSUPPORTED_MEDIA_TYPE,
+  RANGE_NOT_SATISFIED,
+  EXPECTATION_FAILED,
+  IM_A_TEAPOT,
+  TOO_MANY_REQUESTS = 429,
+  INTERNAL_SERVER_ERROR = 500,
+  NOT_IMPLEMENTED,
+  BAD_GATEWAY,
+  SERVICE_UNAVAILABLE,
+  GATEWAY_TIMEOUT,
+  HTTP_VERSION_NOT_SUPPORTED
+};
+  
+typedef struct {
+  enum http_method method;
+  s8 uri;
+  s8map headers;
+  s8map cookies;
+  s8 body;
+} Request;
+  
 typedef struct {
   int status; // http status
-  s8s headers;
+  s8map headers; // does not accommodate repeat keys, which are permitted by http spec https://stackoverflow.com/a/4371395/780743
+  s8map cookies; 
   s8 body; // TODO streaming lol
 } Response;
 
@@ -105,7 +161,7 @@ void read_client(EV_P_ ev_io *w, int events) {
        Number of worker threads could be sched_getaffinity() -1 on linux, or sysctlbyname("machdep.cpu.core_count") -1 on macOS.
 
      */ 
-    // No parsing... try llhttp (which depends on llvm...)
+    // No parsing... maybe try llhttp (which depends on llvm...)
     oswrite(1, (u8 *)&buffer, bytes_read);
     char *response = "HTTP/1.1 200 OK\r\n"
                     "Content-Type: text/html; charset=UTF-8\r\n\r\n"

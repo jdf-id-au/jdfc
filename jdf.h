@@ -37,7 +37,7 @@ typedef size_t    usize;
 #define countof(arrayptr) (size)(sizeof(arrayptr) / sizeof(*(arrayptr))) // casting from size_t
 #define new(a, t, n) (t *)alloc(a, sizeof(t), alignof(t), n) // arena, type, number
 #define ARRAY(tn, t) typedef struct { t *buf; size len; } tn; // new type name, el type
-#define endof(v) v.buf + v.len // just beyond last of sized value
+#define endof(v) (v).buf + (v).len // just beyond last of sized value
 /*
   To enable assertions in release builds,
   put UBSan in trap mode with -fsanitize-trap
@@ -169,6 +169,7 @@ typedef struct {
 // TODO could visualise correctness of padding algorithm
 // Allocate space within arena. Use via `new` macro.
 byte *alloc(arena *a, size objsize, size align, size count) {
+  if (!a) return 0;
   size avail = a->end - a->cur;
   /*
     Padding is how far the next aligned address is beyond the cursor.
@@ -227,6 +228,8 @@ ARRAY(s8, u8) // s8: Basic UTF-8 string. Not null terminated!
 // Wrap C string literal into s8 string.
 #define s8(s) (s8) { (u8 *)s, countof(s) - 1 }
 
+ARRAY(s8s, s8)
+     
 #ifdef _WIN32
 ARRAY(s16, c16)
 #define s16(s) (s16) { (c16 *)s, countof(s) - 1 }
@@ -240,9 +243,9 @@ ARRAY(s16, c16)
 */ 
 #define text(...) s8(#__VA_ARGS__) // https://stackoverflow.com/a/17996915/780743
 
-// Slice using pointers, doesn't check actually within an s8!
+// Slice using pointers, doesn't check that actually within an s8!
 s8 s8span(u8 *beg, u8 *end) {
-  if (beg && end && end > beg) return (s8){.buf = beg, .len = end - beg};
+  if (beg && end && end >= beg) return (s8){.buf = beg, .len = end - beg};
   return (s8){0};
 }
 
@@ -251,7 +254,7 @@ s8 s8slice(s8 src, size from, size to) {
   s8 s = {.buf = src.buf};
   size f = (from < 0) ? src.len + from : from;
   size t = (to > 0) ? to : src.len + to;
-  if (t < f) return (s8){0}; // refuse to slice backwards
+  if (t < f) return (s8){0}; // refuse to slice backwards, FIXME misleading failure mode...
   s.buf += f;
   s.len = t - f;
   return s;
@@ -361,6 +364,35 @@ s8 s8clone(arena *a, s8 s) {
   if (!c.buf) return (s8){0};
   copy(c.buf, s.buf, s.len);
   return c;
+}
+
+/* Split s, returning s8spans referring to it (zero copy). */
+s8s s8split(arena *store, arena scratch, s8 *s, u8 on, size max_splits) {
+  s8s ret = {0};
+  if (!s) return ret;
+  u8 *end = endof(*s);
+  if (s->len == 0) return (s8s){.buf = s, .len = 1}; // quirky but different from failure mode
+  u8 **matches = new (&scratch, u8 *, max_splits);
+  if (!matches) return ret; // FIXME misleading failure mode...
+  size nmatches = 0;
+  for (u8 *cur = s->buf; cur && cur < end && nmatches < max_splits;) {
+    s8 rem = s8span(cur, end);
+    cur = s8findu8(rem, on);
+    if (cur) matches[nmatches++] = cur++;
+  }
+  if (nmatches == 0) return (s8s){.buf = s, .len = 1};
+  s8 *buf = new (store, s8, nmatches + 1);
+  if (!buf) return ret; // FIXME misleading failure mode...
+  for (size nth = 0; nth <= nmatches; nth++) {
+    if (nth == 0) {
+      buf[nth] = s8span(s->buf, matches[nth]);
+    } else if (nth == nmatches) {
+      buf[nth] = s8span(matches[nth-1] + 1, end);
+    } else {
+      buf[nth] = s8span(matches[nth-1] + 1, matches[nth]);
+    }
+  }
+  return (s8s){.buf = buf, .len = nmatches + 1};
 }
 
 // Concatenate array of strings

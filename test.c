@@ -53,6 +53,7 @@ int main(int argc, char *argv[]) {
   debytes(&(u64){0xabcd000012340000});
 
   s8 el = s8("hello s8build");
+  // NB normally scratch arena is passed by value, but it's functioning as a buffer here...
   s8build(&scratch, &el, &s8(" next"));
   s8writeln(stdout, s8arena(&scratch));
   flush(stdout);
@@ -76,6 +77,16 @@ int main(int argc, char *argv[]) {
 
   s8map *match = s8mapget(al, s8("e"));
   if(match) s8writeln(stdout, match->val);
+  flush(stdout);
+
+  // stupid example of stack allocated arena and s8 split
+  // should normally both be heap allocated
+  byte beg[1024] = {0};
+  arena tmp = {.beg = beg, .cur = beg, .end = beg + 1024};
+  s8 mess = s8("this, and that, and the other");
+  s8s spl = s8split(&tmp, scratch, &mess, ',', 4);
+  for (size i = 0; i < spl.len; i++)
+    s8writeln(stdout, spl.buf[i]);
   flush(stdout);
   
   failwith(0, s8("Finished"));
