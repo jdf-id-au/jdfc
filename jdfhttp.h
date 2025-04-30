@@ -252,11 +252,13 @@ s8maybe serialise_response(arena *store, arena scratch, Response res) {
 void cleanup_client(EV_P_ ev_io *w) {
   Client *client = (Client *)w->data;
   // https://metacpan.org/dist/EV/view/libev/ev.pod#ev_TYPE_stop-(loop,-ev_TYPE-*watcher)
+  //if(!client->server) return;
   ev_io_stop(EV_A_ &client->read_io);
   ev_io_stop(EV_A_ &client->write_io);
   close(w->fd);
   free_arena(&client->store);
   free_arena(&client->scratch);
+  // client->server = 0; // doesn't prevent double free FIXME identify cause ?write then read
 }
 
 // signature cosplay for consistency
@@ -302,7 +304,7 @@ void read_client(EV_P_ ev_io *w, int events) {
   ssize_t bytes_read = read(w->fd, client->scratch.beg, scratch_usage.remaining);
   client->scratch.cur = client->scratch.beg + bytes_read;
   if (bytes_read == 0) { // client closed connection
-    cleanup_client(EV_A_ w);
+    cleanup_client(EV_A_ w); // UAF?
   } else if (bytes_read < 0) {
     if (errno == EAGAIN || errno == EWOULDBLOCK) {
       // nothing to read yet
