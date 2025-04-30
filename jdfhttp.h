@@ -234,11 +234,13 @@ s8maybe serialise_response(arena *store, arena scratch, Response res) {
     status = s8("200 OK"); // TODO check spec, etc
     break;
   }
-  s8buildsep(&scratch, "\r\n", status);
+  s8buildsep(&scratch, "\r\n", &status);
   s8map *header = &res.headers;
   do {
-    s8buildsep(&scratch, ": ", header->key);
-    s8buildsep(&scratch, "\r\n", header->val);
+    log_debug(header->key);
+    s8buildsep(&scratch, ": ", &header->key);
+    log_debug(header->val);
+    s8buildsep(&scratch, "\r\n", &header->val);
   } while ((header = header->next));
   s8buildcstr(&scratch, "\r\n");
   s8build(&scratch, &res.body);

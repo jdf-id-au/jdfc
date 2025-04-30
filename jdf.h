@@ -230,7 +230,7 @@ arena_usage usage(arena *a) {
 size KiB(u32 n) { return (1<<10) * n; }
 size MiB(u32 n) { return (1<<20) * n; }
 
-// Caller to check for null pointers! This fails silently!
+// Caller to check for null pointers, which fail silently.
 void copy(u8 *restrict dst, u8 *restrict src, size len) {
   if (dst && src) for (size i = 0; i < len; i++) dst[i] = src[i];
 }
@@ -465,7 +465,8 @@ s8 u8fill(arena *buf, u8 with, size count) {
   return s8arena(buf);
 }
 
-// Variadic s8 pointers, mark end with null final arg!
+// Variadic s8* (POINTERS), mark end with null final arg!
+// Type system doesn't catch accidental passage of s8 vs s8*. 
 // Pass DEDICATED arena. Can call multiple times and then s8arena separately.
 s8maybe s8buildfn(arena *buf, s8 sep,...) {
   va_list args;
