@@ -262,15 +262,17 @@ s8 s8span(u8 *beg, u8 *end) {
   return (s8){0};
 }
 
-// Slice using offsets, which may be positive or negative (i.e. from start or end, respectively)
-s8maybe s8slice(s8 src, size from, size to) {
+// Slice forward using clamped offsets, which may be positive or negative (i.e. from start or end, respectively)
+s8 s8slice(s8 src, size from, size to) {
   s8 s = {.buf = src.buf};
   size f = (from < 0) ? src.len + from : from;
   size t = (to > 0) ? to : src.len + to;
-  if (t < f) return (s8maybe){0}; // refuse to slice backwards
+  if (f < 0) f = 0; // clamp offsets
+  if (t > src.len) t = src.len;
   s.buf += f;
-  s.len = t - f;
-  return (s8maybe){.v = s};
+  if (t > f) s.len = t - f;
+  else s.len = 0; // refuse to slice backwards
+  return s;
 }
 
 b32 s8equal(s8 a, s8 b) {
@@ -333,15 +335,11 @@ u8 *s8findu8(s8 haystack, u8 needle) {
 }
 
 b32 s8startswith(s8 s, s8 with) {
-  s8maybe sl = s8slice(s, 0, with.len);
-  if (!sl.ok) return 0;
-  return s8equal(sl.v, with);
+  return s8equal(s8slice(s, 0, with.len), with);
 }
 
 b32 s8endswith(s8 s, s8 with) {
-  s8maybe sl = s8slice(s, -with.len, 0);
-  if (!sl.ok) return 0;
-  return s8equal(sl.v, with);
+  return s8equal(s8slice(s, -with.len, 0), with);
 }
 
 // Wrap decayed C string into s8 string

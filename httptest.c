@@ -1,6 +1,7 @@
 #include "jdfhttp.h"
 
-Response *handler(Request *req) {
+Response handler(Request req) {
+      // TODO check and deal with req.error
       //    char *response = "HTTP/1.1 200 OK\r\n"
        //                     "Content-Type: text/html; charset=UTF-8\r\n\r\n"
        //                     "<!doctype html>\r\n"
@@ -10,7 +11,6 @@ Response *handler(Request *req) {
        //                     "</head>\r\n"
        //                     "<body>wtf man</body>\r\n"
        //                     "</html>\r\n";
-
 }
 
 int main(void) {

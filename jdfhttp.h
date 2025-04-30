@@ -87,7 +87,7 @@ typedef struct {
   s8 body; // TODO streaming lol
 } Response;
 
-typedef Response *(*Handler)(Request *req);
+typedef Response (*Handler)(Request req);
 
 typedef struct {
   int domain;
@@ -221,10 +221,10 @@ Request parse_request(arena *store, arena scratch, s8 raw) {
 }
 
 // Non-streaming for the moment
-s8maybe serialise_response(arena *store, arena scratch, Response *res) {
+s8maybe serialise_response(arena *store, arena scratch, Response res) {
   // Use scratch as buffer.
-  arena_usage scratch_usage = usage(&client->scratch);
-  
+  arena_usage scratch_usage = usage(&scratch);
+  // TODO
 }
 
 void cleanup_client(EV_P_ ev_io *w) {
@@ -237,10 +237,21 @@ void cleanup_client(EV_P_ ev_io *w) {
   free_arena(&client->scratch);
 }
 
+// signature cosplay for consistency
+void client_set_writable(EV_P_ ev_io *w, b32 writable) {
+  Client *client = (Client *)w->data;
+  ev_io *write_io = &client->write_io;
+  if (writable == ev_is_active(write_io))
+    printf("Inconsistent client %s writable call\n", writable ? "set" : "unset");
+  if (writable) ev_io_start(EV_A_ write_io);
+  else ev_io_stop(EV_A_ write_io);
+}
+
 void write_client(EV_P_ ev_io *w, int events) {
   Client *client = (Client *)w->data;
-  if (!client->deliverable.ok) return;
+  if (!client->deliverable.ok) return; // TODO other handling? retry something?
   // TODO how to indicate zero length reply?
+  s8 chunk = s8slice(client->deliverable.v, 0, BUFOUTSIZE);
   u8* from = client->deliverable->cur;
   u8* to = s8cursorMOVE(client->deliverable, BUFOUTSIZE);
   if (!to) return;
@@ -255,16 +266,7 @@ void write_client(EV_P_ ev_io *w, int events) {
       cleanup_client(EV_A_ w);
     }
   } // what happens if write dosen't happen in one go?
-}
-
-// signature cosplay for consistency
-void client_set_writable(EV_P_ ev_io *w, b32 writable) {
-  Client *client = (Client *)w->data;
-  ev_io *write_io = &client->write_io;
-  if (writable == ev_is_active(write_io))
-    printf("Inconsistent client %s writable call\n", writable ? "set" : "unset");
-  if (writable) ev_io_start(EV_A_ write_io);
-  else ev_io_stop(EV_A_ write_io);
+  client_set_writable(EV_A_ w, 0); // TODO set this when write actually finished
 }
 
 void read_client(EV_P_ ev_io *w, int events) {
@@ -294,7 +296,7 @@ void read_client(EV_P_ ev_io *w, int events) {
       cleanup_client(EV_A_ w);
     }
     log_debug(raw.v);
-    Requestmaybe req = parse_request(&client->store, client->scratch, raw.v);
+    Request req = parse_request(&client->store, client->scratch, raw.v);
     /* TODO concept:
        - validate +- encode request
        - add request to queue, tracking source ?socket 
@@ -306,21 +308,12 @@ void read_client(EV_P_ ev_io *w, int events) {
        Number of worker threads could be sched_getaffinity() -1 on linux, or
        sysctlbyname("machdep.cpu.core_count") -1 on macOS.
      */
-    client_set_writable(EV_A_ w, 1);
-
-    // ⚠ SINGLE THREADED and synchronous for the moment; TODO offload to worker pthread pool CAREFULLY
-    Response *res = client->server->handler(req);
+    // ⚠ SINGLE THREADED and synchronous for the moment; TODO offload to worker
+    // pthread pool CAREFULLY
+    Response res = client->server->handler(req);
     // TODO serialise response into bufout for writing to socket without preventing write from actually running...
-    
-client->deliverable = 
-    s8cursor *deliverable = new(a, s8cursor, 1);
-    if (!deliverable) {
-      perrror("Failed to allocate output storage");
-      cleanup_client(EV_A_ w);
-    }
-    deliverable->s8 = serialise_response(res); // TODO failable?
-    client_set_writable(EV_A_ w, 0); // set this when write actually finished  
-
+    client->deliverable = serialise_response(res);
+    if (client->deliverable.ok) client_set_writable(EV_A_ w, 1); // unset in write_client when actually finished
     // not closing socket
   }
 }
