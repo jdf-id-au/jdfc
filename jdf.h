@@ -331,11 +331,15 @@ u8 *s8findu8(s8 haystack, u8 needle) {
 }
 
 b32 s8startswith(s8 s, s8 with) {
-  return s8equal(s8slice(s, 0, with.len), with);
+  s8maybe sl = s8slice(s, 0, with.len);
+  if (!sl.ok) return 0;
+  return s8equal(sl.val, with);
 }
 
 b32 s8endswith(s8 s, s8 with) {
-  return s8equal(s8slice(s, -with.len, 0), with);
+  s8maybe sl = s8slice(s, -with.len, 0);
+  if (!sl.ok) return 0;
+  return s8equal(sl.val, with);
 }
 
 // Wrap decayed C string into s8 string
