@@ -250,23 +250,26 @@ void client_set_writable(EV_P_ ev_io *w, b32 writable) {
 void write_client(EV_P_ ev_io *w, int events) {
   Client *client = (Client *)w->data;
   if (!client->deliverable.ok) return; // TODO other handling? retry something?
-  // TODO how to indicate zero length reply?
+  // TODO how to indicate zero length reply? Meaningless?
   s8 chunk = s8slice(client->deliverable.v, 0, BUFOUTSIZE);
-  u8* from = client->deliverable->cur;
-  u8* to = s8cursorMOVE(client->deliverable, BUFOUTSIZE);
-  if (!to) return;
-  ssize_t bytes_written = write(w->fd, from, to - from);
-  if (bytes_written == 0) { // TODO CHECK SEMANTICS client closed connection?
-    cleanup_client(EV_A_ w);
-  } else if (bytes_written < 0) {
-    if (errno == EAGAIN || errno == EWOULDBLOCK) {
-      // does this just try again?
-    } else {
-      perror("Error writing to client");
+  if (chunk.len > 0) {
+    ssize_t bytes_written = write(w->fd, chunk.buf, chunk.len);
+    if (bytes_written == 0) { // TODO CHECK SEMANTICS client closed connection?
       cleanup_client(EV_A_ w);
+    } else if (bytes_written < 0) {
+      if (errno == EAGAIN || errno == EWOULDBLOCK) {
+        // does this just try again?
+      } else {
+        perror("Error writing to client");
+        cleanup_client(EV_A_ w);
+      }
+    } else {
+      client->deliverable.v = s8slice(client->deliverable.v, bytes_written, 0);
+      // should become multiple writes if deliverable.v.len > BUFOUTSIZE
     }
-  } // what happens if write dosen't happen in one go?
-  client_set_writable(EV_A_ w, 0); // TODO set this when write actually finished
+  } else {
+    client_set_writable(EV_A_ w, 0); // unset writable when write actually finished
+  }
 }
 
 void read_client(EV_P_ ev_io *w, int events) {
