@@ -379,7 +379,7 @@ b32 s8blank(s8 s) {
 // Copies buf
 s8 s8clone(arena *a, s8 s) {
   s8 c = (s8){.buf = new (a, u8, s.len), .len = s.len};
-  if (!c.buf) return (s8){0};
+  if (!c.buf) return (s8){0}; // FIXME misleading failure mode
   copy(c.buf, s.buf, s.len);
   return c;
 }
@@ -477,6 +477,7 @@ typedef struct {
   b32 err;
 } bufout;
 
+// FIXME deal with allocation failure!
 #define bufout(a, n, f) &(bufout){.buf = new(a, u8, n), .cap = n, .fd = f}
 
 void flush(bufout *b);
@@ -487,7 +488,7 @@ void s8write(bufout *b, s8 s) {
   u8 *buf = s.buf;
   u8 *end = endof(s);
   while (!b->err && (buf < end)) {
-    i32 avail = b->cap - b->len;
+    i32 avail = b->cap - b->len; // TODO learn about size -> i32
     i32 count = (avail < end - buf) ? avail : (i32)(end - buf);
     copy(b->buf + b->len, buf, count);
     buf += count;
@@ -512,6 +513,7 @@ void s8log(i32 fd, s8 s) {
   oswrite(fd, (u8 *)"\n", 1);
 }
 
+// There's no shame in using prinf...
 #define log_debug(s) s8log(1, s)
 #define log_err(s) s8log(2, s)
 

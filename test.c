@@ -26,7 +26,6 @@ int main(int argc, char *argv[]) {
   s8 f2_to_end = s8span(f2, end);
   s8 trimmed = s8trim(s8("   escaped.                "));
 
-
   // bufout *stdout = bufout(&store, 64, 1);
   // s8write(stdout, s8("Demonstrate s8 string functions:"));
   // flush(stdout);

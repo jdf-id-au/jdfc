@@ -63,27 +63,6 @@ enum http_status { // https://developer.mozilla.org/en-US/docs/Web/HTTP/Referenc
   HTTP_VERSION_NOT_SUPPORTED
 };
 
-typedef struct {
-  int domain;
-  int port;
-  int service;
-  int protocol;
-  int backlog;
-  int socket;
-  struct sockaddr_in address;
-  struct ev_loop *loop;
-  arena store;
-  arena scratch;
-  size client_arena_cap;
-  // handler function pointer?
-} Server;
-
-typedef struct {
-  Server *server;
-  arena store;
-  arena scratch;
-} Client;
-
 ASSOCIATION_LIST(s8map, s8, s8, s8equal)
 
 enum request_error {
@@ -107,24 +86,59 @@ typedef struct {
   s8 body; // TODO streaming lol
 } Response;
 
-Server make_server(int domain, int port, int service, int protocol,
-                   int backlog, u_long interface, size client_arena_cap) {
+typedef Response *(*Handler)(Request *req);
+
+typedef struct {
+  int domain;
+  int port;
+  int backlog;
+  u_long interface;
+  size client_arena_cap;
+  Handler handler;
+} Config;
+
+typedef struct {
+  int domain;
+  int port;
+  int service;
+  int protocol;
+  int backlog;
+  int socket;
+  struct sockaddr_in address;
+  struct ev_loop *loop;
+  arena store;
+  arena scratch;
+  size client_arena_cap;
+  Handler handler;
+} Server;
+
+#define BUFOUTSIZE 8192 // TODO what's optimal?
+typedef struct {
+  Server *server;
+  arena store;
+  arena scratch;
+  ev_io read_io;
+  ev_io write_io;
+  bufout bufout;
+} Client;
+
+Server make_server(Config c) {
   arena store = alloc_arena(MiB(1));
   arena scratch = alloc_arena(MiB(1));
   if (!store.beg || !scratch.beg) failwith(1, s8("Failed to allocate server arenas."));
   Server server = {
-    .domain = domain,
-    .port = port,
-    .service = service,
-    .protocol = protocol,
-    .backlog = backlog, // TODO learn semantics
-    .socket = socket(domain, service, protocol),
-    .address = {.sin_family = domain,
-                .sin_port = htons(port), // convert byte order
-                .sin_addr = {.s_addr = htonl(interface)}},
+    .domain = c.domain, // PF_INET or PF_UNIX protocol families ~aka address families
+    .port = c.port,
+    .backlog = c.backlog, // max pending connection queue length
+                        // learn about SOCK_DGRAM, SOCK_RAW types later
+    .socket = socket(c.domain, SOCK_STREAM, 0), // 0 is IP, internet protocol!
+    .address = {.sin_family = c.domain,
+                .sin_port = htons(c.port), // convert byte order
+                .sin_addr = {.s_addr = htonl(c.interface)}},
     .store = store,
     .scratch = scratch,
-    .client_arena_cap = client_arena_cap
+    .client_arena_cap = c.client_arena_cap,
+    .handler = c.handler
   };
   if (server.socket < 0) {
     perror("Socket creation failed");
@@ -165,24 +179,26 @@ enum http_method parse_method(s8 s) {
   return INVALID_METHOD;
 }
 
-// would be better to use llhttp (which depends on llvm...)
-Request parse_request(arena *store, arena scratch, s8 raw) {
-  Request req = {0};
+// would be "better" to use llhttp (which depends on llvm...)
+// return heap-alloc'd Request because its s8 bufs etc will be there anyway
+// also allows communication of allocation failure through null pointer
+Request *parse_request(arena *store, arena scratch, s8 raw) {
+  Request *req = new (store, Request, 1);
+  if (!req) return 0;
   s8s split = s8splitu8(store, scratch, raw, '\n', 100);
-  if (split.len < 1) { req.error = REQUEST_EMPTY; return req; }
+  if (split.len < 1) { req->error = REQUEST_EMPTY; return req; }
   s8s line0 = s8splitu8(store, scratch, split.buf[0], ' ', 2);
-  if (line0.len < 3) { req.error = INVALID_METHOD_LINE; return req; }
-  req.method = parse_method(line0.buf[0]);
-  req.uri = line0.buf[1]; // copy s8, zerocopy its buffer
-  req.protocol = line0.buf[2];
+  if (line0.len < 3) { req->error = INVALID_METHOD_LINE; return req; }
+  req->method = parse_method(line0.buf[0]);
+  req->uri = line0.buf[1]; // copy s8, zerocopy its buffer
+  req->protocol = line0.buf[2];
   s8map *headers = {0};
   for (size i = 1; i < split.len; i++) {
     if (s8blank(split.buf[i])) break; // TODO trailing headers...??
     s8s header = s8split(store, scratch, split.buf[i], s8(": "), 1);
-    log_debug(split.buf[i]);
     if (header.len == 2)
       headers = s8mapassoc(store, headers, header.buf[0], header.buf[1]);
-    req.headers = headers;
+    req->headers = headers;
   }
   s8map *cookies = {0};
   // e.g. Cookie: name=value; name2=value2; name3=value3
@@ -194,46 +210,79 @@ Request parse_request(arena *store, arena scratch, s8 raw) {
       if (cookie.len == 2)
         cookies = s8mapassoc(store, cookies, cookie.buf[0], cookie.buf[1]);
     }
-    req.cookies = cookies;
+    req->cookies = cookies;
   }
   return req;
 }
 
-// io must be first
-// https://metacpan.org/dist/EV/view/libev/ev.pod#ASSOCIATING-CUSTOM-DATA-WITH-A-WATCHER
-typedef struct {
-  ev_io io;
-  Client client;
-} client_io;
+void cleanup_client(EV_P_ ev_io *w) {
+  Client *client = (Client *)w->data;
+  // https://metacpan.org/dist/EV/view/libev/ev.pod#ev_TYPE_stop-(loop,-ev_TYPE-*watcher)
+  ev_io_stop(EV_A_ &client->read_io);
+  ev_io_stop(EV_A_ &client->write_io);
+  close(w->fd);
+  free_arena(&client->store);
+  free_arena(&client->scratch);
+}
+
+void write_client(EV_P_ ev_io *w, int events) {
+  Client *client = (Client *)w->data;
+  ssize_t bytes_written = write(w->fd, response.buf, response.len);
+  if (bytes_written == 0) { // TODO CHECK SEMANTICS client closed connection?
+    cleanup_client(EV_A_ w);
+  } else if (bytes_written < 0) {
+    if (errno == EAGAIN || errno == EWOULDBLOCK) {
+      // does this just try again?
+    } else {
+      perror("Error writing to client");
+      cleanup_client(EV_A_ w);
+    }
+  } // what happens if write dosen't happen in one go?
+}
+
+// signature cosplay for consistency
+void client_set_writable(EV_P_ ev_io *w, b32 writable) {
+  Client *client = (Client *)w->data;
+  ev_io *write_io = &client->write_io;
+  if (writable == ev_is_active(write_io))
+    printf("Inconsistent client %s writable call\n", writable ? "set" : "unset");
+  if (writable) ev_io_start(EV_A_ write_io);
+  else ev_io_stop(EV_A_ write_io);
+}
 
 void read_client(EV_P_ ev_io *w, int events) {
-  Client client = ((client_io *)w)->client;
-  arena_usage scratch_usage = usage(&client.scratch);
+  Client *client = (Client *)w->data;
+  arena_usage scratch_usage = usage(&client->scratch);
   assert(!scratch_usage.used);
   // using scratch arena as a buffer here, instead of local array
-  ssize_t bytes_read = read(w->fd, client.scratch.beg, scratch_usage.remaining);
-  client.scratch.cur = client.scratch.beg + bytes_read;
+  ssize_t bytes_read = read(w->fd, client->scratch.beg, scratch_usage.remaining);
+  client->scratch.cur = client->scratch.beg + bytes_read;
   if (bytes_read == 0) { // client closed connection
-    ev_io_stop(EV_A_ w);
-    close(w->fd);
-    free_arena(&client.store);
+    cleanup_client(EV_A_ w);
   } else if (bytes_read < 0) {
     if (errno == EAGAIN || errno == EWOULDBLOCK) {
       // nothing to read yet
     } else {
       // something bad, do strerror(errno)
       perror("Error reading client");
-      ev_io_stop(EV_A_ w);
-      close(w->fd);
-      free_arena(&client.store);
+      cleanup_client(EV_A_ w);
     }
   } else {
     // TODO handle large read, e.g. stream to arena until finished or excessive,
     // then handle?
     // For now, store (copy) request in client store arena.
-    s8 raw = s8clone(&client.store, s8arena(&client.scratch));
+    s8 raw = s8clone(&client->store, s8arena(&client->scratch));
+    if (!raw.buf) {
+      perror("Failed to store raw request");
+      cleanup_client(EV_A_ w);
+    }
     log_debug(raw);
-    Request req = parse_request(&client.store, client.scratch, raw);
+    Request *req = parse_request(&client->store, client->scratch, raw);
+    if (!req) {
+      perror("Failed to allocate request");
+      cleanup_client(EV_A_ w);
+      // TODO could give SERVICE_UNAVAILABLE
+    }
     /* TODO concept:
        - validate +- encode request
        - add request to queue, tracking source ?socket (mitigate against
@@ -242,20 +291,20 @@ recycling!)
 (queues need mutexes, or maybe Wellons' fancy lockfree queue)
        - server loop sends response to correct socket
 
-       Will this need a write watcher too?
-       
-       Number of worker threads could be sched_getaffinity() -1 on linux, or sysctlbyname("machdep.cpu.core_count") -1 on macOS.
-     */ 
-    char *response = "HTTP/1.1 200 OK\r\n"
-                    "Content-Type: text/html; charset=UTF-8\r\n\r\n"
-                    "<!doctype html>\r\n"
-                    "<html>\r\n"
-                    "<head>\r\n"
-                    "<title>Hello from C</title>\r\n"
-                    "</head>\r\n"
-                    "<body>wtf man</body>\r\n"
-                    "</html>\r\n";
-    write(w->fd, response, strlen(response));
+       Number of worker threads could be sched_getaffinity() -1 on linux, or
+sysctlbyname("machdep.cpu.core_count") -1 on macOS.
+     */
+    u8 *buf = new (&client->scratch, u8, BUFOUTSIZE);
+    if (!buf) {
+      perror("Failed to allocate output buffer");
+      cleanup_client(EV_A_ w);
+    }
+    client->bufout = (bufout){.buf = buf, .cap = BUFOUTSIZE}; // set fd in write_client
+    client_set_writable(EV_A_ w, 1);
+    // ⚠ SINGLE THREADED for the moment; TODO offload to worker pthread pool CAREFULLY
+    Response *res = client->server->handler(req);
+    // TODO serialise response into bufout for writing to socket without preventing write from actually running...
+    client_set_writable(EV_A_ w, 0); // set this when write actually finished  
     // not closing socket
   }
 }
@@ -272,23 +321,29 @@ void accept_client(EV_P_ ev_io *w, int events) {
     // Allocate arenas TODO monitor usage, tune
     arena client_store = alloc_arena(server->client_arena_cap);
     arena client_scratch = alloc_arena(server->client_arena_cap);
-    client_io *client_watcher = new (&client_store, client_io, 1);
-    client_watcher->client = (Client) {
-      .server = server,
-      .store = client_store, // for passing by reference
-      .scratch = client_scratch // for passing by value
-    };
-    if (!client_watcher) {
-      perror("Failed to allocate watcher");
-      exit(EXIT_FAILURE);
+    // https://metacpan.org/dist/EV/view/libev/ev.pod#ASSOCIATING-CUSTOM-DATA-WITH-A-WATCHER
+    Client *client = new (&client_store, Client, 1);
+    if (!client) {
+      perror("Failed to allocate client");
+      exit(EXIT_FAILURE); // TODO could give SERVICE_UNAVAILABLE...
     }
-    ev_io_init(&client_watcher->io, read_client, new_socket, EV_READ);
-    ev_io_start(EV_A_ &client_watcher->io);
+    client->server = server;
+    client->store = client_store; // for passing by reference
+    client->scratch = client_scratch; // for passing by value
+    ev_io_init(&client->read_io, read_client, new_socket, EV_READ);
+    client->read_io.data = client; // I'm a woozie (see libev doc) 
+    ev_io_start(EV_A_ & client->read_io);
+    // This is started and stopped conditionally on whether there is data to
+    // write, to prevent excessive activation...
+    // https://buildmage.com/blog/libev-tutorial-and-wrapper
+    ev_io_init(&client->write_io, write_client, new_socket, EV_WRITE);
+    client->write_io.data = client;
+    // ...so deliberately not starting here.
   }
 }
 
 void launch(Server *server) {
-  server->loop = EV_DEFAULT; // TOOD more explicitly one per server?
+  server->loop = ev_loop_new(0);
   ev_io accept_watcher;
   set_non_blocking(server->socket);
   ev_io_init(&accept_watcher, accept_client, server->socket, EV_READ);
@@ -296,7 +351,8 @@ void launch(Server *server) {
   ev_io_start(server->loop, &accept_watcher);
   ev_run(server->loop, 0);
   // FIXME sometimes have to wait before relaunching because Address already in
-  // use. Need signal handler to kill properly?
+  // use. Need signal handler to shutdown properly?
+  ev_loop_destroy(server->loop);
 }
 
 #endif // jdfhttp_h
