@@ -37,7 +37,7 @@ typedef size_t    usize;
 #define countof(arrayptr) (size)(sizeof(arrayptr) / sizeof(*(arrayptr))) // casting from size_t
 #define new(a, t, n) (t *)alloc(a, sizeof(t), alignof(t), n) // arena, type, number
 #define ARRAY(tn, t) typedef struct { t *buf; size len; } tn; // new type name, el type
-#define endof(v) (v).buf + (v).len // just beyond last of sized value
+#define endof(v) (v).buf + (v).len // one beyond last of sized value
 /*
   To enable assertions in release builds,
   put UBSan in trap mode with -fsanitize-trap
@@ -171,7 +171,7 @@ typedef struct {
 // TODO could visualise correctness of padding algorithm
 // Allocate space within arena. Use via `new` macro.
 byte *alloc(arena *a, size objsize, size align, size count) {
-  if (!a) return 0;
+  if (!a || count <= 0 || align < 0) return 0; // why are count and size signed?
   size avail = a->end - a->cur;
   /*
     Padding is how far the next aligned address is beyond the cursor.
@@ -490,6 +490,7 @@ void s8write(bufout *b, s8 s) {
   while (!b->err && (buf < end)) {
     i32 avail = b->cap - b->len; // TODO learn about size -> i32
     i32 count = (avail < end - buf) ? avail : (i32)(end - buf);
+    // TODO learn benefit of copying rather than just stepping through s
     copy(b->buf + b->len, buf, count);
     buf += count;
     b->len += count;
@@ -551,7 +552,9 @@ void debytes(i32 fd, void *val, size len) { // too cool for stdio.h printf
 
 #define inspect(ptr)                              \
   s8log(1, s8("Contents of pointer " #ptr ":"));  \
-  debytes(1, ptr, sizeof(*(ptr)))  
+  debytes(1, ptr, sizeof(*(ptr)))
+
+// TODO why are there so many signed ints below where negative is incorrect?
 
 #ifdef _WIN32 // ╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴ _WIN32
 

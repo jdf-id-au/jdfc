@@ -112,14 +112,33 @@ typedef struct {
   Handler handler;
 } Server;
 
+typedef struct {
+  s8 s;
+  u8 *cur;
+} s8cursor; // TODO not finalised, check against jdf.h structs...
+
+size s8cursorpos(s8cursor *sc) { return sc->cur - sc->s.buf; }
+size s8cursorremaining(s8cursor *sc) { return endof(sc->s) - sc->cur; }
+
+// Mutates cursor! Caps instead of bang.
+void *s8cursorMOVE(s8cursor *sc, size count) {
+  if (count < s8cursorremaining(sc) &&
+      count > -s8cursorpos(sc)) {
+    sc->cur += count;
+  } else {
+    if (count > 0) sc->cur = endof(sc->s);
+    else sc->cur = sc->s.buf;
+  }
+}
+
 #define BUFOUTSIZE 8192 // TODO what's optimal?
 typedef struct {
   Server *server;
   arena store;
   arena scratch;
   ev_io read_io;
-  ev_io write_io;
-  bufout bufout;
+  ev_io write_io
+  s8cursor *deliverable; // TODO naming
 } Client;
 
 Server make_server(Config c) {
@@ -215,6 +234,11 @@ Request *parse_request(arena *store, arena scratch, s8 raw) {
   return req;
 }
 
+// Non-streaming for the moment
+s8 serialise_response(arena *store, arena scratch, Response *res) {
+  // TODO
+}
+
 void cleanup_client(EV_P_ ev_io *w) {
   Client *client = (Client *)w->data;
   // https://metacpan.org/dist/EV/view/libev/ev.pod#ev_TYPE_stop-(loop,-ev_TYPE-*watcher)
@@ -227,7 +251,12 @@ void cleanup_client(EV_P_ ev_io *w) {
 
 void write_client(EV_P_ ev_io *w, int events) {
   Client *client = (Client *)w->data;
-  ssize_t bytes_written = write(w->fd, response.buf, response.len);
+  if (!client->deliverable) return;
+  // TODO how to indicate zero length reply?
+  u8* from = client->deliverable->cur;
+  u8* to = s8cursorMOVE(client->deliverable, BUFOUTSIZE);
+  if (!to) return;
+  ssize_t bytes_written = write(w->fd, from, to - from);
   if (bytes_written == 0) { // TODO CHECK SEMANTICS client closed connection?
     cleanup_client(EV_A_ w);
   } else if (bytes_written < 0) {
@@ -285,26 +314,28 @@ void read_client(EV_P_ ev_io *w, int events) {
     }
     /* TODO concept:
        - validate +- encode request
-       - add request to queue, tracking source ?socket (mitigate against
-recycling!)
+       - add request to queue, tracking source ?socket 
+         (mitigate against recycling!)
        - worker thread/s consume request and add response to another queue
-(queues need mutexes, or maybe Wellons' fancy lockfree queue)
+         (queues need mutexes, or maybe Wellons' fancy lockfree queue)
        - server loop sends response to correct socket
 
        Number of worker threads could be sched_getaffinity() -1 on linux, or
-sysctlbyname("machdep.cpu.core_count") -1 on macOS.
+       sysctlbyname("machdep.cpu.core_count") -1 on macOS.
      */
-    u8 *buf = new (&client->scratch, u8, BUFOUTSIZE);
-    if (!buf) {
-      perror("Failed to allocate output buffer");
-      cleanup_client(EV_A_ w);
-    }
-    client->bufout = (bufout){.buf = buf, .cap = BUFOUTSIZE}; // set fd in write_client
     client_set_writable(EV_A_ w, 1);
-    // ⚠ SINGLE THREADED for the moment; TODO offload to worker pthread pool CAREFULLY
+
+    // ⚠ SINGLE THREADED and synchronous for the moment; TODO offload to worker pthread pool CAREFULLY
     Response *res = client->server->handler(req);
     // TODO serialise response into bufout for writing to socket without preventing write from actually running...
+    s8cursor *deliverable = new(a, s8cursor, 1);
+    if (!deliverable) {
+      perrror("Failed to allocate output storage");
+      cleanup_client(EV_A_ w);
+    }
+    deliverable->s8 = serialise_response(res); // TODO failable?
     client_set_writable(EV_A_ w, 0); // set this when write actually finished  
+
     // not closing socket
   }
 }
