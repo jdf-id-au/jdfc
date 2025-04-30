@@ -19,7 +19,7 @@ int main(int argc, char *argv[]) {
   u8 *end = endof(blurb);
   s8 frag = s8("escaped.");
   s8 span = s8span(blurb.buf + (blurb.len - 8), end);
-  s8 slice = s8slice(blurb, -8, 0);
+  s8maybe slice = s8slice(blurb, -8, 0);
   u8 *found = s8find(blurb, s8("whitespace"));
   s8 found_to_end = s8span(found, end);
   u8 *f2 = s8findu8(blurb, '"');
@@ -33,12 +33,12 @@ int main(int argc, char *argv[]) {
   log_debug(blurb);
   log_debug(frag);
   log_debug(span);
-  log_debug(slice);
+  log_debug(slice.val);
   
   log_debug(blurb);
   log_debug(frag);
   log_debug(span);
-  log_debug(slice);
+  log_debug(slice.val);
   log_debug(found_to_end);
   log_debug(f2_to_end);
   log_debug(trimmed);
@@ -50,7 +50,7 @@ int main(int argc, char *argv[]) {
   assert(s8find(blurb, s8("quotes")));
   assert(!s8find(blurb, s8("nopey")));
   assert(s8equal(frag, span));
-  assert(s8equal(frag, slice));
+  assert(s8equal(frag, slice.val));
   assert(s8equal(frag, trimmed));
 
   inspect(&(u64){0xabcd000012340000});
@@ -85,9 +85,9 @@ int main(int argc, char *argv[]) {
   byte beg[1024] = {0};
   arena tmp = {.beg = beg, .cur = beg, .end = beg + 1024};
   s8 mess = s8("this, and that, and the other");
-  s8s spl = s8splitu8(&tmp, scratch, mess, ',', 4);
-  for (size i = 0; i < spl.len; i++)
-    log_debug(spl.buf[i]);
+  s8smaybe spl = s8splitu8(&tmp, scratch, mess, ',', 4);
+  for (size i = 0; i < spl.val.len; i++)
+    log_debug(spl.val.buf[i]);
 
   assert(s8endswith(s8("thing some"), s8("some")));
   assert(s8startswith(s8("thing some"), s8("thing")));

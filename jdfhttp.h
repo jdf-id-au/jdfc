@@ -66,10 +66,11 @@ enum http_status { // https://developer.mozilla.org/en-US/docs/Web/HTTP/Referenc
 ASSOCIATION_LIST(s8map, s8, s8, s8equal)
 
 enum request_error {
-  REQUEST_OK, REQUEST_EMPTY, INVALID_METHOD_LINE
+  REQUST_OK, REQUEST_OOM, REQUEST_EMPTY, INVALID_METHOD_LINE 
 };
   
 typedef struct {
+  s8 raw;
   enum request_error error;
   enum http_method method;
   s8 uri;
@@ -119,8 +120,7 @@ typedef struct {
   arena scratch;
   ev_io read_io;
   ev_io write_io;
-  // pointer so nullable
-  s8 *deliverable; // slice some other s8 on client's arena, no need to retain head here unless redelivery or something
+  s8maybe deliverable; // slice some other s8 on client's arena, no need to retain head here unless redelivery or something
 } Client;
 
 Server make_server(Config c) {
@@ -180,45 +180,51 @@ enum http_method parse_method(s8 s) {
   return INVALID_METHOD;
 }
 
+#define ReqErr(e) do { req.error = e; return req; } while (0) // macrology semicolon hack
+
 // would be "better" to use llhttp (which depends on llvm...)
-// return heap-alloc'd Request because its s8 bufs etc will be there anyway
-// also allows communication of allocation failure through null pointer
-Request *parse_request(arena *store, arena scratch, s8 raw) {
-  Request *req = new (store, Request, 1);
-  if (!req) return 0;
-  s8s split = s8splitu8(store, scratch, raw, '\n', 100);
-  if (split.len < 1) { req->error = REQUEST_EMPTY; return req; }
-  s8s line0 = s8splitu8(store, scratch, split.buf[0], ' ', 2);
-  if (line0.len < 3) { req->error = INVALID_METHOD_LINE; return req; }
-  req->method = parse_method(line0.buf[0]);
-  req->uri = line0.buf[1]; // copy s8, zerocopy its buffer
-  req->protocol = line0.buf[2];
+Request parse_request(arena *store, arena scratch, s8 raw) {
+  Request req = { .raw = raw };
+  s8smaybe split = s8splitu8(store, scratch, raw, '\n', 100);
+  if (!split.ok) ReqErr(REQUEST_OOM);
+  if (split.v.len < 1) ReqErr(REQUEST_EMPTY);
+  s8smaybe line0 = s8splitu8(store, scratch, split.v.buf[0], ' ', 2);
+  if (!line0.ok) ReqErr(REQUEST_OOM);
+  if (line0.v.len < 3) ReqErr(INVALID_METHOD_LINE);
+  req.method = parse_method(line0.v.buf[0]);
+  req.uri = line0.v.buf[1]; // copy s8, zerocopy its buffer
+  req.protocol = line0.v.buf[2];
   s8map *headers = {0};
-  for (size i = 1; i < split.len; i++) {
-    if (s8blank(split.buf[i])) break; // TODO trailing headers...??
-    s8s header = s8split(store, scratch, split.buf[i], s8(": "), 1);
-    if (header.len == 2)
-      headers = s8mapassoc(store, headers, header.buf[0], header.buf[1]);
-    req->headers = headers;
+  for (size i = 1; i < split.v.len; i++) {
+    if (s8blank(split.v.buf[i])) break; // TODO trailing headers...??
+    s8smaybe header = s8split(store, scratch, split.v.buf[i], s8(": "), 1);
+    if (!header.ok) ReqErr(REQUEST_OOM);
+    if (header.v.len == 2)
+      headers = s8mapassoc(store, headers, header.v.buf[0], header.v.buf[1]);
+    req.headers = headers;
   }
   s8map *cookies = {0};
   // e.g. Cookie: name=value; name2=value2; name3=value3
   s8map *cookiekv = s8mapget(headers, s8("Cookie"));
   if (cookiekv) {
-    s8s cookiekvs = s8split(store, scratch, cookiekv->val, s8("; "), 32);
-    for (size i = 0; i < cookiekvs.len; i++) {
-      s8s cookie = s8splitu8(store, scratch, cookiekvs.buf[i], '=', 1);
-      if (cookie.len == 2)
-        cookies = s8mapassoc(store, cookies, cookie.buf[0], cookie.buf[1]);
+    s8smaybe cookiekvs = s8split(store, scratch, cookiekv->val, s8("; "), 32);
+    if (!cookiekvs.ok) ReqErr(REQUEST_OOM);
+    for (size i = 0; i < cookiekvs.v.len; i++) {
+      s8smaybe cookie = s8splitu8(store, scratch, cookiekvs.v.buf[i], '=', 1);
+      if (!cookie.ok) ReqErr(REQUEST_OOM);
+      if (cookie.v.len == 2)
+        cookies = s8mapassoc(store, cookies, cookie.v.buf[0], cookie.v.buf[1]);
     }
-    req->cookies = cookies;
+    req.cookies = cookies;
   }
   return req;
 }
 
 // Non-streaming for the moment
-s8 serialise_response(arena *store, arena scratch, Response *res) {
-  // TODO
+s8maybe serialise_response(arena *store, arena scratch, Response *res) {
+  // Use scratch as buffer.
+  arena_usage scratch_usage = usage(&client->scratch);
+  
 }
 
 void cleanup_client(EV_P_ ev_io *w) {
@@ -233,7 +239,7 @@ void cleanup_client(EV_P_ ev_io *w) {
 
 void write_client(EV_P_ ev_io *w, int events) {
   Client *client = (Client *)w->data;
-  if (!client->deliverable) return;
+  if (!client->deliverable.ok) return;
   // TODO how to indicate zero length reply?
   u8* from = client->deliverable->cur;
   u8* to = s8cursorMOVE(client->deliverable, BUFOUTSIZE);
@@ -282,18 +288,13 @@ void read_client(EV_P_ ev_io *w, int events) {
     // TODO handle large read, e.g. stream to arena until finished or excessive,
     // then handle?
     // For now, store (copy) request in client store arena.
-    s8 raw = s8clone(&client->store, s8arena(&client->scratch));
-    if (!raw.buf) {
+    s8maybe raw = s8clone(&client->store, s8arena(&client->scratch));
+    if (!raw.ok) {
       perror("Failed to store raw request");
       cleanup_client(EV_A_ w);
     }
-    log_debug(raw);
-    Request *req = parse_request(&client->store, client->scratch, raw);
-    if (!req) {
-      perror("Failed to allocate request");
-      cleanup_client(EV_A_ w);
-      // TODO could give SERVICE_UNAVAILABLE
-    }
+    log_debug(raw.v);
+    Requestmaybe req = parse_request(&client->store, client->scratch, raw.v);
     /* TODO concept:
        - validate +- encode request
        - add request to queue, tracking source ?socket 
@@ -310,6 +311,8 @@ void read_client(EV_P_ ev_io *w, int events) {
     // ⚠ SINGLE THREADED and synchronous for the moment; TODO offload to worker pthread pool CAREFULLY
     Response *res = client->server->handler(req);
     // TODO serialise response into bufout for writing to socket without preventing write from actually running...
+    
+client->deliverable = 
     s8cursor *deliverable = new(a, s8cursor, 1);
     if (!deliverable) {
       perrror("Failed to allocate output storage");

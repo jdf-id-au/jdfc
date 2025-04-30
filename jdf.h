@@ -39,13 +39,15 @@ typedef size_t    usize;
 #define ARRAY(tn, t) typedef struct { t *buf; size len; } tn; // new type name, el type
 #define endof(v) (v).buf + (v).len // one beyond last of sized value
 /*
-  Somewhat evil semantic affordance for structs starting with nullable pointer.
-  Allows if(s.ok) process((t)s).
+  Somewhat evil semantic affordance for structs starting with (possibly nested) nullable pointer.
+  Allows if(s.ok) process(OK(s)) or process(s.v). Use to represent e.g. internal allocation failure.
+  (Can only cast scalars unfortunately.)
+  https://stackoverflow.com/a/3995987/780743
 */
 #define MAYBE(t)                                  \
   typedef union {                                 \
-    uptr ok; /* false if !val.buf */              \
-    t val;                                        \
+    uptr ok; /* false if !v.buf */                \
+    t v;                                          \
   } t##maybe;
 /*
   To enable assertions in release builds,
@@ -268,7 +270,7 @@ s8maybe s8slice(s8 src, size from, size to) {
   if (t < f) return (s8maybe){0}; // refuse to slice backwards
   s.buf += f;
   s.len = t - f;
-  return (s8maybe){.val = s};
+  return (s8maybe){.v = s};
 }
 
 b32 s8equal(s8 a, s8 b) {
@@ -333,13 +335,13 @@ u8 *s8findu8(s8 haystack, u8 needle) {
 b32 s8startswith(s8 s, s8 with) {
   s8maybe sl = s8slice(s, 0, with.len);
   if (!sl.ok) return 0;
-  return s8equal(sl.val, with);
+  return s8equal(sl.v, with);
 }
 
 b32 s8endswith(s8 s, s8 with) {
   s8maybe sl = s8slice(s, -with.len, 0);
   if (!sl.ok) return 0;
-  return s8equal(sl.val, with);
+  return s8equal(sl.v, with);
 }
 
 // Wrap decayed C string into s8 string
@@ -395,18 +397,20 @@ s8maybe s8clone(arena *a, s8 s) {
   if (!buf) return (s8maybe){0}; 
   s8 c = (s8){.buf = buf, .len = s.len};
   copy(c.buf, s.buf, s.len);
-  return (s8maybe){.val = c}; // cast to union is apparently a gnu extension
+  return (s8maybe){.v = c}; // cast to union is apparently a gnu extension
 }
 
 /* Split s, returning s8spans referring to it (zero copy of buffer). */
 // NB annoying choice between accepting s8 and making new s8 for no split
 // vs accepting s8* and reusing for no split; former prob marginally better
 s8smaybe s8split(arena *store, arena scratch, s8 s, s8 on, size max_splits) {
-  s8smaybe ret = {0};
+  s8smaybe nil = {0};
   u8 *end = endof(s);
-  if (s.len == 0) return ret; // TODO should be "ok" to return no matches? because empty s
+  if (!s.buf) return nil; // exit early without allocating
+  // Allocation-free hack to differentiate ok-but-empty from not-ok.
+  if (s.len == 0) return (s8smaybe){ .v = { .buf = (s8 *)s.buf, .len = 0 } };
   u8 **matches = new (&scratch, u8 *, max_splits);
-  if (!matches) return ret;
+  if (!matches) return nil;
   size nmatches = 0;
   for (u8 *cur = s.buf; cur && cur < end && nmatches < max_splits;) {
     s8 rem = s8span(cur, end);
@@ -417,7 +421,7 @@ s8smaybe s8split(arena *store, arena scratch, s8 s, s8 on, size max_splits) {
     }
   }
   s8 *buf = new (store, s8, nmatches + 1);
-  if (!buf) return ret;
+  if (!buf) return nil;
   if (nmatches == 0) buf[0] = s;
   else for (size nth = 0; nth <= nmatches; nth++) {
     if (nth == 0) {
@@ -428,7 +432,7 @@ s8smaybe s8split(arena *store, arena scratch, s8 s, s8 on, size max_splits) {
       buf[nth] = s8span(matches[nth-1] + on.len, matches[nth]);
     }
   }
-  return (s8smaybe){.val = {.buf = buf, .len = nmatches + 1}};
+  return (s8smaybe){.v = {.buf = buf, .len = nmatches + 1}};
 }
 
 // Trivially less efficient than impl calling s8findu8, but easier to maintain.
@@ -476,10 +480,11 @@ s8maybe s8buildfn(arena *buf, ...) {
     copy(cur, arg->buf, arg->len);
   }
   va_end(args);
-  return (s8maybe){.val = s8arena(buf)};
+  return (s8maybe){.v = s8arena(buf)};
 }
 
-#define s8build(buf, ...) s8buildfn(buf, __VA_ARGS__, 0) 
+#define s8build(buf, ...) s8buildfn(buf, __VA_ARGS__, 0)
+#define s8buildcstr(buf, s) s8buildfn(buf, &s8(s), 0)
 
 // ────────────────────────────────────────────────────────────────────── Output
 
