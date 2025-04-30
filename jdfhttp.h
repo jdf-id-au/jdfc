@@ -22,6 +22,20 @@ enum http_method { // https://developer.mozilla.org/en-US/docs/Web/HTTP/Referenc
   INVALID_METHOD, GET, HEAD, POST, PUT, DELETE, CONNECT, OPTIONS, TRACE, PATCH
 };
 
+// TODO macrology?
+const char *spell_methods[] = {
+  "", "GET", "HEAD", "POST", "PUT", "DELETE", "CONNECT", "OPTIONS", "TRACE", "PATCH"
+};
+
+#define s8unsafe(s) (s8){ .buf = (u8 *)s, .len = strlen(s) }
+
+enum http_method parse_method(s8 s) {
+  for (size i = 1; i < (size)PATCH; i++) 
+    if (s8equal(s, s8unsafe(spell_methods[i]))) // should be safe because literal??
+      return (enum http_method)i;
+  return INVALID_METHOD;
+}
+
 enum http_status { // https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Status
   // incomplete list
   OK = 200,
@@ -84,10 +98,10 @@ typedef struct {
   int status; // http status
   s8map headers; // does not accommodate repeat keys, which are permitted by http spec https://stackoverflow.com/a/4371395/780743
   s8map cookies; 
-  s8 body; // TODO streaming lol
+  s8 body;
 } Response;
 
-typedef Response (*Handler)(Request req);
+typedef Response (*Handler)(arena *store, arena scratch, Request req);
 
 typedef struct {
   int domain;
@@ -167,18 +181,6 @@ int set_non_blocking(int sockfd) {
   return 0;
 }
 
-enum http_method parse_method(s8 s) {
-  if (s8equal(s, s8("GET"))) return GET;
-  if (s8equal(s, s8("HEAD"))) return HEAD;
-  if (s8equal(s, s8("POST"))) return POST;
-  if (s8equal(s, s8("PUT"))) return PUT;
-  if (s8equal(s, s8("DELETE"))) return DELETE;
-  if (s8equal(s, s8("CONNECT"))) return CONNECT;
-  if (s8equal(s, s8("OPTIONS"))) return OPTIONS;
-  if (s8equal(s, s8("TRACE"))) return TRACE;
-  if (s8equal(s, s8("PATCH"))) return PATCH;
-  return INVALID_METHOD;
-}
 
 #define ReqErr(e) do { req.error = e; return req; } while (0) // macrology semicolon hack
 
@@ -224,7 +226,25 @@ Request parse_request(arena *store, arena scratch, s8 raw) {
 s8maybe serialise_response(arena *store, arena scratch, Response res) {
   // Use scratch as buffer.
   arena_usage scratch_usage = usage(&scratch);
-  // TODO
+  assert(!scratch_usage.used);
+  s8buildcstr(&scratch, "HTTP/1.1 ");
+  s8 status = {0}; 
+  switch (res.status) {
+  case OK:
+    status = s8("200 OK"); // TODO check spec, etc
+    break;
+  }
+  s8buildsep(&scratch, "\r\n", status);
+  s8map *header = &res.headers;
+  do {
+    s8buildsep(&scratch, ": ", header->key);
+    s8buildsep(&scratch, "\r\n", header->val);
+  } while ((header = header->next));
+  s8buildcstr(&scratch, "\r\n");
+  s8build(&scratch, &res.body);
+  // TODO handle cookies separately
+  // FIXME s8maybe is too annoying within s8build...? could wrap with macro returning not-ok?
+  return (s8maybe){ .v = s8arena(&scratch) };
 }
 
 void cleanup_client(EV_P_ ev_io *w) {
@@ -298,6 +318,7 @@ void read_client(EV_P_ ev_io *w, int events) {
       perror("Failed to store raw request");
       cleanup_client(EV_A_ w);
     }
+    client->scratch.cur = client->scratch.beg; // Reset!
     log_debug(raw.v);
     Request req = parse_request(&client->store, client->scratch, raw.v);
     /* TODO concept:
@@ -313,9 +334,9 @@ void read_client(EV_P_ ev_io *w, int events) {
      */
     // ⚠ SINGLE THREADED and synchronous for the moment; TODO offload to worker
     // pthread pool CAREFULLY
-    Response res = client->server->handler(req);
+    Response res = client->server->handler(&client->store, client->scratch, req);
     // TODO serialise response into bufout for writing to socket without preventing write from actually running...
-    client->deliverable = serialise_response(res);
+    client->deliverable = serialise_response(&client->store, client->scratch, res);
     if (client->deliverable.ok) client_set_writable(EV_A_ w, 1); // unset in write_client when actually finished
     // not closing socket
   }

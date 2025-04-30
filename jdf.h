@@ -467,22 +467,25 @@ s8 u8fill(arena *buf, u8 with, size count) {
 
 // Variadic s8 pointers, mark end with null final arg!
 // Pass DEDICATED arena. Can call multiple times and then s8arena separately.
-s8maybe s8buildfn(arena *buf, ...) {
+s8maybe s8buildfn(arena *buf, s8 sep,...) {
   va_list args;
-  va_start(args, buf);
+  va_start(args, sep);
   s8 *arg = 0;
   u8 *cur = 0;
   while ((arg = va_arg(args, s8 *))) {
-    cur = new (buf, u8, arg->len);
+    cur = new (buf, u8, arg->len + sep.len);
     if (!cur) return (s8maybe){0};
     copy(cur, arg->buf, arg->len);
+    // NB "sep"arator is really appended to all elements
+    copy(cur + arg->len, sep.buf, sep.len);
   }
   va_end(args);
   return (s8maybe){.v = s8arena(buf)};
 }
 
-#define s8build(buf, ...) s8buildfn(buf, __VA_ARGS__, 0)
-#define s8buildcstr(buf, s) s8buildfn(buf, &s8(s), 0)
+#define s8build(buf, ...) s8buildfn(buf, (s8){0}, __VA_ARGS__, 0)
+#define s8buildsep(buf, sep, ...) s8buildfn(buf, s8(sep), __VA_ARGS__, 0)
+#define s8buildcstr(buf, s) s8build(buf, &s8(s))
 
 // ────────────────────────────────────────────────────────────────────── Output
 

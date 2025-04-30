@@ -1,16 +1,23 @@
 #include "jdfhttp.h"
 
-Response handler(Request req) {
-      // TODO check and deal with req.error
-      //    char *response = "HTTP/1.1 200 OK\r\n"
-       //                     "Content-Type: text/html; charset=UTF-8\r\n\r\n"
-       //                     "<!doctype html>\r\n"
-       //                     "<html>\r\n"
-       //                     "<head>\r\n"
-       //                     "<title>Hello from C</title>\r\n"
-       //                     "</head>\r\n"
-       //                     "<body>wtf man</body>\r\n"
-       //                     "</html>\r\n";
+Response handler(arena *store, arena scratch, Request req) {
+  // TODO check and deal with req.error
+  s8map *headers = s8mapassoc(store, 0, s8("Content-Type"),
+                              s8("text/html; charset=UTF-8"));
+  Response res = {
+    .status = OK,
+    .headers = *headers,
+    .body = s8(
+               //"HTTP/1.1 200 OK\r\n"
+               //"Content-Type: text/html; charset=UTF-8\r\n\r\n"
+               "<!doctype html>\r\n" // crlf not required for body
+               "<html>\r\n"
+               "<head>\r\n"
+               "<title>Hello from C</title>\r\n"
+               "</head>\r\n"
+               "<body>wtf man</body>\r\n"
+               "</html>\r\n"
+               ) };
 }
 
 int main(void) {
