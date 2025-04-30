@@ -39,6 +39,15 @@ typedef size_t    usize;
 #define ARRAY(tn, t) typedef struct { t *buf; size len; } tn; // new type name, el type
 #define endof(v) (v).buf + (v).len // one beyond last of sized value
 /*
+  Somewhat evil semantic affordance for structs starting with nullable pointer.
+  Allows if(s.ok) process((t)s).
+*/
+#define MAYBE(t)                                  \
+  typedef union {                                 \
+    uptr ok; /* false if !val.buf */              \
+    t val;                                        \
+  } t##maybe;
+/*
   To enable assertions in release builds,
   put UBSan in trap mode with -fsanitize-trap
   and then enable at least -fsanitize=unreachable.
@@ -229,9 +238,9 @@ void copy(u8 *restrict dst, u8 *restrict src, size len) {
 ARRAY(s8, u8) // s8: Basic UTF-8 string. Not null terminated!
 // Wrap C string literal into s8 string.
 #define s8(s) (s8) { (u8 *)s, countof(s) - 1 }
-
+MAYBE(s8)
 ARRAY(s8s, s8)
-     
+MAYBE(s8s)     
 #ifdef _WIN32
 ARRAY(s16, c16)
 #define s16(s) (s16) { (c16 *)s, countof(s) - 1 }
@@ -252,14 +261,14 @@ s8 s8span(u8 *beg, u8 *end) {
 }
 
 // Slice using offsets, which may be positive or negative (i.e. from start or end, respectively)
-s8 s8slice(s8 src, size from, size to) {
+s8maybe s8slice(s8 src, size from, size to) {
   s8 s = {.buf = src.buf};
   size f = (from < 0) ? src.len + from : from;
   size t = (to > 0) ? to : src.len + to;
-  if (t < f) return (s8){0}; // refuse to slice backwards, FIXME misleading failure mode... could cast to void* and check null?
+  if (t < f) return (s8maybe){0}; // refuse to slice backwards
   s.buf += f;
   s.len = t - f;
-  return s;
+  return (s8maybe){.val = s};
 }
 
 b32 s8equal(s8 a, s8 b) {
@@ -377,22 +386,23 @@ b32 s8blank(s8 s) {
 }
 
 // Copies buf
-s8 s8clone(arena *a, s8 s) {
-  s8 c = (s8){.buf = new (a, u8, s.len), .len = s.len};
-  if (!c.buf) return (s8){0}; // FIXME misleading failure mode
+s8maybe s8clone(arena *a, s8 s) {
+  u8 *buf = new (a, u8, s.len);
+  if (!buf) return (s8maybe){0}; 
+  s8 c = (s8){.buf = buf, .len = s.len};
   copy(c.buf, s.buf, s.len);
-  return c;
+  return (s8maybe){.val = c}; // cast to union is apparently a gnu extension
 }
 
 /* Split s, returning s8spans referring to it (zero copy of buffer). */
 // NB annoying choice between accepting s8 and making new s8 for no split
 // vs accepting s8* and reusing for no split; former prob marginally better
-s8s s8split(arena *store, arena scratch, s8 s, s8 on, size max_splits) {
-  s8s ret = {0};
+s8smaybe s8split(arena *store, arena scratch, s8 s, s8 on, size max_splits) {
+  s8smaybe ret = {0};
   u8 *end = endof(s);
-  if (s.len == 0) return ret;
+  if (s.len == 0) return ret; // TODO should be "ok" to return no matches? because empty s
   u8 **matches = new (&scratch, u8 *, max_splits);
-  if (!matches) return ret; // FIXME misleading failure mode...
+  if (!matches) return ret;
   size nmatches = 0;
   for (u8 *cur = s.buf; cur && cur < end && nmatches < max_splits;) {
     s8 rem = s8span(cur, end);
@@ -403,7 +413,7 @@ s8s s8split(arena *store, arena scratch, s8 s, s8 on, size max_splits) {
     }
   }
   s8 *buf = new (store, s8, nmatches + 1);
-  if (!buf) return ret; // FIXME misleading failure mode...
+  if (!buf) return ret;
   if (nmatches == 0) buf[0] = s;
   else for (size nth = 0; nth <= nmatches; nth++) {
     if (nth == 0) {
@@ -414,11 +424,11 @@ s8s s8split(arena *store, arena scratch, s8 s, s8 on, size max_splits) {
       buf[nth] = s8span(matches[nth-1] + on.len, matches[nth]);
     }
   }
-  return (s8s){.buf = buf, .len = nmatches + 1};
+  return (s8smaybe){.val = {.buf = buf, .len = nmatches + 1}};
 }
 
 // Trivially less efficient than impl calling s8findu8, but easier to maintain.
-s8s s8splitu8(arena *store, arena scratch, s8 s, u8 on, size max_splits) {
+s8smaybe s8splitu8(arena *store, arena scratch, s8 s, u8 on, size max_splits) {
   s8 ons = (s8){.buf = (u8[]){on}, .len = 1};
   return s8split(store, scratch, s, ons, max_splits);
 }
@@ -451,18 +461,18 @@ s8 u8fill(arena *buf, u8 with, size count) {
 
 // Variadic s8 pointers, mark end with null final arg!
 // Pass DEDICATED arena. Can call multiple times and then s8arena separately.
-s8 s8buildfn(arena *buf, ...) {
+s8maybe s8buildfn(arena *buf, ...) {
   va_list args;
   va_start(args, buf);
   s8 *arg = 0;
   u8 *cur = 0;
   while ((arg = va_arg(args, s8 *))) {
     cur = new (buf, u8, arg->len);
-    if (!cur) return (s8){0}; // FIXME misleading failure mode...
+    if (!cur) return (s8maybe){0};
     copy(cur, arg->buf, arg->len);
   }
   va_end(args);
-  return s8arena(buf);
+  return (s8maybe){.val = s8arena(buf)};
 }
 
 #define s8build(buf, ...) s8buildfn(buf, __VA_ARGS__, 0) 

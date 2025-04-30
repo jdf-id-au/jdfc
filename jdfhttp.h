@@ -112,33 +112,15 @@ typedef struct {
   Handler handler;
 } Server;
 
-typedef struct {
-  s8 s;
-  u8 *cur;
-} s8cursor; // TODO not finalised, check against jdf.h structs...
-
-size s8cursorpos(s8cursor *sc) { return sc->cur - sc->s.buf; }
-size s8cursorremaining(s8cursor *sc) { return endof(sc->s) - sc->cur; }
-
-// Mutates cursor! Caps instead of bang.
-void *s8cursorMOVE(s8cursor *sc, size count) {
-  if (count < s8cursorremaining(sc) &&
-      count > -s8cursorpos(sc)) {
-    sc->cur += count;
-  } else {
-    if (count > 0) sc->cur = endof(sc->s);
-    else sc->cur = sc->s.buf;
-  }
-}
-
 #define BUFOUTSIZE 8192 // TODO what's optimal?
 typedef struct {
   Server *server;
   arena store;
   arena scratch;
   ev_io read_io;
-  ev_io write_io
-  s8cursor *deliverable; // TODO naming
+  ev_io write_io;
+  // pointer so nullable
+  s8 *deliverable; // slice some other s8 on client's arena, no need to retain head here unless redelivery or something
 } Client;
 
 Server make_server(Config c) {
