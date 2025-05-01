@@ -256,8 +256,9 @@ void cleanup_client(EV_P_ ev_io *w) {
   ev_io_stop(EV_A_ &client->read_io);
   ev_io_stop(EV_A_ &client->write_io);
   close(w->fd);
+  // TODO now check why browser load doesn't finish
+  free_arena(&client->scratch); // needs to be freed first, I think because of *client circularity
   free_arena(&client->store);
-  free_arena(&client->scratch); // FIXME causes uaf, but why!??! something to do with circular *client setup?
   // client->server = 0; // doesn't prevent double free FIXME identify cause ?write then read
 }
 
