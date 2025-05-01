@@ -257,7 +257,7 @@ void cleanup_client(EV_P_ ev_io *w) {
   ev_io_stop(EV_A_ &client->write_io);
   close(w->fd);
   free_arena(&client->store);
-  free_arena(&client->scratch); // FIXME causes uaf, but why!??!
+  free_arena(&client->scratch); // FIXME causes uaf, but why!??! something to do with circular *client setup?
   // client->server = 0; // doesn't prevent double free FIXME identify cause ?write then read
 }
 
