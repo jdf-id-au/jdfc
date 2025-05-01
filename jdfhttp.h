@@ -257,7 +257,7 @@ void cleanup_client(EV_P_ ev_io *w) {
   ev_io_stop(EV_A_ &client->write_io);
   close(w->fd);
   free_arena(&client->store);
-  free_arena(&client->scratch);
+  free_arena(&client->scratch); // FIXME causes uaf, but why!??!
   // client->server = 0; // doesn't prevent double free FIXME identify cause ?write then read
 }
 
@@ -279,6 +279,7 @@ void write_client(EV_P_ ev_io *w, int events) {
   if (chunk.len > 0) {
     ssize_t bytes_written = write(w->fd, chunk.buf, chunk.len);
     if (bytes_written == 0) { // TODO CHECK SEMANTICS client closed connection?
+      printf("write client closed cleanup");
       cleanup_client(EV_A_ w);
     } else if (bytes_written < 0) {
       if (errno == EAGAIN || errno == EWOULDBLOCK) {
@@ -304,7 +305,8 @@ void read_client(EV_P_ ev_io *w, int events) {
   ssize_t bytes_read = read(w->fd, client->scratch.beg, scratch_usage.remaining);
   client->scratch.cur = client->scratch.beg + bytes_read;
   if (bytes_read == 0) { // client closed connection
-    cleanup_client(EV_A_ w); // UAF?
+    printf("read client closed cleanup");
+    cleanup_client(EV_A_ w);
   } else if (bytes_read < 0) {
     if (errno == EAGAIN || errno == EWOULDBLOCK) {
       // nothing to read yet
@@ -358,6 +360,7 @@ void accept_client(EV_P_ ev_io *w, int events) {
     // Allocate arenas TODO monitor usage, tune
     arena client_store = alloc_arena(server->client_arena_cap);
     arena client_scratch = alloc_arena(server->client_arena_cap);
+    printf("store beg %p\nscratch beg %p\n", client_store.beg, client_scratch.beg); fflush(0);
     // https://metacpan.org/dist/EV/view/libev/ev.pod#ASSOCIATING-CUSTOM-DATA-WITH-A-WATCHER
     Client *client = new (&client_store, Client, 1);
     if (!client) {

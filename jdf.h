@@ -40,7 +40,7 @@ typedef size_t    usize;
 #define endof(v) (v).buf + (v).len // one beyond last of sized value
 /*
   Somewhat evil semantic affordance for structs starting with (possibly nested) nullable pointer.
-  Allows if(s.ok) process(OK(s)) or process(s.v). Use to represent e.g. internal allocation failure.
+  Allows if(s.ok) process(s.v). Use to represent e.g. internal allocation failure.
   (Can only cast scalars unfortunately.)
   https://stackoverflow.com/a/3995987/780743
 */
@@ -458,11 +458,11 @@ s8 s8arena(arena *buf) {
   return (s8){.buf = (u8 *)buf->beg, .len = buf->cur - buf->beg};
 }
 
-s8 u8fill(arena *buf, u8 with, size count) {
-  u8 *cur = new (buf, u8, count);
-  if (!cur) return (s8){0};
-  for (size i = 0; i < count; i++) *(cur + i) = with;
-  return s8arena(buf);
+s8maybe u8fill(arena *buf, u8 with, size count) {
+  u8 *p = new (buf, u8, count);
+  if (!p) return (s8maybe){0};
+  for (size i = 0; i < count; i++) p[i] = with;
+  return (s8maybe) { .v = s8span(p, p + count) };
 }
 
 // Variadic s8* (POINTERS), mark end with null final arg!
@@ -481,7 +481,7 @@ s8maybe s8buildfn(arena *buf, s8 sep,...) {
     copy(cur + arg->len, sep.buf, sep.len);
   }
   va_end(args);
-  return (s8maybe){.v = s8arena(buf)};
+  return (s8maybe){ .v = s8arena(buf) };
 }
 
 #define s8build(buf, ...) s8buildfn(buf, (s8){0}, __VA_ARGS__, 0)
@@ -602,10 +602,11 @@ arena alloc_arena(size cap) {
 b32 free_arena(arena *a) {
   b32 ret;
   if (!a) return 0;
-  if (a->beg) ret = VirtuallFree(a->beg, 0, 0x00008000); // MEM_RELEASE
+  u8 *me = a->beg;
   a->beg = 0;
   a->cur = 0;
   a->end = 0;
+  if (me) ret = VirtualFree(me, 0, 0x00008000); // MEM_RELEASE
   return ret; // nonzero on success
 }
 
@@ -646,10 +647,11 @@ arena alloc_arena(size cap) {
 
 b32 free_arena(arena *a) {
   if(!a) return 0;
-  if(a->beg) free(a->beg);
+  u8 *me = a->beg;
   a->beg = 0;
   a->cur = 0;
   a->end = 0;
+  free(me);
   return 1;
 }
 
