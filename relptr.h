@@ -1,17 +1,8 @@
 /*
-  After Wellons https://nullprogram.com/blog/2023/10/08/
-  and https://nullprogram.com/blog/2023/09/27/ .
-  See discussion https://old.reddit.com/r/C_Programming/comments/173e0vn/nullprogram_my_personal_c_coding_style_as_of_late/ .
-  
-  - generally omit const (controversial!)
-  - literal 0 for null pointers and false
-  - restrict when necessary
-  - typedef all structures
-  - static all functions except for entry points (not applied here; less meaningful in single translation unit build)
-  - structure returns instead of out parameters; initialise with {0} as per C99
+  Like jdf.h but with relative internal pointers. API likely to be affected.
 */
 
-#ifndef jdf_h
+#ifndef jdf_h // guard deliberately same as non-internal pointer impl
 #define jdf_h
 
 #include <stddef.h>
@@ -45,10 +36,25 @@ typedef struct {
   byte *end; // allocated end of arena
 } arena;
 
+// TODO 0 could mean "null" relative pointer or (as difference) "same".
+// Won't mean "start of arena" (see `alloc_arena` comments).
+typedef int32_t rptr; // relative pointer
+// Convert relative pointer to normal pointer, preserve nullness.
+void *ptr(arena *a, rptr p) { if (!p) return 0; return (void *)(a->beg + p); }
+// Convert normal pointer to relative pointer, preserve nullness.
+rptr rel(arena *a, void *p) { if (!p) return 0; return (byte *)p - a->beg; }
+#define RPTR(t) typedef rptr R##t; // R##t is analogous to *t if it were a normal pointer
+
 #define alignof(x) (size)_Alignof(x) // casting from size_t
 #define countof(arrayptr) (size)(sizeof(arrayptr) / sizeof(*(arrayptr))) // casting from size_t
 #define new(a, t, n) (t *)alloc(a, sizeof(t), alignof(t), n) // arena, type, number
+// ARRAY types still use normal pointer to buffer.
 #define ARRAY(tn, t) typedef struct { t *buf; size len; } tn; // new type name, el type
+/*
+  If wanted to put tn itself in arena (as well as its buffer), 
+  would need to use relative pointers... TODO role? For arena save/restore?
+ */
+#define RARRAY(tn, t) typedef struct { R##t buf; size len; } tn;
 #define endof(v) (v).buf + (v).len // one beyond last of sized value
 /*
   Somewhat evil semantic affordance for structs starting with (possibly nested) nullable pointer.
@@ -57,6 +63,7 @@ typedef struct {
   https://stackoverflow.com/a/3995987/780743
 */
 #define MAYBE(t) typedef union {uptr ok; t v;} t##_;
+#define RMAYBE(t) typedef union {rptr ok; t v;} t##_;
 /*
   To enable assertions in release builds,
   put UBSan in trap mode with -fsanitize-trap
@@ -68,21 +75,25 @@ typedef struct {
 
 // ──────────────────────────────────────────────────────────────── Linked lists
 
-typedef struct node_t node_t;
-struct node_t  {
-  node_t *next;
+typedef struct {
+  rptr next;
   // etc!
-};
+} node_t;
 
 size countfn(arena *a, node_t *node) {
   size c = 0;
   node_t *cur = node;
-  if (!cur)
-    return 0;
-  do { c++; } while ((cur = cur->next));
+  if (!cur) return 0;
+  do { c++; } while ((cur = ptr(a, cur->next)));
   return c;
 }
 #define count(a, n) countfn(a, (node_t *)n)
+node_t *next(arena *a, node_t *node) { return ptr(a, node->next); }
+node_t *nth(arena *a, node_t *node, size n) {
+  node_t *ret = node;
+  for (size i = 0; i < n; i++) ret = next(a, ret);
+  return ret;
+}
 /*
    Define new linked list type tn, el type t, with <tn>count and <tn>append.
    t can be typename * for pointer (i.e. reference list).
@@ -91,27 +102,19 @@ size countfn(arena *a, node_t *node) {
    If `maybe` already has a ->next, append redirects it, orphaning tail unless
 caller retains it. Caller needs to retain list head.
    Does not prevent inclusion of stack-allocated values in heap-allocated list!
-   TODO could implement fns to skip variadic nodes, making new separate list;
-skipspan likewise.
+   TODO could implement fns to skip variadic nodes, making new separate list; skipspan likewise.
 */
-// just to parallel relptr api
-node_t *next(node_t *node) { return node->next; }
-node_t *nth(node_t *node, size n) {
-  node_t *ret = node;
-  for (size i = 0; i < n; i++) ret = ret->next;
-  return ret;
-}
 #define LIST(tn, t)                             \
-  typedef struct tn tn;                         \
-  struct tn {                                   \
-    tn *next;                                   \
+  RPTR(tn)                                      \
+  typedef struct {                              \
+    R##tn next;                                 \
     t val;                                      \
-  };                                            \
+  } tn;                                         \
   tn *tn##append(arena *a, tn *maybe, t m) {    \
     tn *cur = new (a, tn, 1);                   \
     cur->val = m;                               \
     if (maybe)                                  \
-      maybe->next = cur;                        \
+      maybe->next = rel(a, cur);                \
     return cur;                                 \
   }
 /*
@@ -123,9 +126,10 @@ node_t *nth(node_t *node, size n) {
   Makes no attempt to compact or reorder storage within arena.
 */
 #define ASSOCIATION_LIST(tn, kt, vt, keq)                             \
+  RPTR(tn)                                                            \
   typedef struct tn tn;                                               \
   struct tn {                                                         \
-    tn *next;                                                         \
+    R##tn next;                                                       \
     kt key;                                                           \
     vt val;                                                           \
   };                                                                  \
@@ -145,40 +149,40 @@ node_t *nth(node_t *node, size n) {
     beg = head;                                                       \
     tn *cur = beg;                                                    \
     tn *prev = 0;                                                     \
-    for (; cur; prev = cur, cur = cur->next) {                        \
+    for (; cur; prev = cur, cur = ptr(a, cur->next)) {                \
       if (keq(cur->key, key)) {                                       \
         cur->val = val;                                               \
         return beg;                                                   \
       }                                                               \
     }                                                                 \
-    cur = prev->next = new (a, tn, 1);                                \
-    if (!cur)                                                         \
-      return 0;                                                       \
+    cur = new (a, tn, 1);                                             \
+    if (!cur) return 0;                                               \
+    prev->next = rel(a, cur);                                         \
     cur->key = key;                                                   \
     cur->val = val;                                                   \
     return beg;                                                       \
   }                                                                   \
-  tn *tn##dissoc(tn *head, kt key) {                                  \
+  tn *tn##dissoc(arena *a, tn *head, kt key) {                        \
     if (!head)                                                        \
       return 0;                                                       \
     tn *cur = head;                                                   \
     tn *prev = 0;                                                     \
-    for (; cur; prev = cur, cur = cur->next) {                        \
+    for (; cur; prev = cur, cur = ptr(a, cur->next)) {                \
       if (keq(cur->key, key)) {                                       \
         if (prev) prev->next = cur->next;                             \
-        return cur->next;                                             \
+        return ptr(a, cur->next);                                     \
       }                                                               \
     }                                                                 \
     return head;                                                      \
   }                                                                   \
   /* Return possibly-null pointer to kv pair with key match. */       \
-  tn *tn##get(tn *head, kt key) {                                     \
+  tn *tn##get(arena *a, tn *head, kt key) {                           \
       if (!head)                                                      \
         return 0;                                                     \
       tn *cur = head;                                                 \
     do {                                                              \
       if (keq(cur->key, key)) return cur;                             \
-    } while ((cur = cur->next));                                      \
+    } while ((cur = ptr(a, cur->next)));                              \
     return 0;                                                         \
   }
 
@@ -600,8 +604,10 @@ arena alloc_arena(size cap) {
   // flProtect = PAGE_READWRITE
   byte* beg = VirtualAlloc(0, cap, 0x3000, 4);
   byte* end = beg ? beg + cap : 0;
-  if (beg) return (arena){.beg = beg, .cur = beg, .end = end};
-  else return (arena){0};
+  if (!beg) return (arena){0};
+  // see #else branch comments
+  *beg = (byte)sizeof(usize);
+  return (arena){.beg = beg, .cur = beg + 1, .end = end};
 }
 
 b32 free_arena(arena *a) {
@@ -646,8 +652,13 @@ u32 oswrite(i32 fd, u8 *buf, i32 len) {
 arena alloc_arena(size cap) {
   byte* beg = malloc(cap);
   byte* end = beg ? beg + cap : 0;
-  if (beg) return (arena){.beg = beg, .cur = beg, .end = end};
-  else return (arena){0};
+  if (!beg) return (arena){0};
+  // sizeof(type) returns size of type in bytes, as a size_t aka usize
+  // cast down to CHAR_BIT size int
+  // and save as first byte of arena (to prevent rptr 0 and allow that to mean null)
+  // (this may waste a few bytes on first `alloc` because of alignment/padding; who cares)
+  *beg = (byte)sizeof(usize);
+  return (arena){.beg = beg, .cur = beg + 1, .end = end};
 }
 
 b32 free_arena(arena *a) {
