@@ -48,7 +48,9 @@ int main(void) {
   TEST(s8equal(i32s8get(&scratch, m, 42)->val, s8("meaning of life")));
   PREP(i32s8assoc(&scratch, m, 84, s8("moar")));
   TEST(count(&scratch, m) == 2);
-  TEST(i32s8dissoc(&scratch, m, 42));
+  PREP(m = i32s8dissoc(&scratch, m, 42));
+  TEST(!i32s8get(&scratch, m, 42));
+  TEST(i32s8get(&scratch, m, 84));
   TEST(!i32s8dissoc(&scratch, m, 84));
 
   HEAD("set list");

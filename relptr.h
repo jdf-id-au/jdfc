@@ -152,7 +152,7 @@ caller retains it. Caller needs to retain list head.
   kt and vt can be typename * for pointer, caller provides appropriate keq fn.
   Does not check that head is actually head!
   Does not prevent inclusion of stack-allocated kvs in heap-allocated list!
-  Make sure to use returned head! Dissoc final key will return null.
+  Make sure to use `dissoc`s returned head! Dissoc final key will return null.
   Makes no attempt to compact or reorder storage within arena.
 */
 #define ASSOCIATION_LIST(tn, kt, vt, keq)                             \
@@ -207,67 +207,67 @@ caller retains it. Caller needs to retain list head.
   }                                                                   \
   /* Return possibly-null pointer to kv pair with key match. */       \
   tn *tn##get(arena *a, tn *head, kt key) {                           \
-    if (!head)                                                      \
-      return 0;                                                     \
-    tn *cur = head;                                                 \
+    if (!head)                                                        \
+      return 0;                                                       \
+    tn *cur = head;                                                   \
     do {                                                              \
       if (keq(cur->key, key)) return cur;                             \
     } while ((cur = ptr(a, cur->next)));                              \
     return 0;                                                         \
   }
-// Barely worth it vs ASSOCIATION_LIST with ignored vt.
-#define SET_LIST(tn, kt, keq)                                                  \
-  RPTR(tn)                                                                     \
-  typedef struct tn tn;                                                        \
-  struct tn {                                                                  \
-    R##tn next;                                                                \
-    kt key;                                                                    \
-  };                                                                           \
-  tn *tn##conj(arena *a, tn *head, kt key) {                                   \
-    tn *beg = {0};                                                             \
-    if (!head) {                                                               \
-      beg = new (a, tn, 1);                                                    \
-      if (!beg)                                                                \
-        return 0;                                                              \
-      beg->key = key;                                                          \
-      return beg;                                                              \
-    }                                                                          \
-    beg = head;                                                                \
-    tn *cur = beg;                                                             \
-    tn *prev = 0;                                                              \
-    for (; cur; prev = cur, cur = ptr(a, cur->next))                           \
-      if (keq(cur->key, key))                                                  \
-        return beg;                                                            \
-    cur = new (a, tn, 1);                                                      \
-    if (!cur)                                                                  \
-      return 0;                                                                \
-    prev->next = rel(a, cur);                                                  \
-    cur->key = key;                                                            \
-    return beg;                                                                \
-  }                                                                            \
-  tn *tn##disj(arena *a, tn *head, kt key) {                                   \
-    if (!head)                                                                 \
-      return 0;                                                                \
-    tn *cur = head;                                                            \
-    tn *prev = 0;                                                              \
-    for (; cur; prev = cur, cur = ptr(a, cur->next)) {                         \
-      if (keq(cur->key, key)) {                                                \
-        if (prev)                                                              \
-          prev->next = cur->next;                                              \
-        return ptr(a, cur->next);                                              \
-      }                                                                        \
-    }                                                                          \
-    return head;                                                               \
-  }                                                                            \
-  tn *tn##has(arena *a, tn *head, kt key) {                               \
-    if (!head)                                                                 \
-      return 0;                                                                \
-    tn *cur = head;                                                            \
-    do {                                                                       \
-      if (keq(cur->key, key))                                                  \
-        return cur;                                                            \
-    } while ((cur = ptr(a, cur->next)));                                       \
-    return 0; \
+// Barely worth it vs ASSOCIATION_LIST with ignored vt. Make sure to use `disj`s returnd head!
+#define SET_LIST(tn, kt, keq)                           \
+  RPTR(tn)                                              \
+  typedef struct tn tn;                                 \
+  struct tn {                                           \
+    R##tn next;                                         \
+    kt key;                                             \
+  };                                                    \
+  tn *tn##conj(arena *a, tn *head, kt key) {            \
+    tn *beg = {0};                                      \
+    if (!head) {                                        \
+      beg = new (a, tn, 1);                             \
+      if (!beg)                                         \
+        return 0;                                       \
+      beg->key = key;                                   \
+      return beg;                                       \
+    }                                                   \
+    beg = head;                                         \
+    tn *cur = beg;                                      \
+    tn *prev = 0;                                       \
+    for (; cur; prev = cur, cur = ptr(a, cur->next))    \
+      if (keq(cur->key, key))                           \
+        return beg;                                     \
+    cur = new (a, tn, 1);                               \
+    if (!cur)                                           \
+      return 0;                                         \
+    prev->next = rel(a, cur);                           \
+    cur->key = key;                                     \
+    return beg;                                         \
+  }                                                     \
+  tn *tn##disj(arena *a, tn *head, kt key) {            \
+    if (!head)                                          \
+      return 0;                                         \
+    tn *cur = head;                                     \
+    tn *prev = 0;                                       \
+    for (; cur; prev = cur, cur = ptr(a, cur->next)) {  \
+      if (keq(cur->key, key)) {                         \
+        if (prev)                                       \
+          prev->next = cur->next;                       \
+        return ptr(a, cur->next);                       \
+      }                                                 \
+    }                                                   \
+    return head;                                        \
+  }                                                     \
+  tn *tn##has(arena *a, tn *head, kt key) {             \
+    if (!head)                                          \
+      return 0;                                         \
+    tn *cur = head;                                     \
+    do {                                                \
+      if (keq(cur->key, key))                           \
+        return cur;                                     \
+    } while ((cur = ptr(a, cur->next)));                \
+    return 0;                                           \
   }
 // ─────────────────────────────────────────────────────────────────────── Arena
 
