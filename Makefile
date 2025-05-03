@@ -11,10 +11,10 @@ run: testrel
 	MallocNanoZone='0' time ./testrel
 
 test: test.c
-	cc $(CFLAGS) $^ -o $@
+	time cc $(CFLAGS) $^ -o $@
 
 testrel: testrel.c
-	cc $(CFLAGS) $^ -o $@
+	time cc $(CFLAGS) $^ -o $@
 
 testhttp: testhttp.c
-	cc $(CFLAGS) -lev -lpthread $^ -o $@
+	time cc $(CFLAGS) -lev -lpthread $^ -o $@

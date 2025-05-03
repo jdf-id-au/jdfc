@@ -5,6 +5,7 @@
 LIST(i32s, i32)
 b32 i32eq(i32 a, i32 b) { return a == b; }
 ASSOCIATION_LIST(i32s8, i32, s8, i32eq)
+SET_LIST(i32set, i32, i32eq)
 
 int main(void) {
   HEAD("s8 string functions");
@@ -49,6 +50,11 @@ int main(void) {
   TEST(count(&scratch, m) == 2);
   TEST(i32s8dissoc(&scratch, m, 42));
   TEST(!i32s8dissoc(&scratch, m, 84));
-    
+
+  HEAD("set list");
+  PREP(i32set *s = i32setconj(&scratch, 0, 42));
+  TEST(i32sethas(&scratch, s, 42));
+  TEST(!i32sethas(&scratch, s, 84));
+  
   return REPORT();
 }
