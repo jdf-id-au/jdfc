@@ -38,11 +38,10 @@ int main(void) {
   PREP(i32s *ll = i32sappend(&scratch, 0, 42));
   PREP(i32sappend(&scratch, ll, 84));
   TEST(ll->val == 42);
-  // ugly casting not really avoidable?
-  TEST(((i32s *)next(&scratch, (node_t *)ll))->val == 84);
-  TEST(((i32s *)nth(&scratch, (node_t *)ll, 0))->val == 42);
+  TEST(i32snext(&scratch, ll)->val == 84);
+  TEST(i32snth(&scratch, ll, 0)->val == 42);
   TEST(count(&scratch, ll) == 2);
-
+  
   HEAD("association list");
   PREP(i32s8 *m = i32s8assoc(&scratch, 0, 42, s8("meaning of life")));
   TEST(s8equal(i32s8get(&scratch, m, 42)->val, s8("meaning of life")));

@@ -68,12 +68,8 @@ typedef struct {
 
 // ──────────────────────────────────────────────────────────────── Linked lists
 
-typedef struct node_t node_t;
-struct node_t  {
-  node_t *next;
-  // etc!
-};
-
+typedef struct node_t node_t; struct node_t { node_t *next; }; // ignore subsequent fields
+// No loop detection!
 size countfn(node_t *node) {
   size c = 0;
   node_t *cur = node;
@@ -83,43 +79,64 @@ size countfn(node_t *node) {
   return c;
 }
 #define count(n) countfn((node_t *)n)
-/*
-   Define new linked list type tn, el type t, with <tn>count and <tn>append.
-   t can be typename * for pointer (i.e. reference list).
-   <tn>append appends node with value `m` to node `maybe`.
-   If `maybe` doesn't exist, append starts a new list.
-   If `maybe` already has a ->next, append redirects it, orphaning tail unless
-caller retains it. Caller needs to retain list head.
-   Does not prevent inclusion of stack-allocated values in heap-allocated list!
-   TODO could implement fns to skip variadic nodes, making new separate list;
-skipspan likewise.
-*/
-// just to parallel relptr api
+// Indirection to allow use from multiple linked list-derived data structures...
 node_t *next(node_t *node) { return node->next; }
 node_t *nth(node_t *node, size n) {
   node_t *ret = node;
   for (size i = 0; i < n; i++) ret = ret->next;
   return ret;
 }
-#define LIST(tn, t)                             \
-  typedef struct tn tn;                         \
-  struct tn {                                   \
-    tn *next;                                   \
-    t val;                                      \
-  };                                            \
-  tn *tn##append(arena *a, tn *maybe, t m) {    \
-    tn *cur = new (a, tn, 1);                   \
-    cur->val = m;                               \
-    if (maybe)                                  \
-      maybe->next = cur;                        \
-    return cur;                                 \
-  }                                             \
-  /* Connect two nodes. Can cause loop! */      \
-  tn *tn##extend(tn *from, tn *to) {            \
-    if (!from) return 0;                        \
-    from->next = to;                            \
-    return to;                                  \
+// Connect two nodes. Can cause loop!
+node_t *extend(node_t *from, node_t *to) {
+  if (!from) return 0;
+  from->next = to;
+  return to;
+}
+/*
+  Connect `after` to `from`, and `to` to `after`s tail.
+  Returns `to`s tail. Does not check `to` follows `from`.
+  (This could be used to exchange tails...)
+ */
+node_t *insert(node_t *after, node_t *from, node_t *to) {
+  node_t *next = after->next;
+  node_t *tail = to->next;
+  after->next = from;
+  to->next = next;
+  return tail;
+}
+// NB impl of `last` would need loop detector
+/*
+  Define new linked list type tn, el type t.
+  t can be typename * for pointer (i.e. reference list).
+
+  <tn>append appends node with value `m` to node `maybe`.
+  If `maybe` doesn't exist, append starts a new list.
+  If `maybe` already has a ->next, append redirects it, orphaning tail unless
+caller retains it. Caller needs to retain list head.
+  Does not prevent inclusion of stack-allocated values in heap-allocated list!
+*/
+#define LIST(tn, t)                                                            \
+  typedef struct tn tn;                                                        \
+  struct tn {                                                                  \
+    tn *next;                                                                  \
+    t val;                                                                     \
+  };                                                                           \
+  tn *tn##append(arena *a, tn *maybe, t m) {                                   \
+    tn *cur = new (a, tn, 1);                                                  \
+    cur->val = m;                                                              \
+    if (maybe)                                                                 \
+      maybe->next = cur;                                                       \
+    return cur;                                                                \
+  }                                                                            \
+  tn *tn##next(tn *node) { return (tn *)next((node_t *)node); }                \
+  tn *tn##nth(tn *node, size n) { return (tn *)nth((node_t *)node, n); }       \
+  tn *tn##extend(tn *from, tn *to) {                                           \
+    return (tn *)extend((node_t *)from, (node_t *)to);                         \
+  }                                                                            \
+  tn *tn##insert(tn *after, tn *from, tn *to) {                                \
+    return (tn *)insert((node_t *)after, (node_t *)from, (node_t *)to);        \
   }
+
 /*
   Define new association list type with ...count, ...assoc, ...dissoc, ...get.
   kt and vt can be typename * for pointer, caller provides appropriate keq fn.
