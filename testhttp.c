@@ -2,8 +2,7 @@
 
 Response handler(arena *store, arena scratch, Request req) {
   // TODO check and deal with req.error
-  s8map *headers = s8mapassoc(store, 0, s8("Content-Type"),
-                              s8("text/html; charset=UTF-8"));
+  s8map *headers = s8mapassocl(store, 0, s8("Content-Type"), s8("text/html; charset=UTF-8"));
   s8 body = s8("<!doctype html>" 
                "<html>"
                "<head>"

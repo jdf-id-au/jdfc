@@ -55,11 +55,6 @@ int main(int argc, char *argv[]) {
 
   inspect(&(u64){0xabcd000012340000});
 
-  s8 el = s8("hello s8build");
-  // NB normally scratch arena is passed by value, but it's functioning as a buffer here...
-  s8build(&scratch, &el, &s8(" next"));
-  log_debug(s8arena(&scratch));
-  
   s8rs *rs = s8rsappend(&store, 0, &s8("first"));
   s8rs *tail = s8rsappend(&store, rs, &s8("second"));
   tail = s8rsappend(&store, tail, &s8("third"));

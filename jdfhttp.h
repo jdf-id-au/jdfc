@@ -24,7 +24,7 @@ enum http_method { // https://developer.mozilla.org/en-US/docs/Web/HTTP/Referenc
 };
 
 // TODO macrology?
-const char *spell_methods[] = {
+const char *spell_method[] = {
     [INVALID_METHOD] = "",
     [GET] = "GET",
     [HEAD] = "HEAD",
@@ -41,7 +41,7 @@ const char *spell_methods[] = {
 
 enum http_method parse_method(s8 s) {
   for (size i = 1; i < (size)PATCH; i++) 
-    if (s8equal(s, s8unsafe(spell_methods[i]))) // should be safe because literal??
+    if (s8equal(s, s8unsafe(spell_method[i]))) // should be safe because literal??
       return (enum http_method)i;
   return INVALID_METHOD;
 }
@@ -50,7 +50,7 @@ enum http_method parse_method(s8 s) {
 size s8arenaprintf(arena *a, const char *format) {
   if (a->cur < a->end) *a->cur = 0;
   else {
-    char *warning = "❗️(too long for buffer)";
+    const char *warning = "❗️(too long for buffer)";
     snprintf(a->end - sizeof(warning), sizeof(warning), "%s", warning);
   }
   return printf(format, a->beg);
@@ -97,11 +97,16 @@ enum http_status { // https://developer.mozilla.org/en-US/docs/Web/HTTP/Referenc
   HTTP_VERSION_NOT_SUPPORTED
 };
 
+const char *spell_http_status[] = {
+    [OK] = "OK",
+    [NOT_FOUND] = "Not Found"
+};
+
 enum content_type {
   TEXT_HTML
 };
 
-const char *spell_content_types[] = {
+const char *spell_content_type[] = {
   [TEXT_HTML] = "text/html; charset=UTF-8"
 };
 
@@ -214,7 +219,6 @@ int set_non_blocking(int sockfd) {
   return 0;
 }
 
-
 #define ReqErr(e) do { req.error = e; return req; } while (0) // macrology semicolon hack
 
 // would be "better" to use llhttp (which depends on llvm...)
@@ -256,47 +260,56 @@ Request parse_request(arena *store, arena scratch, s8 raw) {
 }
 
 s8map *content_type(arena *store, s8map *head, enum content_type content_type) {
-  s8mapassoc(store, head, s8("Content-Type"), s8(spell_content_types[content_type]));
+  s8mapassoc(store, head, s8("Content-Type"),
+             (s8){ .buf = (u8 *)spell_content_type[content_type]});
+}
+
+// Associate cloned k & v.
+s8map *s8mapassocl(arena *store, s8map *head, s8 k, s8 v) {
+  s8_ kc = s8clone(store, k);
+  s8_ vc = s8clone(store, v);
+  if (kc.ok && vc.ok) return s8mapassoc(store, head, kc.v, vc.v);
+  s8log(2, s8("Error setting "), 0);
+  s8log(2, k, 1);
+  return head;
 }
 
 Response add_headers(arena *store, arena scratch, Response res) {
   // TODO should be conditional on client's invitation
-  res.headers = s8mapassoc(store, res.headers, s8("Connection"), s8("keep-alive"));
-  char content_length[10] = {0};
-  if (snprintf(content_length, sizeof(content_length),
-               "%ti", res.body.len) > 0) {
-    s8_ v = s8clone(store, s8wrap(content_length, sizeof(content_length)));
-    if (v.ok) res.headers = s8mapassoc(store, res.headers, s8("Content-Length"), v.v);
-  }
+  res.headers = s8mapassocl(store, res.headers, s8("Connection"), s8("keep-alive"));
+  s8 k = s8("Content-Length");
+  s8_ v = s8printf(&scratch, "%ti", res.body.len);
+  if (v.ok) res.headers = s8mapassocl(store, res.headers, k, v.v);
+  else s8log(2, s8("Error setting Content-Length"), 1);
   return res;
+}
+
+s8_ crlf(arena *buf) {
+  s8build(buf, s8("\r\n"));
 }
 
 // Non-streaming for the moment
 s8_ serialise_response(arena *store, arena scratch, Response res) {
-  // Use scratch as buffer.
-  arena_usage scratch_usage = usage(&scratch);
-  assert(!scratch_usage.used);
-  s8buildcstr(&scratch, "HTTP/1.1 ");
-  s8 status = {0}; 
-  switch (res.status) {
-  case OK:
-    status = s8("200 OK"); // TODO check spec, etc
-    break;
-  }
-  s8buildsep(&scratch, "\r\n", &status);
-  res = add_headers(store, (arena){0}, res); // don't use scratch during s8build
+  res = add_headers(store, scratch, res); // reassigning to pass-by-value arg; do before store becomes buffer
+  byte *start = store->cur;
+  s8_ s = s8printf(store, "HTTP/1.1 %i %s\r\n", res.status, spell_http_status[res.status]);
+  if (!s.ok) return (s8_){0};
   s8map *header = res.headers;
-  do {
-    s8buildsep(&scratch, ": ", &header->key);
-    s8buildsep(&scratch, "\r\n", &header->val);
+  do { // grug approve ... alternatives bad
+    s8build(store, header->key);
+    s8build(store, s8(": "));
+    s8build(store, header->val);
+    crlf(store);
   } while ((header = header->next));
-  s8buildcstr(&scratch, "\r\n");
-  s8build(&scratch, &res.body);
+  crlf(store);
+  s8build(store, res.body);
+  crlf(store);
   // TODO handle cookies separately
-  // FIXME s8_ is too annoying within s8build...? could wrap with macro
-  // returning not-ok?
-  printf("📣 %s\n", s8unwrap(store, s8arena(&scratch)));
-  return (s8_){ .v = s8arena(&scratch) };
+  *store->cur++ = 0; // include a zero for cstr compatibility
+  s8_ sa = s8arena(store, start);
+  if (!sa.ok) return (s8_){0};
+  printf("📣 %s\n", sa.v.buf);
+  return sa;
 }
 
 void cleanup_client(EV_P_ ev_io *w) {
@@ -327,7 +340,7 @@ void write_client(EV_P_ ev_io *w, int events) {
   if (chunk.len > 0) {
     ssize_t bytes_written = write(w->fd, chunk.buf, chunk.len);
     if (bytes_written == 0) { // TODO CHECK SEMANTICS client closed connection?
-      printf("write client closed cleanup\n");
+      // printf("write client closed cleanup\n");
       cleanup_client(EV_A_ w);
     } else if (bytes_written < 0) {
       if (errno == EAGAIN || errno == EWOULDBLOCK) {
@@ -369,7 +382,12 @@ void read_client(EV_P_ ev_io *w, int events) {
     // TODO handle large read, e.g. stream to arena until finished or excessive,
     // then handle?
     // For now, store (copy) request in client store arena.
-    s8_ raw = s8clone(&client->store, s8arena(&client->scratch));
+    s8_ sa = s8arena(&client->scratch, 0);
+    if (!sa.ok) {
+      perror("Failed to store raw request");
+      cleanup_client(EV_A_ w);
+    }
+    s8_ raw = s8clone(&client->store, sa.v);
     if (!raw.ok) {
       perror("Failed to store raw request");
       cleanup_client(EV_A_ w);
@@ -432,7 +450,7 @@ void accept_client(EV_P_ ev_io *w, int events) {
 }
 
 void sigint_cb(EV_P_ ev_signal *w, int events) {
-  printf("SIGINT\n"); fflush(0);
+  s8log(2, s8("SIGINT"), 1);
   ev_break (EV_A_ EVBREAK_ALL);
 }
 

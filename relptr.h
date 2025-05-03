@@ -8,6 +8,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <stdarg.h>
+#include <stdio.h> // just for vsnprintf
 
 typedef uint8_t   u8;
 #ifdef _WIN32
@@ -445,11 +446,12 @@ s8 s8wrap(const char *cstr, size maxlen) {
   return s8span(beg, end);
 }
 
-char *s8unwrap(arena *a, s8 s) {
+// Return copy of s into a, one byte longer for terminal zero.
+s8_ s8unwrap(arena *a, s8 s) {
   u8 *buf = new (a, u8, s.len + 1); // is zeroed
-  if (!buf) return 0;
+  if (!buf) return (s8_){0};
   copy(buf, s.buf, s.len);
-  return (char *)buf;
+  return (s8_){ .v = {.buf = buf, .len = s.len + 1}};
 }
 
 // https://www.reddit.com/r/C_Programming/comments/kzouxh/isspace_ctypeh_considered_harmful/
@@ -547,9 +549,12 @@ s8 s8concat(arena *a, s8 *ss, size len) {
   return (s8){.buf = buf, .len = tot};
 }
 
-// Present whole (used portion of) arena as s8.
-s8 s8arena(arena *buf) {
-  return (s8){.buf = (u8 *)buf->beg, .len = buf->cur - buf->beg};
+// Present part of arena as s8.
+s8_ s8arena(arena *buf, byte *from) {
+  byte *f = from ? from : buf->beg;
+  if (f >= buf->beg && f <= buf->cur)
+    return (s8_){.v = {.buf = (u8 *)f, .len = buf->cur - f}};
+  else return (s8_){0};
 }
 
 s8_ u8fill(arena *buf, u8 with, size count) {
@@ -559,28 +564,27 @@ s8_ u8fill(arena *buf, u8 with, size count) {
   return (s8_) { .v = s8span(p, p + count) };
 }
 
-// Variadic s8* (POINTERS), mark end with null final arg!
-// Type system doesn't catch accidental passage of s8 vs s8*. 
-// Pass DEDICATED arena. Can call multiple times and then s8arena separately.
-s8_ s8buildfn(arena *buf, s8 sep,...) {
-  va_list args;
-  va_start(args, sep);
-  s8 *arg = 0;
-  u8 *cur = 0;
-  while ((arg = va_arg(args, s8 *))) {
-    cur = new (buf, u8, arg->len + sep.len);
-    if (!cur) return (s8_){0};
-    copy(cur, arg->buf, arg->len);
-    // NB "sep"arator is really appended to all elements
-    copy(cur + arg->len, sep.buf, sep.len);
-  }
-  va_end(args);
-  return (s8_){ .v = s8arena(buf) };
+// Intended for use with dedicated scratch!
+s8_ s8build(arena *buf, s8 s) {
+  u8 *cur = new (buf, u8, s.len);
+  if (!cur) return (s8_){0};
+  copy(cur, s.buf, s.len);
+  return s8arena(buf, (byte *)cur);
 }
-
-#define s8build(buf, ...) s8buildfn(buf, (s8){0}, __VA_ARGS__, 0)
-#define s8buildsep(buf, sep, ...) s8buildfn(buf, s8(sep), __VA_ARGS__, 0)
-#define s8buildcstr(buf, s) s8build(buf, &s8(s))
+ 
+// Intended for use with dedicated scratch!
+s8_ s8printf(arena *buf, const char *format, ...) {
+  if (!buf || !buf->cur) return (s8_){0};
+  byte *start = buf->cur;
+  va_list args;
+  va_start(args, format);
+  int n = vsnprintf(buf->cur, buf->end - buf->cur, format, args);
+  va_end(args);
+  if (n > 0) {
+    buf->cur += n;
+    return s8arena(buf, start);
+  } else return (s8_){0};
+}
 
 // ────────────────────────────────────────────────────────────────────── Output
 
@@ -624,21 +628,21 @@ void flush(bufout *b) {
 }
 
 // Unbuffered, with newline
-void s8log(i32 fd, s8 s) {
+void s8log(i32 fd, s8 s, b32 newline) {
   oswrite(fd, (u8 *)s.buf, s.len);
-  oswrite(fd, (u8 *)"\n", 1);
+  if (newline) oswrite(fd, (u8 *)"\n", 1);
 }
 
 // There's no shame in using prinf...
-#define log_debug(s) s8log(1, s)
-#define log_err(s) s8log(2, s)
+#define log_debug(s) s8log(1, s, 1)
+#define log_err(s) s8log(2, s, 1)
 
 // ──────────────────────────────────────────────────────────── Operating System
 
 void osfail(i32 code);
 
 void failwith(i32 code, s8 msg) {
-  s8log(2, msg);
+  s8log(2, msg, 1);
   osfail(code);
 }
 
@@ -665,8 +669,8 @@ void debytes(i32 fd, void *val, size len) { // too cool for stdio.h printf
   oswrite(fd, (u8 *)"\n", 1);
 }
 
-#define inspect(ptr)                              \
-  s8log(1, s8("Contents of pointer " #ptr ":"));  \
+#define inspect(ptr)                                 \
+  s8log(1, s8("Contents of pointer " #ptr ":"), 1);  \
   debytes(1, ptr, sizeof(*(ptr)))
 
 // TODO why are there so many signed ints below where negative is incorrect?
