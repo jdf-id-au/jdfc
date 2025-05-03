@@ -66,16 +66,16 @@ int main(int argc, char *argv[]) {
   tail = s8rsappend(&store, tail, &s8("fourth"));
   tail = s8rsappend(&store, tail, &s8("fifth"));
   tail = s8rsappend(&store, tail, &s8("sixth"));
-  printf("rs has %ti entries\n", s8rscount(rs));
+  printf("rs has %ti entries\n", count(rs));
 
   s8map *al = s8mapassoc(&store, 0, s8("a"), s8("b"));
   al = s8mapassoc(&store, al, s8("c"), s8("d"));
   al = s8mapassoc(&store, al, s8("e"), s8("f"));
   al = s8mapassoc(&store, al, s8("g"), s8("h"));
   
-  printf("al has %ti entries\n", s8mapcount(al));
+  printf("al has %ti entries\n", count(al));
   al = s8mapdissoc(al, s8("a"));
-  printf("al now has %ti entries\n", s8mapcount(al));
+  printf("al now has %ti entries\n", count(al));
 
   s8map *match = s8mapget(al, s8("e"));
   if(match) log_debug(match->val);

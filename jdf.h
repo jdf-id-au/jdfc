@@ -113,6 +113,12 @@ node_t *nth(node_t *node, size n) {
     if (maybe)                                  \
       maybe->next = cur;                        \
     return cur;                                 \
+  }                                             \
+  /* Connect two nodes. Can cause loop! */      \
+  tn *tn##extend(tn *from, tn *to) {            \
+    if (!from) return 0;                        \
+    from->next = to;                            \
+    return to;                                  \
   }
 /*
   Define new association list type with ...count, ...assoc, ...dissoc, ...get.

@@ -94,6 +94,7 @@ node_t *nth(arena *a, node_t *node, size n) {
   for (size i = 0; i < n; i++) ret = next(a, ret);
   return ret;
 }
+// NB impl of `last` would need loop detector
 /*
    Define new linked list type tn, el type t, with <tn>count and <tn>append.
    t can be typename * for pointer (i.e. reference list).
@@ -104,18 +105,24 @@ caller retains it. Caller needs to retain list head.
    Does not prevent inclusion of stack-allocated values in heap-allocated list!
    TODO could implement fns to skip variadic nodes, making new separate list; skipspan likewise.
 */
-#define LIST(tn, t)                             \
-  RPTR(tn)                                      \
-  typedef struct {                              \
-    R##tn next;                                 \
-    t val;                                      \
-  } tn;                                         \
-  tn *tn##append(arena *a, tn *maybe, t m) {    \
-    tn *cur = new (a, tn, 1);                   \
-    cur->val = m;                               \
-    if (maybe)                                  \
-      maybe->next = rel(a, cur);                \
-    return cur;                                 \
+#define LIST(tn, t)                                     \
+  RPTR(tn)                                              \
+  typedef struct {                                      \
+    R##tn next;                                         \
+    t val;                                              \
+  } tn;                                                 \
+  tn *tn##append(arena *a, tn *maybe, t m) {            \
+    tn *cur = new (a, tn, 1);                           \
+    cur->val = m;                                       \
+    if (maybe)                                          \
+      maybe->next = rel(a, cur);                        \
+    return cur;                                         \
+  }                                                     \
+  /* Connect two nodes. Can cause loop! */              \
+  tn *tn##extend(arena *a, tn *from, tn *to) {          \
+    if (!from) return 0;                                \
+    from->next = rel(a, to);                            \
+    return to;                                          \
   }
 /*
   Define new association list type with ...count, ...assoc, ...dissoc, ...get.
