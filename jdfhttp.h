@@ -3,7 +3,7 @@
 // https://medium.com/@justup1080/tutorial-creating-a-minimalist-http-server-in-c-2303d140c725
 // https://hoad.io/libev-is-neat/ 
 
-#include "jdf.h"
+#include "jdf.h" // TODO remove if want flexibility of choosing relptr.h
 #include <ev.h>
 
 #ifndef jdfhttp_h

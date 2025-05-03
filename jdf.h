@@ -33,6 +33,18 @@ typedef char      byte;
 typedef ptrdiff_t size;
 typedef size_t    usize;
 
+/*
+  Pass "store" arena by reference, and "scratch" by value.
+  This effectively resets the scratch *cur pointer on fn return.
+*/
+typedef struct {
+  // https://stackoverflow.com/a/21476937/780743
+  // easier not to have `byte *const beg` and end to facilitate free_arena
+  byte *beg; // original start of arena
+  byte *cur; // cursor: current start of free space
+  byte *end; // allocated end of arena
+} arena;
+
 #define alignof(x) (size)_Alignof(x) // casting from size_t
 #define countof(arrayptr) (size)(sizeof(arrayptr) / sizeof(*(arrayptr))) // casting from size_t
 #define new(a, t, n) (t *)alloc(a, sizeof(t), alignof(t), n) // arena, type, number
@@ -44,11 +56,7 @@ typedef size_t    usize;
   (Can only cast scalars unfortunately.)
   https://stackoverflow.com/a/3995987/780743
 */
-#define MAYBE(t)                                  \
-  typedef union {                                 \
-    uptr ok; /* false if !v.buf */                \
-    t v;                                          \
-  } t##maybe;
+#define MAYBE(t) typedef union {uptr ok; t v;} t##_;
 /*
   To enable assertions in release builds,
   put UBSan in trap mode with -fsanitize-trap
@@ -60,14 +68,21 @@ typedef size_t    usize;
 
 // ──────────────────────────────────────────────────────────────── Linked lists
 
-#define COUNT(tn)                               \
-  size tn##count(tn *v) {                       \
-    size c = 0;                                 \
-    tn *cur = v;                                \
-    if (!cur) return 0;                         \
-    do { c++; } while ((cur = cur->next));      \
-    return c;                                   \
-  }
+typedef struct node_t node_t;
+struct node_t  {
+  node_t *next;
+  // etc!
+};
+
+size countfn(arena *a, node_t *node) {
+  size c = 0;
+  node_t *cur = node;
+  if (!cur)
+    return 0;
+  do { c++; } while ((cur = cur->next));
+  return c;
+}
+#define count(a, n) countfn(a, (node_t *)n)
 /*
    Define new linked list type tn, el type t, with <tn>count and <tn>append.
    t can be typename * for pointer (i.e. reference list).
@@ -76,15 +91,22 @@ typedef size_t    usize;
    If `maybe` already has a ->next, append redirects it, orphaning tail unless
 caller retains it. Caller needs to retain list head.
    Does not prevent inclusion of stack-allocated values in heap-allocated list!
-   TODO could implement fns to skip variadic nodes, making new separate list; skipspan likewise.
+   TODO could implement fns to skip variadic nodes, making new separate list;
+skipspan likewise.
 */
+// just to parallel relptr api
+node_t *next(node_t *node) { return node->next; }
+node_t *nth(node_t *node, size n) {
+  node_t *ret = node;
+  for (size i = 0; i < n; i++) ret = ret->next;
+  return ret;
+}
 #define LIST(tn, t)                             \
   typedef struct tn tn;                         \
   struct tn {                                   \
-    t val;                                      \
     tn *next;                                   \
+    t val;                                      \
   };                                            \
-  COUNT(tn)                                     \
   tn *tn##append(arena *a, tn *maybe, t m) {    \
     tn *cur = new (a, tn, 1);                   \
     cur->val = m;                               \
@@ -103,11 +125,10 @@ caller retains it. Caller needs to retain list head.
 #define ASSOCIATION_LIST(tn, kt, vt, keq)                             \
   typedef struct tn tn;                                               \
   struct tn {                                                         \
+    tn *next;                                                         \
     kt key;                                                           \
     vt val;                                                           \
-    tn *next;                                                         \
   };                                                                  \
-  COUNT(tn)                                                           \
   /* Uniquely associate key to value. Caller must ensure kv validity. \
      Assoc to null head to make new association list.                 \
    Returns null pointer if new fails. */                              \
@@ -166,18 +187,6 @@ caller retains it. Caller needs to retain list head.
   }
 
 // ─────────────────────────────────────────────────────────────────────── Arena
-
-/*
-  Pass "store" arena by reference, and "scratch" by value.
-  This effectively resets the scratch *cur pointer on fn return.
-*/
-typedef struct {
-  // https://stackoverflow.com/a/21476937/780743
-  // easier not to have `byte *const beg` and end to facilitate free_arena
-  byte *beg; // original start of arena
-  byte *cur; // cursor: current start of free space
-  byte *end; // allocated end of arena
-} arena;
 
 // TODO could visualise correctness of padding algorithm
 // Allocate space within arena. Use via `new` macro.
@@ -390,23 +399,23 @@ b32 s8blank(s8 s) {
 }
 
 // Copies buf
-s8maybe s8clone(arena *a, s8 s) {
+s8_ s8clone(arena *a, s8 s) {
   u8 *buf = new (a, u8, s.len);
-  if (!buf) return (s8maybe){0}; 
+  if (!buf) return (s8_){0}; 
   s8 c = (s8){.buf = buf, .len = s.len};
   copy(c.buf, s.buf, s.len);
-  return (s8maybe){.v = c}; // cast to union is apparently a gnu extension
+  return (s8_){.v = c}; // cast to union is apparently a gnu extension
 }
 
 /* Split s, returning s8spans referring to it (zero copy of buffer). */
 // NB annoying choice between accepting s8 and making new s8 for no split
 // vs accepting s8* and reusing for no split; former prob marginally better
-s8smaybe s8split(arena *store, arena scratch, s8 s, s8 on, size max_splits) {
-  s8smaybe nil = {0};
+s8s_ s8split(arena *store, arena scratch, s8 s, s8 on, size max_splits) {
+  s8s_ nil = {0};
   u8 *end = endof(s);
   if (!s.buf) return nil; // exit early without allocating
   // Allocation-free hack to differentiate ok-but-empty from not-ok.
-  if (s.len == 0) return (s8smaybe){ .v = { .buf = (s8 *)s.buf, .len = 0 } };
+  if (s.len == 0) return (s8s_){ .v = { .buf = (s8 *)s.buf, .len = 0 } };
   u8 **matches = new (&scratch, u8 *, max_splits);
   if (!matches) return nil;
   size nmatches = 0;
@@ -430,11 +439,11 @@ s8smaybe s8split(arena *store, arena scratch, s8 s, s8 on, size max_splits) {
       buf[nth] = s8span(matches[nth-1] + on.len, matches[nth]);
     }
   }
-  return (s8smaybe){.v = {.buf = buf, .len = nmatches + 1}};
+  return (s8s_){.v = {.buf = buf, .len = nmatches + 1}};
 }
 
 // Trivially less efficient than impl calling s8findu8, but easier to maintain.
-s8smaybe s8splitu8(arena *store, arena scratch, s8 s, u8 on, size max_splits) {
+s8s_ s8splitu8(arena *store, arena scratch, s8 s, u8 on, size max_splits) {
   s8 ons = (s8){.buf = (u8[]){on}, .len = 1};
   return s8split(store, scratch, s, ons, max_splits);
 }
@@ -458,30 +467,30 @@ s8 s8arena(arena *buf) {
   return (s8){.buf = (u8 *)buf->beg, .len = buf->cur - buf->beg};
 }
 
-s8maybe u8fill(arena *buf, u8 with, size count) {
+s8_ u8fill(arena *buf, u8 with, size count) {
   u8 *p = new (buf, u8, count);
-  if (!p) return (s8maybe){0};
+  if (!p) return (s8_){0};
   for (size i = 0; i < count; i++) p[i] = with;
-  return (s8maybe) { .v = s8span(p, p + count) };
+  return (s8_) { .v = s8span(p, p + count) };
 }
 
 // Variadic s8* (POINTERS), mark end with null final arg!
 // Type system doesn't catch accidental passage of s8 vs s8*. 
 // Pass DEDICATED arena. Can call multiple times and then s8arena separately.
-s8maybe s8buildfn(arena *buf, s8 sep,...) {
+s8_ s8buildfn(arena *buf, s8 sep,...) {
   va_list args;
   va_start(args, sep);
   s8 *arg = 0;
   u8 *cur = 0;
   while ((arg = va_arg(args, s8 *))) {
     cur = new (buf, u8, arg->len + sep.len);
-    if (!cur) return (s8maybe){0};
+    if (!cur) return (s8_){0};
     copy(cur, arg->buf, arg->len);
     // NB "sep"arator is really appended to all elements
     copy(cur + arg->len, sep.buf, sep.len);
   }
   va_end(args);
-  return (s8maybe){ .v = s8arena(buf) };
+  return (s8_){ .v = s8arena(buf) };
 }
 
 #define s8build(buf, ...) s8buildfn(buf, (s8){0}, __VA_ARGS__, 0)
@@ -499,7 +508,7 @@ typedef struct {
 } bufout;
 
 // FIXME deal with allocation failure!
-#define bufout(a, n, f) &(bufout){.buf = new(a, u8, n), .cap = n, .fd = f}
+#define bufout(a, n, f) &(bufout){.buf = new (a, u8, n), .cap = n, .fd = f}
 
 void flush(bufout *b);
 
@@ -602,7 +611,7 @@ arena alloc_arena(size cap) {
 b32 free_arena(arena *a) {
   b32 ret;
   if (!a) return 0;
-  u8 *me = a->beg;
+  byte *me = a->beg;
   a->beg = 0;
   a->cur = 0;
   a->end = 0;
@@ -647,7 +656,7 @@ arena alloc_arena(size cap) {
 
 b32 free_arena(arena *a) {
   if(!a) return 0;
-  u8 *me = a->beg;
+  byte *me = a->beg;
   a->beg = 0;
   a->cur = 0;
   a->end = 0;

@@ -7,11 +7,14 @@ CFLAGS=-std=c17 -g3 \
 -pedantic -Wall -Wextra \
 -fPIC -fsanitize=address,undefined
 
+run: testrel
+	MallocNanoZone='0' time ./testrel
+
 test: test.c
 	cc $(CFLAGS) $^ -o $@
 
-run: test
-	MallocNanoZone='0' ./test
+testrel: testrel.c
+	cc $(CFLAGS) $^ -o $@
 
-http: httptest.c
+testhttp: testhttp.c
 	cc $(CFLAGS) -lev -lpthread $^ -o $@
