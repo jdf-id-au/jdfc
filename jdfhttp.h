@@ -97,8 +97,8 @@ typedef struct {
   
 typedef struct {
   int status; // http status
-  s8map headers; // does not accommodate repeat keys, which are permitted by http spec https://stackoverflow.com/a/4371395/780743
-  s8map cookies; 
+  s8map *headers; // does not accommodate repeat keys, which are permitted by http spec https://stackoverflow.com/a/4371395/780743
+  s8map *cookies; 
   s8 body;
 } Response;
 
@@ -228,6 +228,17 @@ Request parse_request(arena *store, arena scratch, s8 raw) {
   return req;
 }
 
+void add_headers(arena *store, arena scratch, Response res) {
+  // TODO should be conditional on client's invitation
+  s8mapassoc(store, res.headers, s8("Connection"), s8("keep-alive"));
+  char content_length[10] = {0};
+  if (snprintf(content_length, sizeof(content_length),
+               "%ti", res.body.len) > 0) {
+    s8_ v = s8clone(store, s8wrap(content_length, sizeof(content_length)));
+    if (v.ok) s8mapassoc(store, &res.headers, s8("Content-Length"), v.v);
+  }
+}
+
 // Non-streaming for the moment
 s8_ serialise_response(arena *store, arena scratch, Response res) {
   // Use scratch as buffer.
@@ -241,7 +252,8 @@ s8_ serialise_response(arena *store, arena scratch, Response res) {
     break;
   }
   s8buildsep(&scratch, "\r\n", &status);
-  s8map *header = &res.headers;
+  add_headers(store, (arena){0}, res); // don't use scratch during s8build
+  s8map *header = res.headers;
   do {
     printf("%s: %s\n", s8unwrap(store, header->key), s8unwrap(store, header->val));
     s8buildsep(&scratch, ": ", &header->key);
@@ -257,14 +269,11 @@ s8_ serialise_response(arena *store, arena scratch, Response res) {
 void cleanup_client(EV_P_ ev_io *w) {
   Client *client = (Client *)w->data;
   // https://metacpan.org/dist/EV/view/libev/ev.pod#ev_TYPE_stop-(loop,-ev_TYPE-*watcher)
-  //if(!client->server) return;
   ev_io_stop(EV_A_ &client->read_io);
   ev_io_stop(EV_A_ &client->write_io);
   close(w->fd);
-  // TODO now check why browser load doesn't finish
-  free_arena(&client->scratch); // needs to be freed first, I think because of *client circularity
+  free_arena(&client->scratch); // needs to be freed first because *client itself is within client->store span
   free_arena(&client->store);
-  // client->server = 0; // doesn't prevent double free FIXME identify cause ?write then read
 }
 
 // signature cosplay for consistency
