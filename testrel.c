@@ -6,7 +6,7 @@ LIST(i32s, i32)
 b32 i32eq(i32 a, i32 b) { return a == b; }
 MAP_LIST(i32s8, i32, s8, i32eq)
 SET_LIST(i32set, i32, i32eq)
-
+SET_LIST(s8set, s8, s8equal)
 
 int main(void) {
   HEAD("s8 string functions");
@@ -55,9 +55,15 @@ int main(void) {
   TEST(!i32s8dissoc(&scratch, m, 84));
 
   HEAD("set list");
-  PREP(i32set *s = i32setconj(&scratch, 0, 42));
-  TEST(i32sethas(&scratch, s, 42));
-  TEST(!i32sethas(&scratch, s, 84));
-  
+  PREP(i32set *is = i32setconj(&scratch, 0, 42));
+  TEST(i32sethas(&scratch, is, 42));
+  TEST(!i32sethas(&scratch, is, 84));
+
+  PREP(s8set *ss = s8setconj(&scratch, 0, s8("hello")));
+  TEST(s8setconj(&scratch, ss, s8("there")));
+  TEST(s8sethas(&scratch, ss, s8("hello")));
+  arena_usage u = usage(&scratch);
+  printf("ss->next %i, sizeof(s8set) %ti, scratch used %ti B \n", ss->next, sizeof(s8set), u.used);
+
   return REPORT();
 }
