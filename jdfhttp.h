@@ -25,7 +25,16 @@ enum http_method { // https://developer.mozilla.org/en-US/docs/Web/HTTP/Referenc
 
 // TODO macrology?
 const char *spell_methods[] = {
-  "", "GET", "HEAD", "POST", "PUT", "DELETE", "CONNECT", "OPTIONS", "TRACE", "PATCH"
+    [INVALID_METHOD] = "",
+    [GET] = "GET",
+    [HEAD] = "HEAD",
+    [POST] = "POST",
+    [PUT] = "PUT",
+    [DELETE] = "DELETE",
+    [CONNECT] = "CONNECT",
+    [OPTIONS] = "OPTIONS",
+    [TRACE] = "TRACE",
+    [PATCH] =  "PATCH"
 };
 
 #define s8unsafe(s) (s8){ .buf = (u8 *)s, .len = strlen(s) }
@@ -86,6 +95,14 @@ enum http_status { // https://developer.mozilla.org/en-US/docs/Web/HTTP/Referenc
   SERVICE_UNAVAILABLE,
   GATEWAY_TIMEOUT,
   HTTP_VERSION_NOT_SUPPORTED
+};
+
+enum content_type {
+  TEXT_HTML
+};
+
+const char *spell_content_types[] = {
+  [TEXT_HTML] = "text/html; charset=UTF-8"
 };
 
 MAP_LIST(s8map, s8, s8, s8equal)
@@ -238,15 +255,20 @@ Request parse_request(arena *store, arena scratch, s8 raw) {
   return req;
 }
 
-void add_headers(arena *store, arena scratch, Response res) {
+s8map *content_type(arena *store, s8map *head, enum content_type content_type) {
+  s8mapassoc(store, head, s8("Content-Type"), s8(spell_content_types[content_type]));
+}
+
+Response add_headers(arena *store, arena scratch, Response res) {
   // TODO should be conditional on client's invitation
-  s8mapassoc(store, res.headers, s8("Connection"), s8("keep-alive"));
+  res.headers = s8mapassoc(store, res.headers, s8("Connection"), s8("keep-alive"));
   char content_length[10] = {0};
   if (snprintf(content_length, sizeof(content_length),
                "%ti", res.body.len) > 0) {
     s8_ v = s8clone(store, s8wrap(content_length, sizeof(content_length)));
-    if (v.ok) s8mapassoc(store, res.headers, s8("Content-Length"), v.v);
+    if (v.ok) res.headers = s8mapassoc(store, res.headers, s8("Content-Length"), v.v);
   }
+  return res;
 }
 
 // Non-streaming for the moment
@@ -262,7 +284,7 @@ s8_ serialise_response(arena *store, arena scratch, Response res) {
     break;
   }
   s8buildsep(&scratch, "\r\n", &status);
-  add_headers(store, (arena){0}, res); // don't use scratch during s8build
+  res = add_headers(store, (arena){0}, res); // don't use scratch during s8build
   s8map *header = res.headers;
   do {
     s8buildsep(&scratch, ": ", &header->key);
@@ -319,9 +341,9 @@ void write_client(EV_P_ ev_io *w, int events) {
       // should become multiple writes if deliverable.v.len > BUFOUTSIZE
     }
   } else {
-    //printf("Unsetting writable\n");
+    // Continues to rise as connections stays open... TODO graceful drop if hits limit
+    printf("✅ Done, %ti B client arena use\n", (size)(client->store.cur - client->store.beg));
     client_set_writable(EV_A_ w, 0); // unset writable when write actually finished
-    //cleanup_client(EV_A_ w); // seems to let browser "finish loading"; https://stackoverflow.com/questions/20763999/explain-http-keep-alive-mechanism
   }
 }
 
