@@ -56,7 +56,7 @@ typedef struct {
   (Can only cast scalars unfortunately.)
   https://stackoverflow.com/a/3995987/780743
 */
-#define MAYBE(t) typedef union {uptr ok; t v;} t##_;
+#define MAYBE(t) typedef union { uptr ok; t v; } t##_;
 /*
   To enable assertions in release builds,
   put UBSan in trap mode with -fsanitize-trap

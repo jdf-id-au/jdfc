@@ -48,13 +48,14 @@ rptr rel(arena *a, void *p) { if (!p) return 0; return (byte *)p - a->beg; }
 #define alignof(x) (size)_Alignof(x) // casting from size_t
 #define countof(arrayptr) (size)(sizeof(arrayptr) / sizeof(*(arrayptr))) // casting from size_t
 #define new(a, t, n) (t *)alloc(a, sizeof(t), alignof(t), n) // arena, type, number
-// ARRAY types still use normal pointer to buffer.
-#define ARRAY(tn, t) typedef struct { t *buf; size len; } tn; // new type name, el type
-/*
-  If wanted to put tn itself in arena (as well as its buffer), 
-  would need to use relative pointers... TODO role? For arena save/restore?
- */
-#define RARRAY(tn, t) typedef struct { R##t buf; size len; } tn;
+// ARRAY types still use normal pointer to buffer. // new type name, el type
+#define ARRAY(tn, t) \
+  RPTR(tn) \
+  RPTR(t) \
+  typedef struct { t *buf; size len; } tn; \
+  typedef struct { R##t buf; size len; } RA##tn; \
+  tn ptr##RA##tn(arena *a, RA##tn v) { return (tn){ .buf = ptr(a, v.buf), .len = v.len }; } \
+  RA##tn rel##tn(arena *a, tn v) { return (RA##tn){ .buf = rel(a, v.buf), .len = v.len }; } 
 #define endof(v) (v).buf + (v).len // one beyond last of sized value
 /*
   Somewhat evil semantic affordance for structs starting with (possibly nested) nullable pointer.
@@ -62,8 +63,8 @@ rptr rel(arena *a, void *p) { if (!p) return 0; return (byte *)p - a->beg; }
   (Can only cast scalars unfortunately.)
   https://stackoverflow.com/a/3995987/780743
 */
-#define MAYBE(t) typedef union {uptr ok; t v;} t##_;
-#define RMAYBE(t) typedef union {rptr ok; t v;} t##_;
+#define MAYBE(t) typedef union { uptr ok; t v; } t##_; \
+  typedef union { rptr ok; t v; } R##t##_;
 /*
   To enable assertions in release builds,
   put UBSan in trap mode with -fsanitize-trap
