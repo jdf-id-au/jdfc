@@ -74,7 +74,7 @@ struct node_t  {
   // etc!
 };
 
-size countfn(arena *a, node_t *node) {
+size countfn(node_t *node) {
   size c = 0;
   node_t *cur = node;
   if (!cur)
@@ -82,7 +82,7 @@ size countfn(arena *a, node_t *node) {
   do { c++; } while ((cur = cur->next));
   return c;
 }
-#define count(a, n) countfn(a, (node_t *)n)
+#define count(n) countfn((node_t *)n)
 /*
    Define new linked list type tn, el type t, with <tn>count and <tn>append.
    t can be typename * for pointer (i.e. reference list).

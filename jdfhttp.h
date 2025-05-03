@@ -134,7 +134,7 @@ typedef struct {
   arena scratch;
   ev_io read_io;
   ev_io write_io;
-  s8maybe deliverable; // slice some other s8 on client's arena, no need to retain head here unless redelivery or something
+  s8_ deliverable; // slice some other s8 on client's arena, no need to retain head here unless redelivery or something
 } Client;
 
 Server make_server(Config c) {
@@ -187,10 +187,10 @@ int set_non_blocking(int sockfd) {
 // would be "better" to use llhttp (which depends on llvm...)
 Request parse_request(arena *store, arena scratch, s8 raw) {
   Request req = { .raw = raw };
-  s8smaybe split = s8splitu8(store, scratch, raw, '\n', 100);
+  s8s_ split = s8splitu8(store, scratch, raw, '\n', 100);
   if (!split.ok) ReqErr(REQUEST_OOM);
   if (split.v.len < 1) ReqErr(REQUEST_EMPTY);
-  s8smaybe line0 = s8splitu8(store, scratch, split.v.buf[0], ' ', 2);
+  s8s_ line0 = s8splitu8(store, scratch, split.v.buf[0], ' ', 2);
   if (!line0.ok) ReqErr(REQUEST_OOM);
   if (line0.v.len < 3) ReqErr(INVALID_METHOD_LINE);
   req.method = parse_method(line0.v.buf[0]);
@@ -199,7 +199,7 @@ Request parse_request(arena *store, arena scratch, s8 raw) {
   s8map *headers = {0};
   for (size i = 1; i < split.v.len; i++) {
     if (s8blank(split.v.buf[i])) break; // TODO trailing headers...??
-    s8smaybe header = s8split(store, scratch, split.v.buf[i], s8(": "), 1);
+    s8s_ header = s8split(store, scratch, split.v.buf[i], s8(": "), 1);
     if (!header.ok) ReqErr(REQUEST_OOM);
     if (header.v.len == 2)
       headers = s8mapassoc(store, headers, header.v.buf[0], header.v.buf[1]);
@@ -209,10 +209,10 @@ Request parse_request(arena *store, arena scratch, s8 raw) {
   // e.g. Cookie: name=value; name2=value2; name3=value3
   s8map *cookiekv = s8mapget(headers, s8("Cookie"));
   if (cookiekv) {
-    s8smaybe cookiekvs = s8split(store, scratch, cookiekv->val, s8("; "), 32);
+    s8s_ cookiekvs = s8split(store, scratch, cookiekv->val, s8("; "), 32);
     if (!cookiekvs.ok) ReqErr(REQUEST_OOM);
     for (size i = 0; i < cookiekvs.v.len; i++) {
-      s8smaybe cookie = s8splitu8(store, scratch, cookiekvs.v.buf[i], '=', 1);
+      s8s_ cookie = s8splitu8(store, scratch, cookiekvs.v.buf[i], '=', 1);
       if (!cookie.ok) ReqErr(REQUEST_OOM);
       if (cookie.v.len == 2)
         cookies = s8mapassoc(store, cookies, cookie.v.buf[0], cookie.v.buf[1]);
@@ -223,7 +223,7 @@ Request parse_request(arena *store, arena scratch, s8 raw) {
 }
 
 // Non-streaming for the moment
-s8maybe serialise_response(arena *store, arena scratch, Response res) {
+s8_ serialise_response(arena *store, arena scratch, Response res) {
   // Use scratch as buffer.
   arena_usage scratch_usage = usage(&scratch);
   assert(!scratch_usage.used);
@@ -245,8 +245,8 @@ s8maybe serialise_response(arena *store, arena scratch, Response res) {
   s8buildcstr(&scratch, "\r\n");
   s8build(&scratch, &res.body);
   // TODO handle cookies separately
-  // FIXME s8maybe is too annoying within s8build...? could wrap with macro returning not-ok?
-  return (s8maybe){ .v = s8arena(&scratch) };
+  // FIXME s8_ is too annoying within s8build...? could wrap with macro returning not-ok?
+  return (s8_){ .v = s8arena(&scratch) };
 }
 
 void cleanup_client(EV_P_ ev_io *w) {
@@ -320,7 +320,7 @@ void read_client(EV_P_ ev_io *w, int events) {
     // TODO handle large read, e.g. stream to arena until finished or excessive,
     // then handle?
     // For now, store (copy) request in client store arena.
-    s8maybe raw = s8clone(&client->store, s8arena(&client->scratch));
+    s8_ raw = s8clone(&client->store, s8arena(&client->scratch));
     if (!raw.ok) {
       perror("Failed to store raw request");
       cleanup_client(EV_A_ w);
@@ -361,7 +361,7 @@ void accept_client(EV_P_ ev_io *w, int events) {
     // Allocate arenas TODO monitor usage, tune
     arena client_store = alloc_arena(server->client_arena_cap);
     arena client_scratch = alloc_arena(server->client_arena_cap);
-    printf("store beg %p\nscratch beg %p\n", client_store.beg, client_scratch.beg); fflush(0);
+    printf("store beg %p\nscratch beg %p\n", (void *)client_store.beg, (void *)client_scratch.beg); fflush(0);
     // https://metacpan.org/dist/EV/view/libev/ev.pod#ASSOCIATING-CUSTOM-DATA-WITH-A-WATCHER
     Client *client = new (&client_store, Client, 1);
     if (!client) {
