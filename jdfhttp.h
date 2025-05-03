@@ -37,6 +37,16 @@ enum http_method parse_method(s8 s) {
   return INVALID_METHOD;
 }
 
+// Terminates string in situ! Only suitable for arenas being prepared for s8arena.
+size s8arenaprintf(arena *a, const char *format) {
+  if (a->cur < a->end) *a->cur = 0;
+  else {
+    char *warning = "❗️(too long for buffer)";
+    snprintf(a->end - sizeof(warning), sizeof(warning), "%s", warning);
+  }
+  return printf(format, a->beg);
+}
+
 enum http_status { // https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Status
   // incomplete list
   OK = 200,
@@ -235,7 +245,7 @@ void add_headers(arena *store, arena scratch, Response res) {
   if (snprintf(content_length, sizeof(content_length),
                "%ti", res.body.len) > 0) {
     s8_ v = s8clone(store, s8wrap(content_length, sizeof(content_length)));
-    if (v.ok) s8mapassoc(store, &res.headers, s8("Content-Length"), v.v);
+    if (v.ok) s8mapassoc(store, res.headers, s8("Content-Length"), v.v);
   }
 }
 
@@ -255,14 +265,15 @@ s8_ serialise_response(arena *store, arena scratch, Response res) {
   add_headers(store, (arena){0}, res); // don't use scratch during s8build
   s8map *header = res.headers;
   do {
-    printf("%s: %s\n", s8unwrap(store, header->key), s8unwrap(store, header->val));
     s8buildsep(&scratch, ": ", &header->key);
     s8buildsep(&scratch, "\r\n", &header->val);
   } while ((header = header->next));
   s8buildcstr(&scratch, "\r\n");
   s8build(&scratch, &res.body);
   // TODO handle cookies separately
-  // FIXME s8_ is too annoying within s8build...? could wrap with macro returning not-ok?
+  // FIXME s8_ is too annoying within s8build...? could wrap with macro
+  // returning not-ok?
+  printf("📣 %s\n", s8unwrap(store, s8arena(&scratch)));
   return (s8_){ .v = s8arena(&scratch) };
 }
 
@@ -341,8 +352,8 @@ void read_client(EV_P_ ev_io *w, int events) {
       perror("Failed to store raw request");
       cleanup_client(EV_A_ w);
     }
+    s8arenaprintf(&client->scratch, "🔔 %s\n");
     client->scratch.cur = client->scratch.beg; // Reset!
-    log_debug(raw.v);
     Request req = parse_request(&client->store, client->scratch, raw.v);
     /* TODO concept:
        - validate +- encode request
