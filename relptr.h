@@ -50,13 +50,12 @@ rptr rel(arena *a, void *p) { if (!p) return 0; return (byte *)p - a->beg; }
 #define new(a, t, n) (t *)alloc(a, sizeof(t), alignof(t), n) // arena, type, number
 // ARRAY types still use normal pointer to buffer. // new type name, el type
 #define ARRAY(tn, t) \
-  RPTR(tn) \
   RPTR(t) \
   typedef struct { t *buf; size len; } tn; \
   typedef struct { R##t buf; size len; } RA##tn; \
   tn ptr##RA##tn(arena *a, RA##tn v) { return (tn){ .buf = ptr(a, v.buf), .len = v.len }; } \
   RA##tn rel##tn(arena *a, tn v) { return (RA##tn){ .buf = rel(a, v.buf), .len = v.len }; } 
-#define endof(v) (v).buf + (v).len // one beyond last of sized value
+#define endof(v) (v).buf + (v).len // one beyond last of sized value, only for normal pointer, not for rel ptr
 /*
   Somewhat evil semantic affordance for structs starting with (possibly nested) nullable pointer.
   Allows if(s.ok) process(s.v). Use to represent e.g. internal allocation failure.
@@ -156,7 +155,7 @@ caller retains it. Caller needs to retain list head.
   Make sure to use `dissoc`s returned head! Dissoc final key will return null.
   Makes no attempt to compact or reorder storage within arena.
 */
-#define ASSOCIATION_LIST(tn, kt, vt, keq)                             \
+#define MAP_LIST(tn, kt, vt, keq)                                     \
   RPTR(tn)                                                            \
   typedef struct tn tn;                                               \
   struct tn {                                                         \

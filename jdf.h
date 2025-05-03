@@ -145,7 +145,7 @@ caller retains it. Caller needs to retain list head.
   Make sure to use returned head! Dissoc final key will return null.
   Makes no attempt to compact or reorder storage within arena.
 */
-#define ASSOCIATION_LIST(tn, kt, vt, keq)                             \
+#define MAP_LIST(tn, kt, vt, keq)                                     \
   typedef struct tn tn;                                               \
   struct tn {                                                         \
     tn *next;                                                         \

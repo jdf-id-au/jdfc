@@ -4,8 +4,9 @@
 
 LIST(i32s, i32)
 b32 i32eq(i32 a, i32 b) { return a == b; }
-ASSOCIATION_LIST(i32s8, i32, s8, i32eq)
+MAP_LIST(i32s8, i32, s8, i32eq)
 SET_LIST(i32set, i32, i32eq)
+
 
 int main(void) {
   HEAD("s8 string functions");
