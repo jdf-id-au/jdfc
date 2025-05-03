@@ -327,6 +327,8 @@ void copy(u8 *restrict dst, u8 *restrict src, size len) {
   if (dst && src) for (size i = 0; i < len; i++) dst[i] = src[i];
 }
 
+// TODO save and load rptr arena?!
+
 // ───────────────────────────────────────────────────────────────────── Strings
 
 ARRAY(s8, u8) // s8: Basic UTF-8 string. Not null terminated!

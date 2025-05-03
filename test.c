@@ -6,7 +6,7 @@ s8 blurb = text(This will be included with whitespace collapsed
                 and "quotes" escaped.
                 );
 
-ASSOCIATION_LIST(s8map, s8, s8, s8equal)
+MAP_LIST(s8map, s8, s8, s8equal)
 LIST(s8rs, s8 *)
 
 // TODO more descriptive testing ??framework

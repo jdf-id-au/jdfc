@@ -63,7 +63,7 @@ int main(void) {
   TEST(s8setconj(&scratch, ss, s8("there")));
   TEST(s8sethas(&scratch, ss, s8("hello")));
   arena_usage u = usage(&scratch);
-  printf("ss->next %i, sizeof(s8set) %ti, scratch used %ti B \n", ss->next, sizeof(s8set), u.used);
+  printf("ss->next %i, sizeof(s8set) %ti, scratch usage %ti B \n", ss->next, sizeof(s8set), u.used);
 
   return REPORT();
 }

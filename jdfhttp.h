@@ -1,9 +1,10 @@
 // No, don't! Use mongoose instead!
 // Starting at
 // https://medium.com/@justup1080/tutorial-creating-a-minimalist-http-server-in-c-2303d140c725
-// https://hoad.io/libev-is-neat/ 
+// https://hoad.io/libev-is-neat/
 
-#include "jdf.h" // TODO remove if want flexibility of choosing relptr.h
+#include "jdf.h" // TODO remove if want flexibility of choosing relptr.h; may not be worth matching APIs though
+//#include "relptr.h"
 #include <ev.h>
 
 #ifndef jdfhttp_h
@@ -77,7 +78,7 @@ enum http_status { // https://developer.mozilla.org/en-US/docs/Web/HTTP/Referenc
   HTTP_VERSION_NOT_SUPPORTED
 };
 
-ASSOCIATION_LIST(s8map, s8, s8, s8equal)
+MAP_LIST(s8map, s8, s8, s8equal)
 
 enum request_error {
   REQUST_OK, REQUEST_OOM, REQUEST_EMPTY, INVALID_METHOD_LINE 
@@ -159,6 +160,11 @@ Server make_server(Config c) {
     perror("Socket creation failed");
     exit(EXIT_FAILURE);
   }
+  int yes = 1; // allow faster relaunch
+  if (setsockopt(server.socket, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes)) < 0) {
+    perror("Socket option setting failed");
+    exit(EXIT_FAILURE);
+  }
   if (bind(server.socket,
            (struct sockaddr *)&server.address,
            sizeof(server.address)) < 0) {
@@ -237,9 +243,8 @@ s8_ serialise_response(arena *store, arena scratch, Response res) {
   s8buildsep(&scratch, "\r\n", &status);
   s8map *header = &res.headers;
   do {
-    log_debug(header->key);
+    printf("%s: %s\n", s8unwrap(store, header->key), s8unwrap(store, header->val));
     s8buildsep(&scratch, ": ", &header->key);
-    log_debug(header->val);
     s8buildsep(&scratch, "\r\n", &header->val);
   } while ((header = header->next));
   s8buildcstr(&scratch, "\r\n");
@@ -280,7 +285,7 @@ void write_client(EV_P_ ev_io *w, int events) {
   if (chunk.len > 0) {
     ssize_t bytes_written = write(w->fd, chunk.buf, chunk.len);
     if (bytes_written == 0) { // TODO CHECK SEMANTICS client closed connection?
-      printf("write client closed cleanup");
+      printf("write client closed cleanup\n");
       cleanup_client(EV_A_ w);
     } else if (bytes_written < 0) {
       if (errno == EAGAIN || errno == EWOULDBLOCK) {
@@ -294,7 +299,9 @@ void write_client(EV_P_ ev_io *w, int events) {
       // should become multiple writes if deliverable.v.len > BUFOUTSIZE
     }
   } else {
+    //printf("Unsetting writable\n");
     client_set_writable(EV_A_ w, 0); // unset writable when write actually finished
+    //cleanup_client(EV_A_ w); // seems to let browser "finish loading"; https://stackoverflow.com/questions/20763999/explain-http-keep-alive-mechanism
   }
 }
 
@@ -306,7 +313,7 @@ void read_client(EV_P_ ev_io *w, int events) {
   ssize_t bytes_read = read(w->fd, client->scratch.beg, scratch_usage.remaining);
   client->scratch.cur = client->scratch.beg + bytes_read;
   if (bytes_read == 0) { // client closed connection
-    printf("read client closed cleanup");
+    // printf("read client closed cleanup\n");
     cleanup_client(EV_A_ w);
   } else if (bytes_read < 0) {
     if (errno == EAGAIN || errno == EWOULDBLOCK) {
@@ -342,7 +349,6 @@ void read_client(EV_P_ ev_io *w, int events) {
     // ⚠ SINGLE THREADED and synchronous for the moment; TODO offload to worker
     // pthread pool CAREFULLY
     Response res = client->server->handler(&client->store, client->scratch, req);
-    // TODO serialise response into bufout for writing to socket without preventing write from actually running...
     client->deliverable = serialise_response(&client->store, client->scratch, res);
     if (client->deliverable.ok) client_set_writable(EV_A_ w, 1); // unset in write_client when actually finished
     // not closing socket
@@ -361,7 +367,7 @@ void accept_client(EV_P_ ev_io *w, int events) {
     // Allocate arenas TODO monitor usage, tune
     arena client_store = alloc_arena(server->client_arena_cap);
     arena client_scratch = alloc_arena(server->client_arena_cap);
-    printf("store beg %p\nscratch beg %p\n", (void *)client_store.beg, (void *)client_scratch.beg); fflush(0);
+    // printf("store beg %p\nscratch beg %p\n", (void *)client_store.beg, (void *)client_scratch.beg); fflush(0);
     // https://metacpan.org/dist/EV/view/libev/ev.pod#ASSOCIATING-CUSTOM-DATA-WITH-A-WATCHER
     Client *client = new (&client_store, Client, 1);
     if (!client) {
@@ -383,16 +389,26 @@ void accept_client(EV_P_ ev_io *w, int events) {
   }
 }
 
+void sigint_cb(EV_P_ ev_signal *w, int events) {
+  printf("SIGINT\n"); fflush(0);
+  ev_break (EV_A_ EVBREAK_ALL);
+}
+
 void launch(Server *server) {
   server->loop = ev_loop_new(0);
-  ev_io accept_watcher;
   set_non_blocking(server->socket);
+
+  ev_io accept_watcher;
   ev_io_init(&accept_watcher, accept_client, server->socket, EV_READ);
   accept_watcher.data = server; // allows access within callbacks
   ev_io_start(server->loop, &accept_watcher);
+
+  ev_signal signal_watcher;
+  ev_signal_init(&signal_watcher, sigint_cb, SIGINT);
+  signal_watcher.data = server;
+  ev_signal_start(server->loop, &signal_watcher);
+
   ev_run(server->loop, 0);
-  // FIXME sometimes have to wait before relaunching because Address already in
-  // use. Need signal handler to shutdown properly?
   ev_loop_destroy(server->loop);
 }
 
