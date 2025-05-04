@@ -160,14 +160,15 @@ typedef struct {
   Handler handler;
 } Server;
 
-#define BUFOUTSIZE 8192 // TODO what's optimal?
+#define BUFOUTSIZE 4096 // TODO what's optimal?
 typedef struct {
   Server *server;
   arena store;
   arena scratch;
   ev_io read_io;
   ev_io write_io;
-  s8_ deliverable; // slice some other s8 on client's arena, no need to retain head here unless redelivery or something
+  Response *res;
+  bufout deliver;
 } Client;
 
 Server make_server(Config c) {
@@ -284,32 +285,39 @@ Response add_headers(arena *store, arena scratch, Response res) {
   return res;
 }
 
-s8_ crlf(arena *buf) {
-  s8build(buf, s8("\r\n"));
+void s8writet(bufout *b, s8 s) { // libev TCP-adapted version of s8write
+  if (!b->buf || !s.buf) return;
+  u8 *buf = s.buf;
+  u8 *end = endof(s);
+  while (!b->err && (buf < end)) {
+    i32 avail = b->cap - b->len;
+    i32 count = (avail < end - buf) ? avail : (i32)(end - buf);
+    copy(b->buf + b->len, buf, count);
+    buf += count;
+    b->len += count;
+    // FIXME libev async something? worker pthread? flush/write is done in write_client
+    if (b->len == b->cap) flush(b);
+  }
 }
 
-// Non-streaming for the moment FIXME should this be more like bufout/s8write? how to preview
-s8_ serialise_response(arena *store, arena scratch, Response res) {
+void serialise_response(Client *client, Response res) { // not actually being called yet!
+  arena *store = &client->store;
+  arena scratch = client->scratch;
+  bufout *out = &client->deliver;
+  s8 crlf = s8("\r\n");
   res = add_headers(store, scratch, res); // reassigning to pass-by-value arg; do before store becomes buffer
-  byte *start = store->cur;
-  s8_ s = s8sprintf(store, "HTTP/1.1 %i %s\r\n", res.status, spell_http_status[res.status]);
-  if (!s.ok) return (s8_){0};
   s8map *header = res.headers;
-  do { // grug approve ... alternatives bad
-    s8build(store, header->key);
-    s8build(store, s8(": "));
-    s8build(store, header->val);
-    crlf(store);
+  s8printf(scratch, s8writet, out, "HTTP/1.1 %i %s\r\n", res.status, spell_http_status[res.status]); // TODO adapt to make_constants stuff when ready
+  s8_ k = {0};
+  s8_ v = {0};
+  do {
+    k = s8unwrap(&scratch, header->key);
+    v = s8unwrap(&scratch, header->val);
+    s8printf(scratch, s8writet, out, "%s: %s\r\n", k, v);
   } while ((header = header->next));
-  crlf(store);
-  s8build(store, res.body);
-  crlf(store);
-  // TODO handle cookies separately
-  *store->cur++ = 0; // include a zero for cstr compatibility
-  s8_ sa = s8arena(store, start);
-  if (!sa.ok) return (s8_){0};
-  printf("📣 %s\n", sa.v.buf);
-  return sa;
+  s8writet(out, crlf);
+  s8writet(out, res.body);
+  printf("📣 %i\n", res.status);
 }
 
 void cleanup_client(EV_P_ ev_io *w) {
@@ -334,38 +342,66 @@ void client_set_writable(EV_P_ ev_io *w, b32 writable) {
 
 void write_client(EV_P_ ev_io *w, int events) {
   Client *client = (Client *)w->data;
-  if (!client->deliverable.ok) return; // TODO other handling? retry something?
-  // TODO how to indicate zero length reply? Meaningless?
-  s8 chunk = s8slice(client->deliverable.v, 0, BUFOUTSIZE);
-  if (chunk.len > 0) {
-    ssize_t bytes_written = write(w->fd, chunk.buf, chunk.len); // this is unsurprisingly just like oswrite...
-    if (bytes_written == 0) { // TODO CHECK SEMANTICS client closed connection?
-      // printf("write client closed cleanup\n");
-      cleanup_client(EV_A_ w);
-    } else if (bytes_written < 0) {
-      if (errno == EAGAIN || errno == EWOULDBLOCK) {
-        // does this just try again?
-      } else {
-        perror("Error writing to client");
+
+  // This is the analog of Wellons' flush and oswrite together
+
+  bufout *b = &client->deliver;
+  if (!b) return;
+  if (!b->err && b->len) {
+    for (i32 off = 0; off < b->len;) { // b->fd redundant with w->fd but clear
+      i32 written = (i32)write(b->fd, b->buf, b->len - off);
+      if (written == 0) { // TODO CHECK SEMANTICS client closed connection?
         cleanup_client(EV_A_ w);
+        return;
+      } else if (written < 0) {
+        if (errno == EAGAIN || errno == EWOULDBLOCK) {
+          // keep trying
+        } else {
+          perror("Error writing to client");
+          cleanup_client(EV_A_ w);
+          return;
+        }
       }
-    } else {
-      client->deliverable.v = s8slice(client->deliverable.v, bytes_written, 0);
-      // should become multiple writes if deliverable.v.len > BUFOUTSIZE
+      off += written;
     }
-  } else {
-    // Continues to rise as connections stays open... TODO graceful drop if hits limit
-    printf("✅ Done, %ti B client arena use\n", (size)(client->store.cur - client->store.beg));
-    client_set_writable(EV_A_ w, 0); // unset writable when write actually finished
+    b->len = 0;
   }
+  //  ssize_t bytes_written = write(w->fd, client->deliver)
+                           //  
+                           //  if (!client->deliverable.ok) return; // TODO other handling? retry something?
+  //  // TODO how to indicate zero length reply? Meaningless?
+    //  s8 chunk = s8slice(client->deliverable.v, 0, BUFOUTSIZE);
+  //  if (chunk.len > 0) {
+    //    ssize_t bytes_written = write(w->fd, chunk.buf, chunk.len); // this is unsurprisingly just like oswrite...
+    //    if (bytes_written == 0) { // TODO CHECK SEMANTICS client closed connection?
+      //      // printf("write client closed cleanup\n");
+      //      cleanup_client(EV_A_ w);
+      //    } else if (bytes_written < 0) {
+      //      if (errno == EAGAIN || errno == EWOULDBLOCK) {
+        //        // does this just try again?
+        //      } else {
+        //        perror("Error writing to client");
+        //        cleanup_client(EV_A_ w);
+        //      }
+      //    } else {
+      //      client->deliverable.v = s8slice(client->deliverable.v, bytes_written, 0);
+      //      // should become multiple writes if deliverable.v.len > BUFOUTSIZE
+        //    }
+  //  } else {
+  //    // Continues to rise as connections stays open... TODO graceful drop if
+  //    hits limit
+
+  // 
+    //    printf("✅ Done, %ti B client arena use\n", (size)(client->store.cur - client->store.beg));
+    //    client_set_writable(EV_A_ w, 0); // unset writable when write actually finished
+    //  }
 }
 
 void read_client(EV_P_ ev_io *w, int events) {
   Client *client = (Client *)w->data;
-  arena_usage scratch_usage = usage(&client->scratch);
-  assert(!scratch_usage.used);
   // using scratch arena as a buffer here, instead of local array
-  ssize_t bytes_read = read(w->fd, client->scratch.beg, scratch_usage.remaining);
+  assert(0 == used(&client->scratch));
+  ssize_t bytes_read = read(w->fd, client->scratch.beg, remaining(&client->scratch));
   client->scratch.cur = client->scratch.beg + bytes_read;
   if (bytes_read == 0) { // client closed connection
     // printf("read client closed cleanup\n");
@@ -408,9 +444,15 @@ void read_client(EV_P_ ev_io *w, int events) {
      */
     // ⚠ SINGLE THREADED and synchronous for the moment; TODO offload to worker
     // pthread pool CAREFULLY
-    Response res = client->server->handler(&client->store, client->scratch, req);
-    client->deliverable = serialise_response(&client->store, client->scratch, res);
-    if (client->deliverable.ok) client_set_writable(EV_A_ w, 1); // unset in write_client when actually finished
+    client->res = new (&client->store, Response, 1);
+    if (!client->res) {
+      perror("Failed to store response");
+      cleanup_client(EV_A_ w);
+    }
+    *client->res =
+        client->server->handler(&client->store, client->scratch, req);
+    // TODO need to call serialise_response somewhere!!
+    client_set_writable(EV_A_ w, 1); // unset in write_client when actually finished
     // not closing socket
   }
 }
@@ -432,13 +474,19 @@ void accept_client(EV_P_ ev_io *w, int events) {
     Client *client = new (&client_store, Client, 1);
     if (!client) {
       perror("Failed to allocate client");
-      exit(EXIT_FAILURE); // TODO could give SERVICE_UNAVAILABLE...
+      return; // TODO could give SERVICE_UNAVAILABLE...
     }
     client->server = server;
     client->store = client_store; // for passing by reference
     client->scratch = client_scratch; // for passing by value
     ev_io_init(&client->read_io, read_client, new_socket, EV_READ);
-    client->read_io.data = client; // I'm a woozie (see libev doc) 
+    client->read_io.data = client; // I'm a woozie (see libev doc)
+    u8 *outbuf = new (&client->store, u8, BUFOUTSIZE); // need to allocate
+    if (!outbuf) {
+      perror("Failed to allocate out buffer");
+      return; // handling?
+    }
+    client->deliver = (bufout){ .buf = outbuf, .cap = BUFOUTSIZE, .fd = w->fd }; 
     ev_io_start(EV_A_ & client->read_io);
     // This is started and stopped conditionally on whether there is data to
     // write, to prevent excessive activation...

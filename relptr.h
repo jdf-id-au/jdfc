@@ -566,7 +566,7 @@ s8_ s8build(arena *buf, s8 s) {
 }
  
 // Intended for use with dedicated scratch!
-s8_ s8printf(arena *buf, const char *format, ...) {
+s8_ s8sprintf(arena *buf, const char *format, ...) {
   if (!buf || !buf->cur) return (s8_){0};
   byte *start = buf->cur;
   va_list args;
