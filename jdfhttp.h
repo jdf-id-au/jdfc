@@ -288,7 +288,7 @@ s8_ crlf(arena *buf) {
   s8build(buf, s8("\r\n"));
 }
 
-// Non-streaming for the moment
+// Non-streaming for the moment FIXME should this be more like bufout/s8write?
 s8_ serialise_response(arena *store, arena scratch, Response res) {
   res = add_headers(store, scratch, res); // reassigning to pass-by-value arg; do before store becomes buffer
   byte *start = store->cur;
@@ -338,7 +338,7 @@ void write_client(EV_P_ ev_io *w, int events) {
   // TODO how to indicate zero length reply? Meaningless?
   s8 chunk = s8slice(client->deliverable.v, 0, BUFOUTSIZE);
   if (chunk.len > 0) {
-    ssize_t bytes_written = write(w->fd, chunk.buf, chunk.len);
+    ssize_t bytes_written = write(w->fd, chunk.buf, chunk.len); // this is unsurprisingly just like oswrite...
     if (bytes_written == 0) { // TODO CHECK SEMANTICS client closed connection?
       // printf("write client closed cleanup\n");
       cleanup_client(EV_A_ w);

@@ -1,5 +1,6 @@
 /*
-  Like jdf.h but with relative internal pointers. API likely to be affected.
+  Like jdf.h but with relative internal pointers.
+  API likely to be affected. TODO #ifdef RELPTR to adapt jdf.h ?
 */
 
 #ifndef jdf_h // guard deliberately same as non-internal pointer impl

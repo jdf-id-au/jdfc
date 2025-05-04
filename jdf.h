@@ -567,6 +567,12 @@ s8_ s8printf(arena *buf, const char *format, ...) {
   } else return (s8_){0};
 }
 
+// FIXME really want to be able to s8buildf(arena *buf, const char *format, ...)
+// which can take s8s!
+// This unfortunately requires copying because of the way s8s work (slice etc)
+// So would need scratch arena.
+// So should reconsider use of scratch as output/construction buffer.
+
 // ────────────────────────────────────────────────────────────────────── Output
 
 typedef struct {
