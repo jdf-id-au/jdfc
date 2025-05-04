@@ -298,17 +298,9 @@ byte *alloc(arena *a, size objsize, size align, size count) {
   return p;
 }
 
-typedef struct {
-  size used;
-  size remaining;
-} arena_usage;
-
-arena_usage usage(arena *a) {
-  return (arena_usage){
-    .used = a->cur - a->beg,
-    .remaining = a->end - a->cur
-  };
-}
+size capacity(arena *a) { return a->end - a->beg; }
+size used(arena *a) { return a->cur - a->beg; }
+size remaining(arena *a) { return a->end - a->cur; }
 
 size KiB(u32 n) { return (1<<10) * n; }
 size MiB(u32 n) { return (1<<20) * n; }
@@ -729,11 +721,6 @@ arena alloc_arena(size cap) {
   byte* end = beg ? beg + cap : 0;
   if (beg) return (arena){.beg = beg, .cur = beg, .end = end};
   else return (arena){0};
-}
-
-// When scratch is in use... mainly s8printf...
-arena stack_arena(byte *buf, size cap) {
-  return (arena){ .beg = buf, .cur = buf, .end = buf + cap };
 }
 
 b32 free_arena(arena *a) {

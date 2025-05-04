@@ -308,17 +308,9 @@ byte *alloc(arena *a, size objsize, size align, size count) {
   return p;
 }
 
-typedef struct {
-  size used;
-  size remaining;
-} arena_usage;
-
-arena_usage usage(arena *a) {
-  return (arena_usage){
-    .used = a->cur - a->beg,
-    .remaining = a->end - a->cur
-  };
-}
+size capacity(arena *a) { return a->end - a->beg; }
+size used(arena *a) { return a->cur - a->beg; }
+size remaining(arena *a) { return a->end - a->cur; }
 
 size KiB(u32 n) { return (1<<10) * n; }
 size MiB(u32 n) { return (1<<20) * n; }

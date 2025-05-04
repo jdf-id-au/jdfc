@@ -18,3 +18,6 @@ testrel: testrel.c
 
 testhttp: testhttp.c
 	time cc $(CFLAGS) -lev -lpthread $^ -o $@
+
+make_constants: make_constants.c
+	time cc $(CFLAGS) -ljansson $^ -o $@
