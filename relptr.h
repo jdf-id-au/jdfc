@@ -610,15 +610,16 @@ void s8write(bufout *b, s8 s) {
   }
 }
 
-/* What a nightmare (just want s8 insted
-// https://stackoverflow.com/questions/38525863/how-to-replace-values-in-va-list
-void s8printf(arena scratch, bufout *b, const char *format, ...) {
+int s8printf(arena scratch, bufout *b, const char *format, ...) {
+  if (!scratch.beg || !b->buf) return;
   va_list args;
   va_start(args, format);
-
+  int n = vsnprintf(scratch.beg, remaining(&scratch), format, args);
   va_end(args);
+  s8_ sa = s8arena(&scratch, scratch.beg);
+  if (n > 0 && sa.ok) s8write(b, sa.v);
+  return n;
 }
-*/
 
 u32 oswrite(i32 fd, u8 *buf, i32 len);
 
