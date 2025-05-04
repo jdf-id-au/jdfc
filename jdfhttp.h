@@ -278,7 +278,7 @@ Response add_headers(arena *store, arena scratch, Response res) {
   // TODO should be conditional on client's invitation
   res.headers = s8mapassocl(store, res.headers, s8("Connection"), s8("keep-alive"));
   s8 k = s8("Content-Length");
-  s8_ v = s8printf(&scratch, "%ti", res.body.len);
+  s8_ v = s8sprintf(&scratch, "%ti", res.body.len);
   if (v.ok) res.headers = s8mapassocl(store, res.headers, k, v.v);
   else s8log(2, s8("Error setting Content-Length"), 1);
   return res;
@@ -288,11 +288,11 @@ s8_ crlf(arena *buf) {
   s8build(buf, s8("\r\n"));
 }
 
-// Non-streaming for the moment FIXME should this be more like bufout/s8write?
+// Non-streaming for the moment FIXME should this be more like bufout/s8write? how to preview
 s8_ serialise_response(arena *store, arena scratch, Response res) {
   res = add_headers(store, scratch, res); // reassigning to pass-by-value arg; do before store becomes buffer
   byte *start = store->cur;
-  s8_ s = s8printf(store, "HTTP/1.1 %i %s\r\n", res.status, spell_http_status[res.status]);
+  s8_ s = s8sprintf(store, "HTTP/1.1 %i %s\r\n", res.status, spell_http_status[res.status]);
   if (!s.ok) return (s8_){0};
   s8map *header = res.headers;
   do { // grug approve ... alternatives bad
