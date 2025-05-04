@@ -25,8 +25,9 @@ typedef char16_t  c16;
 #endif
 typedef int32_t   b32; // 0 false, 1 true
 typedef int32_t   i32;
+typedef int64_t   i64;
 typedef uint32_t  u32;
-typedef uint64_t  u64;
+typedef uint64_t u64;
 typedef float     f32;
 typedef double    f64;
 typedef uintptr_t uptr;
