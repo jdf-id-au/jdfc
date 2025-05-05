@@ -573,6 +573,55 @@ s8_ s8sprintf(arena *buf, const char *format, ...) {
 // So would need scratch arena.
 // So should reconsider use of scratch as output/construction buffer.
 
+// ──────────────────────────────── Lock-free concurrent queue (single consumer)
+// https://nullprogram.com/blog/2022/05/14/
+
+typedef _Atomic u32 queue; // typedef _Atomic ... is ok as per stdatomic.h
+i32 queue_capacity(i32 exp) { if (exp < 16) return (1 << exp) - 1; return 0; }
+// Returns index for next value to be popped. -1 when empty.
+i32 queue_pop(queue *q, i32 exp) {
+  u32 r = *q; // ? memory_order_acquire from stdatomic.h
+  i32 mask = (1u << exp) - 1;
+  i32 head = r       & mask;
+  i32 tail = r >> 16 & mask;
+  return head == tail ? -1 : tail;
+}
+void queue_pop_commit(queue *q) {
+  *q += 0x10000; // 0x10000 == 1u << 16 i.e. increment tail ; ? memory_order_release
+}
+// Returns index for next value to be pushed. -1 when full.
+i32 queue_push(queue *q, i32 exp) {
+  u32 r = *q;
+  i32 mask = (1u << exp) - 1;
+  i32 head = r       * mask;
+  i32 tail = r >> 16 & mask;
+  i32 next = (head + 1u) & mask;
+  // 0x8000 == 1 << 15; ~0x8000 is zero at bit 15, rest ones.
+  if (r & 0x8000) *q &= ~0x8000;  // avoid overflow (of head into tail bytes) on commit
+  return next == tail ? -1 : head;
+}
+// After storing into (separately allocated) element array.
+void queue_push_commit(queue *q) {
+  *q += 1;
+}
+
+// ╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴ Lock-free concurrent output buffer (single consumer)
+
+typedef struct {
+  u8 *buf; // allocate correct capacity:
+  i32 exp; // buffer length as 2**exp, must be < 16, capacity is len - 1
+  queue q;
+} qout;
+MAYBE(qout)
+qout_ make_qout(arena *a, i32 exp) {
+  qout_ nil = (qout_){0};
+  i32 cap = queue_capacity(exp);
+  if (cap == 0) return nil;
+  u8 *buf = new (a, u8, cap);
+  if (!buf) return nil;
+  return (qout_){ .v = { .buf = buf, .exp = exp, .q = 0 } };  
+}
+
 // ────────────────────────────────────────────────────────────────────── Output
 
 typedef struct {
@@ -604,7 +653,7 @@ void s8write(bufout *b, s8 s) {
   }
 }
 
-int s8printf(arena scratch, void (*with)(bufout *b, s8 s),
+int s8printf(arena scratch, void (*writer)(bufout *b, s8 s),
              bufout *b, const char *format, ...) {
   if (!scratch.beg || !b->buf) return -1;
   va_list args;
@@ -612,7 +661,7 @@ int s8printf(arena scratch, void (*with)(bufout *b, s8 s),
   int n = vsnprintf(scratch.beg, remaining(&scratch), format, args);
   va_end(args);
   s8_ sa = s8arena(&scratch, scratch.beg);
-  if (n > 0 && sa.ok) with(b, sa.v);
+  if (n > 0 && sa.ok) writer(b, sa.v);
   return n;
 }
 

@@ -168,6 +168,7 @@ typedef struct {
   ev_io read_io;
   ev_io write_io;
   Response *res;
+  queue out_queue;
   bufout deliver;
 } Client;
 
