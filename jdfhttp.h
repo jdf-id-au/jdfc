@@ -161,6 +161,7 @@ typedef struct {
 } Server;
 
 #define BUFOUTSIZE 4096 // TODO what's optimal?
+#define QEXP 15 // 32767 u8s
 typedef struct {
   Server *server;
   arena store;
@@ -168,8 +169,7 @@ typedef struct {
   ev_io read_io;
   ev_io write_io;
   Response *res;
-  queue out_queue;
-  bufout deliver;
+  qout deliver;
 } Client;
 
 Server make_server(Config c) {
@@ -344,29 +344,38 @@ void client_set_writable(EV_P_ ev_io *w, b32 writable) {
 void write_client(EV_P_ ev_io *w, int events) {
   Client *client = (Client *)w->data;
 
+  qout *q = &client->deliver;
+  u8 buf[BUFOUTSIZE] = {0};
+  for (size i = 0; i < BUFOUTSIZE; i++) {
+    i32 qidx = queue_pop(q, QEXP);
+    if (qidx < 0) return; // empty; go back to libev
+    // TODO is `complete` _Atomic b32 needed?
+    
+  }
+  
   // This is the analog of Wellons' flush and oswrite together
 
-  bufout *b = &client->deliver;
-  if (!b) return;
-  if (!b->err && b->len) {
-    for (i32 off = 0; off < b->len;) { // b->fd redundant with w->fd but clear
-      i32 written = (i32)write(b->fd, b->buf, b->len - off);
-      if (written == 0) { // TODO CHECK SEMANTICS client closed connection?
-        cleanup_client(EV_A_ w);
-        return;
-      } else if (written < 0) {
-        if (errno == EAGAIN || errno == EWOULDBLOCK) {
-          // keep trying
-        } else {
-          perror("Error writing to client");
-          cleanup_client(EV_A_ w);
-          return;
-        }
-      }
-      off += written;
-    }
-    b->len = 0;
-  }
+  //  bufout *b = &client->deliver; // TODO reimpl as read from qout
+  //  if (!b) return;
+  //  if (!b->err && b->len) {
+    //    for (i32 off = 0; off < b->len;) { // b->fd redundant with w->fd but clear
+      //      i32 written = (i32)write(b->fd, b->buf, b->len - off);
+      //      if (written == 0) { // TODO CHECK SEMANTICS client closed connection?
+        //        cleanup_client(EV_A_ w);
+        //        return;
+        //      } else if (written < 0) {
+        //        if (errno == EAGAIN || errno == EWOULDBLOCK) {
+          //          // keep trying
+          //        } else {
+          //          perror("Error writing to client");
+          //          cleanup_client(EV_A_ w);
+          //          return;
+          //        }
+        //      }
+      //      off += written;
+      //    }
+    //    b->len = 0;
+    //  }
   //  ssize_t bytes_written = write(w->fd, client->deliver)
                            //  
                            //  if (!client->deliverable.ok) return; // TODO other handling? retry something?
@@ -452,7 +461,7 @@ void read_client(EV_P_ ev_io *w, int events) {
     }
     *client->res =
         client->server->handler(&client->store, client->scratch, req);
-    // TODO need to call serialise_response somewhere!!
+    // TODO need to call serialise_response, do it from (one, multi-client, but not busy-waiting) worker thread writing to cilent's qout
     client_set_writable(EV_A_ w, 1); // unset in write_client when actually finished
     // not closing socket
   }

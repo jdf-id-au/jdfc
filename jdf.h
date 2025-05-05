@@ -577,11 +577,15 @@ s8_ s8sprintf(arena *buf, const char *format, ...) {
 // https://nullprogram.com/blog/2022/05/14/
 
 typedef _Atomic u32 queue; // typedef _Atomic ... is ok as per stdatomic.h
-i32 queue_capacity(i32 exp) { if (exp < 16) return (1 << exp) - 1; return 0; }
+// Must be positive, <= 32768, and a power of two.
+i32 queue_capacity(i32 len) {
+  if ((len <= 0) || (len > 1 << 16) || (len & (len -1))) return 0;
+  return len - 1;
+}
 // Returns index for next value to be popped. -1 when empty.
-i32 queue_pop(queue *q, i32 exp) {
+i32 queue_pop(queue *q, i32 len) {
   u32 r = *q; // ? memory_order_acquire from stdatomic.h
-  i32 mask = (1u << exp) - 1;
+  i32 mask = len - 1;
   i32 head = r       & mask;
   i32 tail = r >> 16 & mask;
   return head == tail ? -1 : tail;
@@ -590,9 +594,9 @@ void queue_pop_commit(queue *q) {
   *q += 0x10000; // 0x10000 == 1u << 16 i.e. increment tail ; ? memory_order_release
 }
 // Returns index for next value to be pushed. -1 when full.
-i32 queue_push(queue *q, i32 exp) {
+i32 queue_push(queue *q, i32 len) {
   u32 r = *q;
-  i32 mask = (1u << exp) - 1;
+  i32 mask = len - 1;
   i32 head = r       * mask;
   i32 tail = r >> 16 & mask;
   i32 next = (head + 1u) & mask;
@@ -608,18 +612,37 @@ void queue_push_commit(queue *q) {
 // ╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴ Lock-free concurrent output buffer (single consumer)
 
 typedef struct {
-  u8 *buf; // allocate correct capacity:
-  i32 exp; // buffer length as 2**exp, must be < 16, capacity is len - 1
+  s8 buf; // correct capacity when make_qout
   queue q;
 } qout;
 MAYBE(qout)
-qout_ make_qout(arena *a, i32 exp) {
+qout_ make_qout(arena *a, i32 len) {
   qout_ nil = (qout_){0};
-  i32 cap = queue_capacity(exp);
+  i32 cap = queue_capacity(len);
   if (cap == 0) return nil;
   u8 *buf = new (a, u8, cap);
   if (!buf) return nil;
-  return (qout_){ .v = { .buf = buf, .exp = exp, .q = 0 } };  
+  return (qout_) { .v = {.buf = (s8){.buf = buf, .len = cap}, .q = 0 } };
+}
+size read_qout(qout *qo, s8 buf) {
+  i32 qi = 0;
+  size bi = 0;
+  while ((qi = queue_pop(&qo->q, qo->buf.len))) {
+    if (qi < 0) break; // empty
+    buf.buf[bi++] = qo->buf.buf[qi];
+    queue_pop_commit(&qo->q);
+  }
+  return bi;
+}
+size write_qout(qout *qo, u8 *buf, size maxlen) {
+  i32 qi = 0;
+  i32 bi = 0;
+  while ((qi = queue_push(&qo->q, qo->buf.len))) {
+    if (qi < 0) break; // full
+    qo->buf.buf[qi] = buf[bi++];
+    queue_push_commit(&qo->q);
+  }
+  return bi;
 }
 
 // ────────────────────────────────────────────────────────────────────── Output
