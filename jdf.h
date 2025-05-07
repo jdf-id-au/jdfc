@@ -601,7 +601,7 @@ b32 queue_mpop_commit(queue *q, u32 save) {
 // ╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴ Single consumer
 // Returns index for next value to be popped. -1 when empty.
 i32 queue_pop(queue *q, i32 len) {
-  //printf("queue_pop %p 0x%x %i\n", q, *q, len);
+  // printf("queue_pop %p 0x%x %i\n", q, *q, len);
   u32 r = *q; // ? memory_order_acquire from stdatomic.h
   i32 mask = len - 1;
   i32 head = r       & mask;
@@ -613,7 +613,7 @@ void queue_pop_commit(queue *q) {
 }
 // Returns index for next value to be pushed. -1 when full.
 i32 queue_push(queue *q, i32 len) {
-  //printf("queue_push %p 0x%x %i\n", q, *q, len);
+  // printf("queue_push %p 0x%x %i\n", q, *q, len);
   u32 r = *q;
   i32 mask = len - 1;
   i32 head = r       & mask;
@@ -655,9 +655,11 @@ size read_qout(qout *qo, s8 buf) {
 size write_qout(qout *qo, u8 *buf, size maxlen) {
   i32 qi = 0;
   i32 bi = 0;
-  while ((qi = queue_push(&qo->q, qo->buf.len)) &&
-         qi < 0 && // full
-         bi < maxlen) {
+  while (1) {
+    qi = queue_push(&qo->q, qo->buf.len);
+    if (qi < 0 || bi >= maxlen) break;
+    // printf("pushing %c to queue position %i\n", buf[bi], qi);
+    // printf("%c", buf[bi]);
     qo->buf.buf[qi] = buf[bi++];
     queue_push_commit(&qo->q);
   }
@@ -717,7 +719,7 @@ int s8printf(arena scratch, Writer writer, void *out, const char *format, ...) {
   i32 n = vsnprintf(scratch.beg, avail, format, args);
   va_end(args);
   if (n > 0) {
-    scratch.cur += n > avail ? avail : n;
+    scratch.cur += (n > avail ? avail : n) - 1; // drop terminal \0
     return writer(out, s8bytespan(scratch.beg, scratch.cur));
   } else return n;
 }

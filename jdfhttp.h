@@ -355,9 +355,11 @@ void serialise_response(arena *store, arena scratch, Client *client, Response re
   s8map *header = res.headers;
   s8printf(scratch, s8writeq, out, "HTTP/1.1 %i %s\r\n",
            res.status, spell_http_status[res.status]); // TODO adapt to make_constants stuff when ready
-  do {
-    s8printf(scratch, s8writeq, out, "%s: %s\r\n",
-             s8unwrap(store, header->key), s8unwrap(store, header->val));
+  do { // grug approve
+    s8writeq(out, header->key);
+    s8writeq(out, s8(": "));
+    s8writeq(out, header->val);
+    s8writeq(out, crlf);
   } while ((header = header->next));
   s8writeq(out, crlf);
   s8writeq(out, res.body);
@@ -396,18 +398,21 @@ void write_client(EV_P_ ev_io *w, int events) {
   size bytes_read = 0;
   for (; bytes_read < os; bytes_read++) {
     // pop a byte at time from qo into local buffer
+    //printf("popping qo\n");
     i32 qidx = queue_pop(&qo->q, qo->buf.len);
     if (qidx < 0) break; // empty
     // TODO is a `complete` _Atomic b32 needed?
     buf[bytes_read] = qo->buf.buf[bytes_read];
     queue_pop_commit(&qo->q);
   }
+  if (bytes_read == 0) return; // FIXME ?wait for queue to be readable
   size total_bytes_written = 0;
   size bytes_written = 0;
   while (1) {
     bytes_written = write(w->fd, buf, bytes_read);
     if (bytes_written == 0) { // TODO check semantics, client closed connection?
       printf("Write client wrote nothing\n");
+      
       //cleanup_client(EV_A_ w);
     } else if (bytes_written < 0) {
       if (errno == EAGAIN || errno == EWOULDBLOCK) {
@@ -422,7 +427,7 @@ void write_client(EV_P_ ev_io *w, int events) {
       printf("Incomplete socket write (%li/%li B), trying to continue.", bytes_written, bytes_read);
     } else break;
   }
-  printf("✅ Done, %ti B client arena use\n", used(&client->store));
+  printf("✅ Done, %ti B written, %ti B client arena use\n", total_bytes_written, used(&client->store));
   client_set_writable(EV_A_ w, 0); // unset writable when write actually finished
 }
 
@@ -443,7 +448,7 @@ b32 enqueue_job(Server *server, Job job) {
 void read_client(EV_P_ ev_io *w, int events) {
   Client *client = (Client *)w->data;
   // using scratch arena as a buffer here, instead of local array
-  assert(0 == used(&client->scratch));
+  printf("client scratch usage should be 0: %ti\n", used(&client->scratch));
   ssize_t bytes_read = read(w->fd, client->scratch.beg, available(&client->scratch));
   client->scratch.cur = client->scratch.beg + bytes_read;
   if (bytes_read == 0) { // client closed connection
