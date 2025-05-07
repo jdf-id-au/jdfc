@@ -630,7 +630,7 @@ void queue_push_commit(queue *q) {
 }
 // ╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴ Concurrent output buffer
 typedef struct {
-  s8 buf; // correct capacity when make_qout
+  s8 buf; // correct capacity in .len when make_qout
   queue q;
 } qout;
 MAYBE(qout)

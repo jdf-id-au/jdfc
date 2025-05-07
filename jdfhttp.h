@@ -333,7 +333,11 @@ size s8writeq(void *out, s8 s) {
   return write_qout(q, s.buf, s.len);
 }
 
-void serialise_response(Client *client, Response res) { // TODO rework for client->deliver
+/*
+  Runs on worker thread. Expect to block when qout full, until client loop
+  drains it from the main thread.
+*/
+void serialise_response(Client *client, Response res) {
   arena *store = &client->store;
   arena scratch = client->scratch;
   qout *out = &client->deliver;
@@ -375,68 +379,44 @@ void client_set_writable(EV_P_ ev_io *w, b32 writable) {
 
 void write_client(EV_P_ ev_io *w, int events) {
   Client *client = (Client *)w->data;
-
-  qout *q = &client->deliver;
-  u8 buf[BUFOUTSIZE] = {0};
-  for (size i = 0; i < BUFOUTSIZE; i++) {
-    i32 qidx = queue_pop(q, QEXP);
-    if (qidx < 0) return; // empty; go back to libev
-    // TODO is `complete` _Atomic b32 needed?
-    
+  qout *qo = &client->deliver;
+  size os = client->server->config.outbuf;
+  u8 *buf = new (&client->scratch, u8, os);
+  if (!buf) {
+    perror("Unable to allocate out buffer");
+    return;
   }
+  size bytes_read = 0;
+  for (; bytes_read < os; bytes_read++) {
+    // pop a byte at time from qo into local buffer
+    i32 qidx = queue_pop(&qo->q, qo->buf.len);
+    if (qidx < 0) break; // empty
+    // TODO is a `complete` _Atomic b32 needed?
+    buf[bytes_read] = qo->buf.buf[bytes_read];
+    queue_pop_commit(&qo->q);
+  }
+  size total_bytes_written = 0;
+  size bytes_written = 0;
+  while (1) {
+    bytes_written = write(w->fd, buf, bytes_read);
+    if (bytes_written == 0) { // TODO check semantics, client closed connection?
+      // printf("write client closed cleanup\n");
+      cleanup_client(EV_A_ w);
+    } else if (bytes_written < 0) {
+      if (errno == EAGAIN || errno == EWOULDBLOCK) {
+        // just try again? NB don't lose qo data!
+      } else {
+        perror("Error writing to client");
+        cleanup_client(EV_A_ w);
+      }
+    } else total_bytes_written += bytes_written;
   
-  // This is the analog of Wellons' flush and oswrite together
-
-  //  bufout *b = &client->deliver; // TODO reimpl as read from qout
-  //  if (!b) return;
-  //  if (!b->err && b->len) {
-    //    for (i32 off = 0; off < b->len;) { // b->fd redundant with w->fd but clear
-      //      i32 written = (i32)write(b->fd, b->buf, b->len - off);
-      //      if (written == 0) { // TODO CHECK SEMANTICS client closed connection?
-        //        cleanup_client(EV_A_ w);
-        //        return;
-        //      } else if (written < 0) {
-        //        if (errno == EAGAIN || errno == EWOULDBLOCK) {
-          //          // keep trying
-          //        } else {
-          //          perror("Error writing to client");
-          //          cleanup_client(EV_A_ w);
-          //          return;
-          //        }
-        //      }
-      //      off += written;
-      //    }
-    //    b->len = 0;
-    //  }
-  //  ssize_t bytes_written = write(w->fd, client->deliver)
-                           //  
-                           //  if (!client->deliverable.ok) return; // TODO other handling? retry something?
-  //  // TODO how to indicate zero length reply? Meaningless?
-    //  s8 chunk = s8slice(client->deliverable.v, 0, BUFOUTSIZE);
-  //  if (chunk.len > 0) {
-    //    ssize_t bytes_written = write(w->fd, chunk.buf, chunk.len); // this is unsurprisingly just like oswrite...
-    //    if (bytes_written == 0) { // TODO CHECK SEMANTICS client closed connection?
-      //      // printf("write client closed cleanup\n");
-      //      cleanup_client(EV_A_ w);
-      //    } else if (bytes_written < 0) {
-      //      if (errno == EAGAIN || errno == EWOULDBLOCK) {
-        //        // does this just try again?
-        //      } else {
-        //        perror("Error writing to client");
-        //        cleanup_client(EV_A_ w);
-        //      }
-      //    } else {
-      //      client->deliverable.v = s8slice(client->deliverable.v, bytes_written, 0);
-      //      // should become multiple writes if deliverable.v.len > BUFOUTSIZE
-        //    }
-  //  } else {
-  //    // Continues to rise as connections stays open... TODO graceful drop if
-  //    hits limit
-
-  // 
-    //    printf("✅ Done, %ti B client arena use\n", (size)(client->store.cur - client->store.beg));
-    //    client_set_writable(EV_A_ w, 0); // unset writable when write actually finished
-    //  }
+    if (total_bytes_written < bytes_read) {
+      printf("Incomplete socket write (%li/%li B), trying to continue.", bytes_written, bytes_read);
+    } else break;
+  }
+  printf("✅ Done, %ti B client arena use\n", used(&client->store));
+  client_set_writable(EV_A_ w, 0); // unset writable when write actually finished
 }
 
 b32 enqueue_job(Server *server, Job job) {
