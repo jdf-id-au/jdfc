@@ -446,7 +446,7 @@ s8 s8wrap(const char *cstr, size maxlen) {
   return s8span(beg, end);
 }
 
-// Return pointer to copy of s into a, one byte longer for terminal zero.
+// Return pointer to copy of s in a, one byte longer for terminal zero.
 char *s8unwrap(arena *a, s8 s) {
   u8 *buf = new (a, u8, s.len + 1); // is zeroed
   if (!buf) return 0;
@@ -572,12 +572,6 @@ s8_ s8sprintf(arena *buf, const char *format, ...) {
   } else return (s8_){0};
 }
 
-// FIXME really want to be able to s8buildf(arena *buf, const char *format, ...)
-// which can take s8s!
-// This unfortunately requires copying because of the way s8s work (slice etc)
-// So would need scratch arena.
-// So should reconsider use of scratch as output/construction buffer.
-
 // ───────────────────────────────────────────────── Lock-free concurrent queues
 // https://nullprogram.com/blog/2022/05/14
 typedef _Atomic u32 queue; // typedef _Atomic ... is ok as per stdatomic.h
@@ -594,7 +588,7 @@ i32 queue_mpop(queue *q, i32 len, u32 *save) {
   i32 tail = r >> 16 & mask;
   return head == tail ? -1 : tail;
 }
-// NB element load must be atomic TODO
+// NB element load must be atomic
 b32 queue_mpop_commit(queue *q, u32 save) {
   return atomic_compare_exchange_strong(q, &save, save + 0x10000);
 }

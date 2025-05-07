@@ -99,7 +99,8 @@ enum http_status { // https://developer.mozilla.org/en-US/docs/Web/HTTP/Referenc
 
 const char *spell_http_status[] = {
     [OK] = "OK",
-    [NOT_FOUND] = "Not Found"
+    [NOT_FOUND] = "Not Found",
+    [INTERNAL_SERVER_ERROR] = "Internal Server Error"
 };
 
 enum content_type {
@@ -111,11 +112,15 @@ const char *spell_content_type[] = {
 };
 
 MAP_LIST(s8map, s8, s8, s8equal)
+LIST(s8l, s8)
 
 enum request_error {
   REQUST_OK, REQUEST_OOM, REQUEST_EMPTY, INVALID_METHOD_LINE 
 };
-  
+
+typedef struct server Server; // forward decl for Request and Workshop
+typedef struct client Client; // forward decl for Request
+
 typedef struct {
   s8 raw;
   enum request_error error;
@@ -125,13 +130,14 @@ typedef struct {
   s8map *headers;
   s8map *cookies;
   s8 body;
+  Client *client;
 } Request;
   
 typedef struct {
   int status; // http status
   s8map *headers; // does not accommodate repeat keys, which are permitted by http spec https://stackoverflow.com/a/4371395/780743
   s8map *cookies; 
-  s8 body;
+  s8l *body;
 } Response;
 
 typedef Response (*Handler)(arena *store, arena scratch, Request req);
@@ -150,8 +156,6 @@ typedef struct {
   arena scratch;
 } Config;
 
-typedef struct server Server; // forward decl for Workshop
-
 typedef struct { // Resources for one worker!
   Server *server;
   arena store;
@@ -161,18 +165,11 @@ typedef struct { // Resources for one worker!
 
 ARRAY(Workshops, Workshop)
 
-typedef struct client Client; // forward decl for Work->Job
-
-typedef struct {
-  Client *client;
-  Request req;
-} Job;
-
 typedef struct { // Concurrent queue (multiple consumer)
-  _Atomic Job *jobs;
-  // simpler than _Atomic Jobs *jobs from ARRAY(Jobs, Job)
+  _Atomic Request *requests;
+  // simpler than _Atomic Requests *requests from ARRAY(Requests, Request)
   // because _Atomic struct member access is UB:
-  size len; // this is 1 more than the number of jobs!!
+  size len; // this is 1 more than the number of requests!!
   queue q;
 } Work;
 
@@ -304,7 +301,8 @@ s8map *content_type(arena *store, s8map *head, enum content_type content_type) {
   return head;
 }
 
-void dumbp(s8 s) { // gross
+// Dump s8 in desperation (debugging)
+void dumbp(s8 s) {
   printf("%*ti B ✏ ", 5, s.len);
   for (size i = 0; i < s.len; i++) printf("%c", s.buf[i]);
   printf("\n");
@@ -320,11 +318,24 @@ s8map *s8mapassocl(arena *store, s8map *head, s8 k, s8 v) {
   return head;
 }
 
+size s8llen(s8l *sl) {
+  size len = 0;
+  s8l *node = sl;
+  do { len += node->val.len; } while ((node = node->next));
+  return len;
+}
+
+// Append cloned
+s8l *s8lappendcl(arena *store, s8l *head, s8 s) {
+  s8_ cl = s8clone(store, s);
+  return s8lappend(store, head, cl.v); // TODO error handling
+}
+
 Response add_headers(arena *store, arena scratch, Response res) {
   // TODO should be conditional on client's invitation
   res.headers = s8mapassocl(store, res.headers, s8("Connection"), s8("keep-alive"));
   s8 k = s8("Content-Length");
-  s8_ v = s8sprintf(&scratch, "%ti", res.body.len);
+  s8_ v = s8sprintf(&scratch, "%ti", s8llen(res.body));
   if (v.ok) res.headers = s8mapassocl(store, res.headers, k, v.v);
   else fprintf(stderr, "Error setting Content-Length\n");
   return res;
@@ -337,7 +348,7 @@ size s8writeq(void *out, s8 s) {
     return 0;
   }
   if (!s.buf) {
-    perror("Tried to write unitialised string to qout");
+    // perror("Tried to write unitialised string to qout");
     return 0;
   }
   // dumbp(s);
@@ -351,7 +362,7 @@ size s8writeq(void *out, s8 s) {
 void serialise_response(arena *store, arena scratch, Client *client, Response res) {
   qout *out = &client->deliver;
   s8 crlf = s8("\r\n");
-  res = add_headers(store, scratch, res); // reassigning to pass-by-value arg; do before store becomes buffer
+  res = add_headers(store, scratch, res); // reassigning to pass-by-value arg
   s8map *header = res.headers;
   s8printf(scratch, s8writeq, out, "HTTP/1.1 %i %s\r\n",
            res.status, spell_http_status[res.status]); // TODO adapt to make_constants stuff when ready
@@ -362,7 +373,9 @@ void serialise_response(arena *store, arena scratch, Client *client, Response re
     s8writeq(out, crlf);
   } while ((header = header->next));
   s8writeq(out, crlf);
-  s8writeq(out, res.body);
+  for (s8l *node = res.body; node; node = node->next)
+    s8writeq(out, node->val);
+
   printf("📣 %i\n", res.status);
 }
 
@@ -390,7 +403,8 @@ void write_client(EV_P_ ev_io *w, int events) {
   Client *client = (Client *)w->data;
   qout *qo = &client->deliver;
   size os = client->server->config.outbuf;
-  u8 *buf = new (&client->scratch, u8, os);
+  arena scratch = client->scratch; // by value
+  u8 *buf = new (&scratch, u8, os);
   if (!buf) {
     perror("Unable to allocate out buffer");
     return;
@@ -398,14 +412,13 @@ void write_client(EV_P_ ev_io *w, int events) {
   size bytes_read = 0;
   for (; bytes_read < os; bytes_read++) {
     // pop a byte at time from qo into local buffer
-    //printf("popping qo\n");
     i32 qidx = queue_pop(&qo->q, qo->buf.len);
     if (qidx < 0) break; // empty
     // TODO is a `complete` _Atomic b32 needed?
     buf[bytes_read] = qo->buf.buf[bytes_read];
     queue_pop_commit(&qo->q);
   }
-  if (bytes_read == 0) return; // FIXME ?wait for queue to be readable
+  if (bytes_read == 0) return; // FIXME ?wait for queue to be readable ?why necessary
   size total_bytes_written = 0;
   size bytes_written = 0;
   while (1) {
@@ -427,28 +440,28 @@ void write_client(EV_P_ ev_io *w, int events) {
       printf("Incomplete socket write (%li/%li B), trying to continue.", bytes_written, bytes_read);
     } else break;
   }
+  // FIXME handle arena oom... how?
   printf("✅ Done, %ti B written, %ti B client arena use\n", total_bytes_written, used(&client->store));
   client_set_writable(EV_A_ w, 0); // unset writable when write actually finished
 }
 
-b32 enqueue_job(Server *server, Job job) {
+b32 enqueue_request(Request req) {
+  Server *server = req.client->server;
   i32 idx = queue_push(&server->work.q, server->work.len);
   //printf("queue_push position %i\n", idx);
   if (idx < 0) return 0; // queue full
-  server->work.jobs[idx] = job;
+  server->work.requests[idx] = req;
   queue_push_commit(&server->work.q);
   pthread_mutex_lock(&server->work_waiting_lock);
   pthread_cond_signal(&server->work_waiting); // worker can just sleep again if queue already emptied
   pthread_mutex_unlock(&server->work_waiting_lock);
-  // TODO check pthread_cond_signal to wake a thread to do the work
-  // TODO check awake thread will do work from queue without needing to go via sleep
   return 1;
 }
 
 void read_client(EV_P_ ev_io *w, int events) {
   Client *client = (Client *)w->data;
   // using scratch arena as a buffer here, instead of local array
-  printf("client scratch usage should be 0: %ti\n", used(&client->scratch));
+  // printf("client scratch usage should be 0: %ti\n", used(&client->scratch));
   ssize_t bytes_read = read(w->fd, client->scratch.beg, available(&client->scratch));
   client->scratch.cur = client->scratch.beg + bytes_read;
   if (bytes_read == 0) { // client closed connection
@@ -463,8 +476,7 @@ void read_client(EV_P_ ev_io *w, int events) {
     }
   } else {
     // TODO handle large read, e.g. stream to arena until finished or excessive,
-    // then handle?
-    // For now, store (copy) request in client store arena.
+    // then handle? For now, store (copy) request in client store arena.
     s8_ raw = s8clone(&client->store, s8bytespan(client->scratch.beg, client->scratch.cur));
     if (!raw.ok) {
       perror("Failed to store raw request"); // TODO 503
@@ -474,18 +486,8 @@ void read_client(EV_P_ ev_io *w, int events) {
     s8arenaprintf(&client->scratch, "🔔 %s\n");
     client->scratch.cur = client->scratch.beg; // Reset!
     Request req = parse_request(&client->store, client->scratch, raw.v);
-    /* TODO concept:
-       - validate +- encode request
-       - add request to queue, tracking source ?socket 
-         (mitigate against recycling!)
-       - worker thread/s consume request and add response to another queue
-         (queues need mutexes, or maybe Wellons' fancy lockfree queue)
-       - server loop sends response to correct socket
-
-       Number of worker threads could be sched_getaffinity() -1 on linux, or
-       sysctlbyname("machdep.cpu.core_count") -1 on macOS.
-     */
-    if (!enqueue_job(client->server, (Job){.client = client, .req = req})) {
+    req.client = client;
+    if (!enqueue_request(req)) {
       perror("Failed to enqueue job"); // TODO 503
       cleanup_client(EV_A_ w);
       return;
@@ -507,7 +509,6 @@ void accept_client(EV_P_ ev_io *w, int events) {
     // Allocate arenas TODO monitor usage, tune
     arena client_store = alloc_arena(server->config.client_mem);
     arena client_scratch = alloc_arena(server->config.client_mem);
-    // printf("store beg %p\nscratch beg %p\n", (void *)client_store.beg, (void *)client_scratch.beg); fflush(0);
     // https://metacpan.org/dist/EV/view/libev/ev.pod#ASSOCIATING-CUSTOM-DATA-WITH-A-WATCHER
     Client *client = new (&client_store, Client, 1);
     if (!client) {
@@ -536,39 +537,38 @@ void accept_client(EV_P_ ev_io *w, int events) {
 }
 
 void *worker(Workshop *workshop) {
-  // TODO serialise to client.deliver
   Server *server = workshop->server;
   
   i32 qi = 0;
   u32 save = 0;
-  Job job = {0};
+  Request req = {0};
 
   /*
   // ─────────────────────────────────────────────────────── concurrent de-queue
+  // ╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴ unify this
   do {
     do {
       qi = queue_mpop(&server->work.q, server->work.len, &save);
     } while (qi < 0); // FIXME busy wait should sleep instead
     job = server->work.jobs[qi];
   } while (!queue_mpop_commit(&server->work.q, save));
-  // ──────────────────────────────────────────────── FIXME unify with cond wake
+  // ╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴ with this
   pthread_mutex_lock(&server->work_waiting_lock);
   while ((qi = queue_mpop(&server->work.q, server->work.len, &save)) < 0)
     // loop to cover suprious wakeup
     pthread_cond_wait(&server->work_waiting, &server->work_waiting_lock);
   pthread_mutex_unlock(&server->work_waiting_lock);
   */
-
   while (1) {
     pthread_mutex_lock(&server->work_waiting_lock);
     while ((qi = queue_mpop(&server->work.q, server->work.len, &save)) < 0)
       // loop to cover suprious wakeup
       pthread_cond_wait(&server->work_waiting, &server->work_waiting_lock);
     pthread_mutex_unlock(&server->work_waiting_lock);
-    job = server->work.jobs[qi];
+    req = server->work.requests[qi];
     if (queue_mpop_commit(&server->work.q, save)) {
-      Response res = server->handler(&workshop->store, workshop->scratch, job.req);
-      serialise_response(&workshop->store, workshop->scratch, job.client, res);
+      Response res = server->handler(&workshop->store, workshop->scratch, req);
+      serialise_response(&workshop->store, workshop->scratch, req.client, res);
     }
   }
 }
@@ -605,9 +605,9 @@ Work_ make_Work(arena *a, i32 len) {
   Work_ nil = (Work_){0};
   i32 cap = queue_capacity(len);
   if (!cap) return nil;
-  _Atomic Job *jobs = new (a, _Atomic Job, cap);
-  if (!jobs) return nil; // why
-  return (Work_) { .v = {.jobs = jobs, .len = len, .q = 0} };
+  _Atomic Request *requests = new (a, _Atomic Request, cap);
+  if (!requests) return nil;
+  return (Work_) { .v = {.requests = requests, .len = len, .q = 0} };
 }
 
 void launch(Server *server) {
