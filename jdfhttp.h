@@ -627,14 +627,18 @@ void launch(Server *server) {
     workshops[i].scratch = alloc_arena(server->config.worker_mem);
   }
   server->workshops.buf = workshops;
+  size successful = 0;
   for (size i = 0; i < nw; i++)
-    if ((rc = pthread_create(&(workshops[i].thread), 0, (Worker)worker, &workshops[i]))) {
+    if (!(rc = pthread_create(&(workshops[i].thread), 0, (Worker)worker,
+                              &workshops[i]))) {
+      server->workshops.len = successful++;
+      
+    } else {
       fprintf(stderr, "Unable to create thread %td: %i\n", i, rc);
       if (i == 0) exit(1); // TODO could provide single threaded impl?
-      server->workshops.len = i;
       break;
     }
-
+  printf("Set up %ti workshops\n", successful);
   Work_ work = make_Work(&server->store, 32);
   if (!work.ok) {
     perror("Unable to make work queue");

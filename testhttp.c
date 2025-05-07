@@ -17,17 +17,18 @@ Response handler(arena *store, arena scratch, Request req) {
   Response res = {0};
   res.body = s8lappendcl(store, res.body, body.v); // TODO check .ok first...
   s8l *cur = res.body;
-  Workshops ws = req.client->server->workshops;
+  Workshops *ws = &req.client->server->workshops;
   // TODO come up with pleasant-enough API for request body string composition
   
   cur = s8lappend(
       store, cur,
-s8("<table><thead><th>Used</th><th>Available</th></thead><tbody>")) ;
+      s8("<table><thead><th>Used</th><th>Available</th></thead><tbody>")) ;
 
-  for (size i = 0; i < ws.len; i++) {
+  printf("ws->len %ti\n", ws->len); // FIXME why zero?
+  for (size i = 0; i < ws->len; i++) {
     s8_ row =
       s8sprintf(store, "<tr><td>%ti</td><td>%ti</td></tr>",
-                used(&ws.buf[i].store), available(&ws.buf[i].store));
+                used(&ws->buf[i].store), available(&ws->buf[i].store));
     if (row.ok)
       cur = s8lappend(store, cur, row.v);
   }
