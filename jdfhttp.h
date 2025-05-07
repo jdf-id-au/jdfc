@@ -144,6 +144,7 @@ typedef struct {
   u32 interface;
   size server_mem;
   size client_mem;
+  size worker_mem;
   size outbuf;
   arena store;
   arena scratch;
@@ -244,6 +245,7 @@ Server make_server_fn(Handler h, Config c) {
                              .interface = INADDR_ANY, \
                              .server_mem = MiB(1),    \
                              .client_mem = MiB(1),    \
+                             .worker_mem = MiB(1),    \
                              .outbuf = KiB(4),        \
                              __VA_ARGS__})
 
@@ -302,13 +304,19 @@ s8map *content_type(arena *store, s8map *head, enum content_type content_type) {
   return head;
 }
 
+void dumbp(s8 s) { // gross
+  printf("%*ti B ✏ ", 5, s.len);
+  for (size i = 0; i < s.len; i++) printf("%c", s.buf[i]);
+  printf("\n");
+  fflush(0);
+}
+
 // Associate cloned k & v.
 s8map *s8mapassocl(arena *store, s8map *head, s8 k, s8 v) {
   s8_ kc = s8clone(store, k);
   s8_ vc = s8clone(store, v);
   if (kc.ok && vc.ok) return s8mapassoc(store, head, kc.v, vc.v);
-  s8log(2, s8("Error setting "), 0);
-  s8log(2, k, 1);
+  printf("Problem setting "); dumbp(k);
   return head;
 }
 
@@ -318,7 +326,7 @@ Response add_headers(arena *store, arena scratch, Response res) {
   s8 k = s8("Content-Length");
   s8_ v = s8sprintf(&scratch, "%ti", res.body.len);
   if (v.ok) res.headers = s8mapassocl(store, res.headers, k, v.v);
-  else s8log(2, s8("Error setting Content-Length"), 1);
+  else fprintf(stderr, "Error setting Content-Length\n");
   return res;
 }
 
@@ -332,9 +340,7 @@ size s8writeq(void *out, s8 s) {
     perror("Tried to write unitialised string to qout");
     return 0;
   }
-  printf("s8writeq: ");
-  for (size i = 0; i < s.len; i++) printf("%c", s.buf[i]);
-  printf("\n");
+  dumbp(s);
   return write_qout(q, s.buf, s.len);
 }
 
@@ -342,9 +348,7 @@ size s8writeq(void *out, s8 s) {
   Runs on worker thread. Expect to block when qout full, until client loop
   drains it from the main thread.
 */
-void serialise_response(Client *client, Response res) {
-  arena *store = &client->store;
-  arena scratch = client->scratch;
+void serialise_response(arena *store, arena scratch, Client *client, Response res) {
   qout *out = &client->deliver;
   s8 crlf = s8("\r\n");
   res = add_headers(store, scratch, res); // reassigning to pass-by-value arg; do before store becomes buffer
@@ -353,10 +357,14 @@ void serialise_response(Client *client, Response res) {
   s8_ k = {0};
   s8_ v = {0};
   do {
-    k = s8unwrap(&scratch, header->key);
-    v = s8unwrap(&scratch, header->val);
+    // s8writeq(out, header->key);
+    // s8writeq(out, s8(": "));
+    // s8writeq(out, header->val);
+    // s8writeq(out, crlf);
+    k = s8unwrap(store, header->key); // FIXME boy this is annoying
+    v = s8unwrap(store, header->val);
     if (k.ok && v.ok)
-      s8printf(scratch, s8writeq, out, "%s: %s\r\n", k.ok, v.ok);
+    s8printf(scratch, s8writeq, out, "%s: %s\r\n", k.v, v.v);
   } while ((header = header->next));
   s8writeq(out, crlf);
   s8writeq(out, res.body);
@@ -406,7 +414,7 @@ void write_client(EV_P_ ev_io *w, int events) {
   while (1) {
     bytes_written = write(w->fd, buf, bytes_read);
     if (bytes_written == 0) { // TODO check semantics, client closed connection?
-      printf("write client wrote nothing\n");
+      printf("Write client wrote nothing\n");
       //cleanup_client(EV_A_ w);
     } else if (bytes_written < 0) {
       if (errno == EAGAIN || errno == EWOULDBLOCK) {
@@ -427,7 +435,7 @@ void write_client(EV_P_ ev_io *w, int events) {
 
 b32 enqueue_job(Server *server, Job job) {
   i32 idx = queue_push(&server->work.q, server->work.len);
-  printf("queue_push %i\n", idx);
+  //printf("queue_push position %i\n", idx);
   if (idx < 0) return 0; // queue full
   server->work.jobs[idx] = job;
   queue_push_commit(&server->work.q);
@@ -443,7 +451,7 @@ void read_client(EV_P_ ev_io *w, int events) {
   Client *client = (Client *)w->data;
   // using scratch arena as a buffer here, instead of local array
   assert(0 == used(&client->scratch));
-  ssize_t bytes_read = read(w->fd, client->scratch.beg, remaining(&client->scratch));
+  ssize_t bytes_read = read(w->fd, client->scratch.beg, available(&client->scratch));
   client->scratch.cur = client->scratch.beg + bytes_read;
   if (bytes_read == 0) { // client closed connection
     // printf("read client closed cleanup\n");
@@ -459,13 +467,7 @@ void read_client(EV_P_ ev_io *w, int events) {
     // TODO handle large read, e.g. stream to arena until finished or excessive,
     // then handle?
     // For now, store (copy) request in client store arena.
-    s8_ sa = s8arena(&client->scratch, 0);
-    if (!sa.ok) {
-      perror("Failed to store raw request"); // TOOD 503
-      cleanup_client(EV_A_ w);
-      return;
-    }
-    s8_ raw = s8clone(&client->store, sa.v);
+    s8_ raw = s8clone(&client->store, s8bytespan(client->scratch.beg, client->scratch.cur));
     if (!raw.ok) {
       perror("Failed to store raw request"); // TODO 503
       cleanup_client(EV_A_ w);
@@ -490,9 +492,6 @@ void read_client(EV_P_ ev_io *w, int events) {
       cleanup_client(EV_A_ w);
       return;
     }
-    // TODO do on a worker thread
-    //*client->res = client->server->handler(&client->store, client->scratch, req);
-    // TODO need to call serialise_response, do it from (one, multi-client, but not busy-waiting) worker thread writing to cilent's qout
     client_set_writable(EV_A_ w, 1); // unset in write_client when actually finished
     // not closing socket
   }
@@ -571,7 +570,7 @@ void *worker(Workshop *workshop) {
     job = server->work.jobs[qi];
     if (queue_mpop_commit(&server->work.q, save)) {
       Response res = server->handler(&workshop->store, workshop->scratch, job.req);
-      serialise_response(job.client, res);
+      serialise_response(&workshop->store, workshop->scratch, job.client, res);
     }
   }
 }
@@ -600,7 +599,7 @@ i32 nproc(void) { return sysconf(_SC_NPROCESSORS_ONLN); }
 typedef void *(*Worker)(void *);
 
 void sigint_cb(EV_P_ ev_signal *w, int events) {
-  s8log(2, s8("SIGINT"), 1);
+  fprintf(stderr, "SIGINT\n");
   ev_break (EV_A_ EVBREAK_ALL);
 }
 
@@ -624,7 +623,11 @@ void launch(Server *server) {
     perror("Unable to allocate workshops");
     exit(1);
   }
-  for (size i = 0; i < nw; i++) workshops[i].server = server; 
+  for (size i = 0; i < nw; i++) {
+    workshops[i].server = server;
+    workshops[i].store = alloc_arena(server->config.worker_mem);
+    workshops[i].scratch = alloc_arena(server->config.worker_mem);
+  }
   server->workshops.buf = workshops;
   for (size i = 0; i < nw; i++)
     if ((rc = pthread_create(&(workshops[i].thread), 0, (Worker)worker, &workshops[i]))) {

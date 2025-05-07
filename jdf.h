@@ -17,7 +17,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <stdarg.h>
-#include <stdio.h> // just for vsnprintf
+#include <stdio.h> // mainly vsnprintf
 #include <stdatomic.h>
 
 typedef uint8_t   u8;
@@ -301,7 +301,7 @@ byte *alloc(arena *a, size objsize, size align, size count, const char *t) {
     Distinction between OOM proper and getting killed by (Linux) OOM killer?
   */
   if (count > (avail - padding) / objsize) {
-    printf("count %ti, count available %ti\n", count, (avail-padding)/objsize);
+    fprintf(stderr, "Couldn't allocate %s: count %ti, count available %ti\n", t, count, (avail-padding)/objsize);
     return 0;
   }
   size total = count * objsize;
@@ -313,7 +313,7 @@ byte *alloc(arena *a, size objsize, size align, size count, const char *t) {
 
 size capacity(arena *a) { return a->end - a->beg; }
 size used(arena *a) { return a->cur - a->beg; }
-size remaining(arena *a) { return a->end - a->cur; }
+size available(arena *a) { return a->end - a->cur; }
 
 size KiB(u32 n) { return (1<<10) * n; }
 size MiB(u32 n) { return (1<<20) * n; }
@@ -344,10 +344,17 @@ ARRAY(s16, c16)
 */ 
 #define text(...) s8(#__VA_ARGS__) // https://stackoverflow.com/a/17996915/780743
 
-// Slice using pointers, doesn't check that actually within an s8!
+/*
+  Slice using pointers, doesn't check that actually within an s8!
+  Not MAYBE because doesn't allocate.
+*/
 s8 s8span(u8 *beg, u8 *end) {
   if (beg && end && end >= beg) return (s8){.buf = beg, .len = end - beg};
   return (s8){0};
+}
+
+s8 s8bytespan(byte *beg, byte *end) {
+  return s8span((u8 *)beg, (u8 *)end);
 }
 
 // Slice forward using clamped offsets, which may be positive or negative (i.e. from start or end, respectively)
@@ -542,14 +549,6 @@ s8 s8concat(arena *a, s8 *ss, size len) {
   return (s8){.buf = buf, .len = tot};
 }
 
-// Present part of arena as s8.
-s8_ s8arena(arena *buf, byte *from) {
-  byte *f = from ? from : buf->beg;
-  if (f >= buf->beg && f <= buf->cur)
-    return (s8_){.v = {.buf = (u8 *)f, .len = buf->cur - f}};
-  else return (s8_){0};
-}
-
 s8_ u8fill(arena *buf, u8 with, size count) {
   u8 *p = new (buf, u8, count);
   if (!p) return (s8_){0};
@@ -557,25 +556,19 @@ s8_ u8fill(arena *buf, u8 with, size count) {
   return (s8_) { .v = s8span(p, p + count) };
 }
 
-// Intended for use with dedicated scratch!
-s8_ s8build(arena *buf, s8 s) {
-  u8 *cur = new (buf, u8, s.len);
-  if (!cur) return (s8_){0};
-  copy(cur, s.buf, s.len);
-  return s8arena(buf, (byte *)cur);
-}
-
-// Intended for use with dedicated scratch!
 s8_ s8sprintf(arena *buf, const char *format, ...) {
   if (!buf || !buf->cur) return (s8_){0};
   byte *start = buf->cur;
+  size avail = available(buf);
   va_list args;
   va_start(args, format);
-  int n = vsnprintf(buf->cur, buf->end - buf->cur, format, args);
+  // returns misleading n which disregards available size!
+  // also disregards terminal \0, as usual
+  i32 n = vsnprintf(start, avail, format, args);
   va_end(args);
   if (n > 0) {
-    buf->cur += n;
-    return s8arena(buf, start);
+    buf->cur += n > avail ? avail : n;
+    return (s8_){.v = s8bytespan(start, buf->cur)};
   } else return (s8_){0};
 }
 
@@ -713,19 +706,16 @@ size s8write(void *out, s8 s) {
   return total_copied;
 }
 
-int s8printf(arena scratch, Writer writer, void *out,
-             const char *format, ...) {
+int s8printf(arena scratch, Writer writer, void *out, const char *format, ...) {
   if (!scratch.beg) return -1;
-  // printf("s8printf beg %x cur %x end %x remaining %ti\n", scratch.beg, scratch.cur, scratch.end, remaining(&scratch));
+  // printf("s8printf store beg %p cur %p end %p remaining %ti\n", store->beg, store->cur, store->end, available(store));
   // printf("s8printf trying to print something with format %s\n", format);
   va_list args;
   va_start(args, format);
-  int n = vsnprintf(scratch.beg, remaining(&scratch), format, args);
+  scratch.cur = scratch.beg;
+  int n = vsnprintf(scratch.beg, available(&scratch), format, args);
   va_end(args);
-  printf("ok\n");
-  s8_ sa = s8arena(&scratch, scratch.beg);
-  if (n > 0 && sa.ok) writer(out, sa.v);
-  return n;
+  return writer(out, s8bytespan(scratch.beg, scratch.beg + n));
 }
 
 u32 oswrite(i32 fd, u8 *buf, i32 len);
@@ -738,22 +728,21 @@ void flush(bufout *b) {
     }
 }
 
-// Unbuffered, with newline
-void s8log(i32 fd, s8 s, b32 newline) {
+// Unbuffered
+void s8log(i32 fd, s8 s) {
   oswrite(fd, (u8 *)s.buf, s.len);
-  if (newline) oswrite(fd, (u8 *)"\n", 1);
 }
 
 // There's no shame in using prinf...
-#define log_debug(s) s8log(1, s, 1);
-#define log_err(s) s8log(2, s, 1);
+#define log_debug(s) s8log(1, s); s8log(1, s8("\n"));
+#define log_error(s) s8log(2, s); s8log(2, s8("\n"));
 
 // ──────────────────────────────────────────────────────────── Operating System
 
 void osfail(i32 code);
 
 void failwith(i32 code, s8 msg) {
-  s8log(2, msg, 1);
+  log_error(msg);
   osfail(code);
 }
 
