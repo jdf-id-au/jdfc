@@ -17,14 +17,7 @@ Response handler(arena *store, arena scratch, Request req) {
 }
 
 int main(void) {
-  
-  Server server = make_server((Config){ // C99 ftw
-      .domain = PF_INET,
-      .port = 80, // port 80 surprisingly works in userland on macOS
-      .backlog = 10,
-      .interface = INADDR_ANY,
-      .client_arena_cap = MiB(1),
-      .handler = handler});
+  Server server = make_server(handler, .port = 8080);
   launch(&server);
   return 0;
 }

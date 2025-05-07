@@ -135,88 +135,122 @@ typedef struct {
 } Response;
 
 typedef Response (*Handler)(arena *store, arena scratch, Request req);
+//                 ^^^^^^^
 
 typedef struct {
-  int domain;
-  int port;
-  int backlog;
-  u_long interface;
-  size client_arena_cap;
-  Handler handler;
+  i32 domain; // PF_INET or PF_UNIX protocol families ~aka address families
+  i32 port;
+  i32 backlog; // max pending connection queue length
+  u32 interface;
+  size server_mem;
+  size client_mem;
+  size outbuf;
+  arena store;
+  arena scratch;
 } Config;
 
+typedef struct server Server; // forward decl for Workshop
+
+typedef struct { // Resources for one worker!
+  Server *server;
+  arena store;
+  arena scratch;
+  pthread_t thread;
+} Workshop;
+
+ARRAY(Workshops, Workshop)
+
+typedef struct client Client; // forward decl for Work->Job
+
 typedef struct {
-  int domain;
-  int port;
-  int service;
-  int protocol;
-  int backlog;
-  int socket;
+  Client *client;
+  Request req;
+} Job;
+
+typedef struct { // Concurrent queue (multiple consumer)
+  _Atomic Job *jobs;
+  // simpler than _Atomic Jobs *jobs from ARRAY(Jobs, Job):
+  size len; // because _Atomic struct member access is UB
+  queue q;
+} Work;
+
+MAYBE(Work)
+
+typedef struct server {
+  Config config;
+  i32 socket;
   struct sockaddr_in address;
   struct ev_loop *loop;
   arena store;
   arena scratch;
-  size client_arena_cap;
   Handler handler;
+  Workshops workshops;
+  Work work;
+  // https://randu.org/tutorials/threads/
+  pthread_cond_t work_waiting;
+  pthread_mutex_t work_waiting_lock; // just required for cond
 } Server;
 
-#define BUFOUTSIZE 4096 // TODO what's optimal?
-#define QEXP 15 // 32767 u8s
-typedef struct {
+typedef struct client {
   Server *server;
   arena store;
   arena scratch;
   ev_io read_io;
   ev_io write_io;
-  Response *res;
   qout deliver;
 } Client;
 
-Server make_server(Config c) {
+Server make_server_fn(Handler h, Config c) {
   arena store = alloc_arena(MiB(1));
   arena scratch = alloc_arena(MiB(1));
   if (!store.beg || !scratch.beg) failwith(1, s8("Failed to allocate server arenas."));
   Server server = {
-    .domain = c.domain, // PF_INET or PF_UNIX protocol families ~aka address families
-    .port = c.port,
-    .backlog = c.backlog, // max pending connection queue length
-                        // learn about SOCK_DGRAM, SOCK_RAW types later
+    .config = c,
+      // learn about SOCK_DGRAM, SOCK_RAW types later
     .socket = socket(c.domain, SOCK_STREAM, 0), // 0 is IP, internet protocol!
     .address = {.sin_family = c.domain,
                 .sin_port = htons(c.port), // convert byte order
                 .sin_addr = {.s_addr = htonl(c.interface)}},
     .store = store,
     .scratch = scratch,
-    .client_arena_cap = c.client_arena_cap,
-    .handler = c.handler
+    .handler = h
   };
   if (server.socket < 0) {
     perror("Socket creation failed");
-    exit(EXIT_FAILURE);
+    exit(1);
   }
   int yes = 1; // allow faster relaunch
   if (setsockopt(server.socket, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes)) < 0) {
     perror("Socket option setting failed");
-    exit(EXIT_FAILURE);
+    exit(1);
   }
   if (bind(server.socket,
            (struct sockaddr *)&server.address,
            sizeof(server.address)) < 0) {
     perror("Socket binding failed");
-    exit(EXIT_FAILURE);
+    exit(1);
   }
-  if (listen(server.socket, server.backlog) < 0) {
+  if (listen(server.socket, c.backlog) < 0) {
     perror("Socket listen failed");
-    exit(EXIT_FAILURE);
+    exit(1);
   }
   return server;
 }
+
+#define make_server(h, ...) /* default config */      \
+  make_server_fn(h, (Config){.domain = PF_INET,       \
+                             .backlog = 10,           \
+                             .interface = INADDR_ANY, \
+                             .server_mem = MiB(1),    \
+                             .client_mem = MiB(1),    \
+                             .outbuf = KiB(4),        \
+                             __VA_ARGS__})
 
 int set_non_blocking(int sockfd) {
   int flags = fcntl(sockfd, F_GETFL, 0);
   if (fcntl(sockfd, F_SETFL, (flags < 0 ? 0 : flags) | O_NONBLOCK) == -1) {
     perror("Failed to set nonblocking");
-    exit(EXIT_FAILURE);
+    exit(1);
   }
   return 0;
 }
@@ -286,38 +320,36 @@ Response add_headers(arena *store, arena scratch, Response res) {
   return res;
 }
 
-void s8writet(bufout *b, s8 s) { // libev TCP-adapted version of s8write
-  if (!b->buf || !s.buf) return;
-  u8 *buf = s.buf;
-  u8 *end = endof(s);
-  while (!b->err && (buf < end)) {
-    i32 avail = b->cap - b->len;
-    i32 count = (avail < end - buf) ? avail : (i32)(end - buf);
-    copy(b->buf + b->len, buf, count);
-    buf += count;
-    b->len += count;
-    // FIXME libev async something? worker pthread? flush/write is done in write_client
-    if (b->len == b->cap) flush(b);
+size s8writeq(void *out, s8 s) {
+  qout *q = (qout *)out;
+  if (!q->buf.buf) {
+    perror("Tried to write to uninitialised qout");
+    return 0;
   }
+  if (!s.buf) {
+    perror("Tried to write unitialised string to qout");
+    return 0;
+  }
+  return write_qout(q, s.buf, s.len);
 }
 
-void serialise_response(Client *client, Response res) { // not actually being called yet!
+void serialise_response(Client *client, Response res) { // TODO rework for client->deliver
   arena *store = &client->store;
   arena scratch = client->scratch;
-  bufout *out = &client->deliver;
+  qout *out = &client->deliver;
   s8 crlf = s8("\r\n");
   res = add_headers(store, scratch, res); // reassigning to pass-by-value arg; do before store becomes buffer
   s8map *header = res.headers;
-  s8printf(scratch, s8writet, out, "HTTP/1.1 %i %s\r\n", res.status, spell_http_status[res.status]); // TODO adapt to make_constants stuff when ready
+  s8printf(scratch, s8writeq, out, "HTTP/1.1 %i %s\r\n", res.status, spell_http_status[res.status]); // TODO adapt to make_constants stuff when ready
   s8_ k = {0};
   s8_ v = {0};
   do {
     k = s8unwrap(&scratch, header->key);
     v = s8unwrap(&scratch, header->val);
-    s8printf(scratch, s8writet, out, "%s: %s\r\n", k, v);
+    s8printf(scratch, s8writeq, out, "%s: %s\r\n", k, v);
   } while ((header = header->next));
-  s8writet(out, crlf);
-  s8writet(out, res.body);
+  s8writeq(out, crlf);
+  s8writeq(out, res.body);
   printf("📣 %i\n", res.status);
 }
 
@@ -407,6 +439,18 @@ void write_client(EV_P_ ev_io *w, int events) {
     //  }
 }
 
+b32 enqueue_job(Server *server, Job job) {
+  i32 idx = queue_push(&server->work.q, server->work.len);
+  if (idx < 0) return idx; // queue full
+  server->work.jobs[idx] = job;
+  queue_push_commit(&server->work.q);
+  pthread_mutex_lock(&server->work_waiting_lock);
+  pthread_cond_signal(&server->work_waiting); // worker can just sleep again if queue already emptied
+  pthread_mutex_unlock(&server->work_waiting_lock);
+  // TODO check pthread_cond_signal to wake a thread to do the work
+  // TODO check awake thread will do work from queue without needing to go via sleep
+}
+
 void read_client(EV_P_ ev_io *w, int events) {
   Client *client = (Client *)w->data;
   // using scratch arena as a buffer here, instead of local array
@@ -420,7 +464,6 @@ void read_client(EV_P_ ev_io *w, int events) {
     if (errno == EAGAIN || errno == EWOULDBLOCK) {
       // nothing to read yet
     } else {
-      // something bad, do strerror(errno)
       perror("Error reading client");
       cleanup_client(EV_A_ w);
     }
@@ -430,13 +473,15 @@ void read_client(EV_P_ ev_io *w, int events) {
     // For now, store (copy) request in client store arena.
     s8_ sa = s8arena(&client->scratch, 0);
     if (!sa.ok) {
-      perror("Failed to store raw request");
+      perror("Failed to store raw request"); // TOOD 503
       cleanup_client(EV_A_ w);
+      return;
     }
     s8_ raw = s8clone(&client->store, sa.v);
     if (!raw.ok) {
-      perror("Failed to store raw request");
+      perror("Failed to store raw request"); // TODO 503
       cleanup_client(EV_A_ w);
+      return;
     }
     s8arenaprintf(&client->scratch, "🔔 %s\n");
     client->scratch.cur = client->scratch.beg; // Reset!
@@ -452,15 +497,13 @@ void read_client(EV_P_ ev_io *w, int events) {
        Number of worker threads could be sched_getaffinity() -1 on linux, or
        sysctlbyname("machdep.cpu.core_count") -1 on macOS.
      */
-    // ⚠ SINGLE THREADED and synchronous for the moment; TODO offload to worker
-    // pthread pool CAREFULLY
-    client->res = new (&client->store, Response, 1);
-    if (!client->res) {
-      perror("Failed to store response");
+    if (!enqueue_job(client->server, (Job){.client = client, .req = req})) {
+      perror("Failed to enqueue job"); // TODO 503
       cleanup_client(EV_A_ w);
+      return;
     }
-    *client->res =
-        client->server->handler(&client->store, client->scratch, req);
+    // TODO do on a worker thread
+    //*client->res = client->server->handler(&client->store, client->scratch, req);
     // TODO need to call serialise_response, do it from (one, multi-client, but not busy-waiting) worker thread writing to cilent's qout
     client_set_writable(EV_A_ w, 1); // unset in write_client when actually finished
     // not closing socket
@@ -477,8 +520,8 @@ void accept_client(EV_P_ ev_io *w, int events) {
   else {
     set_non_blocking(new_socket);
     // Allocate arenas TODO monitor usage, tune
-    arena client_store = alloc_arena(server->client_arena_cap);
-    arena client_scratch = alloc_arena(server->client_arena_cap);
+    arena client_store = alloc_arena(server->config.client_mem);
+    arena client_scratch = alloc_arena(server->config.client_mem);
     // printf("store beg %p\nscratch beg %p\n", (void *)client_store.beg, (void *)client_scratch.beg); fflush(0);
     // https://metacpan.org/dist/EV/view/libev/ev.pod#ASSOCIATING-CUSTOM-DATA-WITH-A-WATCHER
     Client *client = new (&client_store, Client, 1);
@@ -491,12 +534,12 @@ void accept_client(EV_P_ ev_io *w, int events) {
     client->scratch = client_scratch; // for passing by value
     ev_io_init(&client->read_io, read_client, new_socket, EV_READ);
     client->read_io.data = client; // I'm a woozie (see libev doc)
-    u8 *outbuf = new (&client->store, u8, BUFOUTSIZE); // need to allocate
-    if (!outbuf) {
+    qout_ deliver = make_qout(&client->store, server->config.outbuf);
+    if (deliver.ok) client->deliver = deliver.v;
+    else {
       perror("Failed to allocate out buffer");
-      return; // handling?
+      return;
     }
-    client->deliver = (bufout){ .buf = outbuf, .cap = BUFOUTSIZE, .fd = w->fd }; 
     ev_io_start(EV_A_ & client->read_io);
     // This is started and stopped conditionally on whether there is data to
     // write, to prevent excessive activation...
@@ -507,12 +550,111 @@ void accept_client(EV_P_ ev_io *w, int events) {
   }
 }
 
+void *worker(Workshop *workshop) {
+  // TODO serialise to client.deliver
+  Server *server = workshop->server;
+  
+  i32 qi = 0;
+  u32 save = 0;
+  Job job = {0};
+
+  /*
+  // ─────────────────────────────────────────────────────── concurrent de-queue
+  do {
+    do {
+      qi = queue_mpop(&server->work.q, server->work.len, &save);
+    } while (qi < 0); // FIXME busy wait should sleep instead
+    job = server->work.jobs[qi];
+  } while (!queue_mpop_commit(&server->work.q, save));
+  // ──────────────────────────────────────────────── FIXME unify with cond wake
+  pthread_mutex_lock(&server->work_waiting_lock);
+  while ((qi = queue_mpop(&server->work.q, server->work.len, &save)) < 0)
+    // loop to cover suprious wakeup
+    pthread_cond_wait(&server->work_waiting, &server->work_waiting_lock);
+  pthread_mutex_unlock(&server->work_waiting_lock);
+  */
+
+  while (1) {
+    pthread_mutex_lock(&server->work_waiting_lock);
+    while ((qi = queue_mpop(&server->work.q, server->work.len, &save)) < 0)
+      // loop to cover suprious wakeup
+      pthread_cond_wait(&server->work_waiting, &server->work_waiting_lock);
+    pthread_mutex_unlock(&server->work_waiting_lock);
+    job = server->work.jobs[qi];
+    if (queue_mpop_commit(&server->work.q, save)) {
+      Response res = server->handler(&workshop->store, workshop->scratch, job.req);
+      serialise_response(job.client, res);
+    }
+  }
+}
+
+#ifdef _WIN32
+#include <sysinfoapi.h>
+i32 nprocs(void) {
+  SYSTEM_INFO sysinfo;
+  GetSystemInfo(&sysinfo);
+  return sysinfo.dwNumberOfProcessors;
+}
+#elif __APPLE__
+#include <sys/sysctl.h>
+i32 nproc(void) {
+  i32 v = 0;
+  usize len = 0;
+  if (!sysctlbyname("hw.logicalcpu", &v, &len, 0, 0)) // 0 is success
+    return v;
+  perror("Couldn't get system information");
+}
+#elif __linux
+i32 nprocs(void) { return sysconf(_SC_NPROCESSORS_ONLIN); }
+#endif
+
+typedef void *(*Worker)(void *);
+
 void sigint_cb(EV_P_ ev_signal *w, int events) {
   s8log(2, s8("SIGINT"), 1);
   ev_break (EV_A_ EVBREAK_ALL);
 }
 
+Work_ make_Work(arena *a, i32 len) {
+  Work_ nil = (Work_){0};
+  i32 cap = queue_capacity(len);
+  if (!cap) return nil;
+  _Atomic Job *jobs = new (a, _Atomic Job, cap);
+  if (!jobs) return nil;
+  return (Work_) { .v = {.jobs = jobs, .len = cap, .q = 0} };
+}
+
 void launch(Server *server) {
+  server->store = alloc_arena(server->config.server_mem);
+  server->scratch = alloc_arena(server->config.server_mem);
+
+  i32 np = nproc();
+  i32 nw = np == 1 ? np : np - 1;
+  i32 rc = 0;
+  
+  Workshop *workshops = new (&server->store, Workshop, nw); // seemingly > 8KiB ea
+  if (!workshops) {
+    perror("Unable to allocate workshops");
+    exit(1);
+  }
+  server->workshops.buf = workshops;
+  for (size i = 0; i < nw; i++)
+    if ((rc = pthread_create(&(workshops[i].thread), 0, (Worker)worker, &workshops[i]))) {
+      fprintf(stderr, "Unable to create thread %td: %i\n", i, rc);
+      if (i == 0) exit(1); // TODO could provide single threaded impl?
+      server->workshops.len = i;
+      break;
+    }
+
+  Work_ work = make_Work(&server->store, 32768);
+  if (!work.ok) {
+    perror("Unable to make work queue");
+    exit(1);
+  }
+  server->work = work.v;
+  server->work_waiting = (pthread_cond_t)PTHREAD_COND_INITIALIZER;
+  pthread_mutex_init(&server->work_waiting_lock, 0);
+  
   server->loop = ev_loop_new(0);
   set_non_blocking(server->socket);
 
@@ -528,6 +670,8 @@ void launch(Server *server) {
 
   ev_run(server->loop, 0);
   ev_loop_destroy(server->loop);
+
+  // TODO is it necessary to join/kill workers? do they need enclosing while(running) loop?
 }
 
 #endif // jdfhttp_h

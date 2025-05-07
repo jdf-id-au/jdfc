@@ -18,6 +18,7 @@
 #include <stdint.h>
 #include <stdarg.h>
 #include <stdio.h> // just for vsnprintf
+#include <stdatomic.h>
 
 typedef uint8_t   u8;
 #ifdef _WIN32
@@ -27,7 +28,7 @@ typedef int32_t   b32; // 0 false, 1 true
 typedef int32_t   i32;
 typedef int64_t   i64;
 typedef uint32_t  u32;
-typedef uint64_t u64;
+typedef uint64_t  u64;
 typedef float     f32;
 typedef double    f64;
 typedef uintptr_t uptr;
@@ -35,17 +36,7 @@ typedef char      byte;
 typedef ptrdiff_t size;
 typedef size_t    usize;
 
-/*
-  Pass "store" arena by reference, and "scratch" by value.
-  This effectively resets the scratch *cur pointer on fn return.
-*/
-typedef struct {
-  // https://stackoverflow.com/a/21476937/780743
-  // easier not to have `byte *const beg` and end to facilitate free_arena
-  byte *beg; // original start of arena
-  byte *cur; // cursor: current start of free space
-  byte *end; // allocated end of arena
-} arena;
+typedef struct arena arena; // forward decl
 
 #define alignof(x) (size)_Alignof(x) // casting from size_t
 #define countof(arrayptr) (size)(sizeof(arrayptr) / sizeof(*(arrayptr))) // casting from size_t
@@ -263,8 +254,25 @@ caller retains it. Caller needs to retain list head.
 
 // ─────────────────────────────────────────────────────────────────────── Arena
 
+/*
+  Pass "store" arena by reference, and "scratch" by value.
+  This effectively resets the scratch *cur pointer on fn return.
+*/
+typedef struct arena {
+  // https://stackoverflow.com/a/21476937/780743
+  // easier not to have `byte *const beg` and end to facilitate free_arena
+  byte *beg; // original start of arena
+  byte *cur; // cursor: current start of free space
+  byte *end; // allocated end of arena
+} arena;
+
 // TODO could visualise correctness of padding algorithm
-// Allocate space within arena. Use via `new` macro.
+/*
+  Allocate space within arena. Use via `new` macro.
+  Not designed to be threadsafe! Each thread requires its own arena/s.
+  NB It's somewhat redundant to test for failure of alloc_arena, because the
+  first alloc here would fail if the arena is 0.
+*/
 byte *alloc(arena *a, size objsize, size align, size count) {
   if (!a || count <= 0 || align < 0) return 0; // why are count and size signed?
   size avail = a->end - a->cur;
@@ -573,15 +581,27 @@ s8_ s8sprintf(arena *buf, const char *format, ...) {
 // So would need scratch arena.
 // So should reconsider use of scratch as output/construction buffer.
 
-// ──────────────────────────────── Lock-free concurrent queue (single consumer)
-// https://nullprogram.com/blog/2022/05/14/
-
+// ───────────────────────────────────────────────── Lock-free concurrent queues
+// https://nullprogram.com/blog/2022/05/14
 typedef _Atomic u32 queue; // typedef _Atomic ... is ok as per stdatomic.h
-// Must be positive, <= 32768, and a power of two.
+// Lengthq must be positive, <= 32768, and a power of two.
 i32 queue_capacity(i32 len) {
   if ((len <= 0) || (len > 1 << 16) || (len & (len -1))) return 0;
   return len - 1;
 }
+// ╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴ Multiple consumer
+i32 queue_mpop(queue *q, i32 len, u32 *save) {
+  u32 r = *save = *q;
+  i32 mask = len - 1;
+  i32 head = r       & mask;
+  i32 tail = r >> 16 & mask;
+  return head == tail ? -1 : tail;
+}
+// NB element load must be atomic TODO
+b32 queue_mpop_commit(queue *q, u32 save) {
+  return atomic_compare_exchange_strong(q, &save, save + 0x10000);
+}
+// ╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴ Single consumer
 // Returns index for next value to be popped. -1 when empty.
 i32 queue_pop(queue *q, i32 len) {
   u32 r = *q; // ? memory_order_acquire from stdatomic.h
@@ -608,9 +628,7 @@ i32 queue_push(queue *q, i32 len) {
 void queue_push_commit(queue *q) {
   *q += 1;
 }
-
-// ╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴ Lock-free concurrent output buffer (single consumer)
-
+// ╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴ Concurrent output buffer
 typedef struct {
   s8 buf; // correct capacity when make_qout
   queue q;
@@ -619,7 +637,7 @@ MAYBE(qout)
 qout_ make_qout(arena *a, i32 len) {
   qout_ nil = (qout_){0};
   i32 cap = queue_capacity(len);
-  if (cap == 0) return nil;
+  if (!cap) return nil;
   u8 *buf = new (a, u8, cap);
   if (!buf) return nil;
   return (qout_) { .v = {.buf = (s8){.buf = buf, .len = cap}, .q = 0 } };
@@ -655,14 +673,22 @@ typedef struct {
   b32 err;
 } bufout;
 
-// FIXME deal with allocation failure!
-#define bufout(a, n, f) &(bufout){.buf = new (a, u8, n), .cap = n, .fd = f}
+MAYBE(bufout)
+
+bufout_ make_bufout(arena *a, i32 cap, i32 fd) {
+  u8 *buf = new (a, u8, cap);
+  if (!buf) return (bufout_){0};
+  return (bufout_){.v = {.buf = buf, .cap = cap, .fd = fd}};
+}
 
 void flush(bufout *b);
 
+typedef size (*Writer)(void *out, s8 s);
+
 // Caller needs to flush
-void s8write(bufout *b, s8 s) {
-  if (!b->buf || !s.buf) return;
+size s8write(void *out, s8 s) {
+  bufout *b = (bufout *)out;
+  if (!b->buf || !s.buf) return 0;
   u8 *buf = s.buf;
   u8 *end = endof(s);
   while (!b->err && (buf < end)) {
@@ -676,15 +702,15 @@ void s8write(bufout *b, s8 s) {
   }
 }
 
-int s8printf(arena scratch, void (*writer)(bufout *b, s8 s),
-             bufout *b, const char *format, ...) {
-  if (!scratch.beg || !b->buf) return -1;
+int s8printf(arena scratch, Writer writer, void *out,
+             const char *format, ...) {
+  if (!scratch.beg) return -1;
   va_list args;
   va_start(args, format);
   int n = vsnprintf(scratch.beg, remaining(&scratch), format, args);
   va_end(args);
   s8_ sa = s8arena(&scratch, scratch.beg);
-  if (n > 0 && sa.ok) writer(b, sa.v);
+  if (n > 0 && sa.ok) writer(out, sa.v);
   return n;
 }
 
