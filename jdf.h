@@ -608,7 +608,7 @@ b32 queue_mpop_commit(queue *q, u32 save) {
 // ╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴ Single consumer
 // Returns index for next value to be popped. -1 when empty.
 i32 queue_pop(queue *q, i32 len) {
-  printf("queue_pop %p 0x%x %i\n", q, *q, len);
+  //printf("queue_pop %p 0x%x %i\n", q, *q, len);
   u32 r = *q; // ? memory_order_acquire from stdatomic.h
   i32 mask = len - 1;
   i32 head = r       & mask;
@@ -620,14 +620,14 @@ void queue_pop_commit(queue *q) {
 }
 // Returns index for next value to be pushed. -1 when full.
 i32 queue_push(queue *q, i32 len) {
-  printf("queue_push %p 0x%x %i\n", q, *q, len);
+  //printf("queue_push %p 0x%x %i\n", q, *q, len);
   u32 r = *q;
   i32 mask = len - 1;
   i32 head = r       & mask;
   i32 tail = r >> 16 & mask;
   i32 next = (head + 1u) & mask;
   // 0x8000 == 1 << 15; ~0x8000 is zero at bit 15, rest ones.
-  printf("mask 0x%x, head 0x%x, tail 0x%x, next 0x%x\n", mask, head, tail, next); 
+  // printf("mask 0x%x, head 0x%x, tail 0x%x, next 0x%x\n", mask, head, tail, next); 
   if (r & 0x8000) *q &= ~0x8000;  // avoid overflow (of head into tail bytes) on commit
   return next == tail ? -1 : head;
 }
@@ -716,10 +716,13 @@ size s8write(void *out, s8 s) {
 int s8printf(arena scratch, Writer writer, void *out,
              const char *format, ...) {
   if (!scratch.beg) return -1;
+  // printf("s8printf beg %x cur %x end %x remaining %ti\n", scratch.beg, scratch.cur, scratch.end, remaining(&scratch));
+  // printf("s8printf trying to print something with format %s\n", format);
   va_list args;
   va_start(args, format);
   int n = vsnprintf(scratch.beg, remaining(&scratch), format, args);
   va_end(args);
+  printf("ok\n");
   s8_ sa = s8arena(&scratch, scratch.beg);
   if (n > 0 && sa.ok) writer(out, sa.v);
   return n;

@@ -332,6 +332,9 @@ size s8writeq(void *out, s8 s) {
     perror("Tried to write unitialised string to qout");
     return 0;
   }
+  printf("s8writeq: ");
+  for (size i = 0; i < s.len; i++) printf("%c", s.buf[i]);
+  printf("\n");
   return write_qout(q, s.buf, s.len);
 }
 
@@ -352,7 +355,8 @@ void serialise_response(Client *client, Response res) {
   do {
     k = s8unwrap(&scratch, header->key);
     v = s8unwrap(&scratch, header->val);
-    s8printf(scratch, s8writeq, out, "%s: %s\r\n", k, v);
+    if (k.ok && v.ok)
+      s8printf(scratch, s8writeq, out, "%s: %s\r\n", k.ok, v.ok);
   } while ((header = header->next));
   s8writeq(out, crlf);
   s8writeq(out, res.body);
