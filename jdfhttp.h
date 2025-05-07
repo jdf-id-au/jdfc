@@ -340,7 +340,7 @@ size s8writeq(void *out, s8 s) {
     perror("Tried to write unitialised string to qout");
     return 0;
   }
-  dumbp(s);
+  // dumbp(s);
   return write_qout(q, s.buf, s.len);
 }
 
@@ -353,18 +353,11 @@ void serialise_response(arena *store, arena scratch, Client *client, Response re
   s8 crlf = s8("\r\n");
   res = add_headers(store, scratch, res); // reassigning to pass-by-value arg; do before store becomes buffer
   s8map *header = res.headers;
-  s8printf(scratch, s8writeq, out, "HTTP/1.1 %i %s\r\n", res.status, spell_http_status[res.status]); // TODO adapt to make_constants stuff when ready
-  s8_ k = {0};
-  s8_ v = {0};
+  s8printf(scratch, s8writeq, out, "HTTP/1.1 %i %s\r\n",
+           res.status, spell_http_status[res.status]); // TODO adapt to make_constants stuff when ready
   do {
-    // s8writeq(out, header->key);
-    // s8writeq(out, s8(": "));
-    // s8writeq(out, header->val);
-    // s8writeq(out, crlf);
-    k = s8unwrap(store, header->key); // FIXME boy this is annoying
-    v = s8unwrap(store, header->val);
-    if (k.ok && v.ok)
-    s8printf(scratch, s8writeq, out, "%s: %s\r\n", k.v, v.v);
+    s8printf(scratch, s8writeq, out, "%s: %s\r\n",
+             s8unwrap(store, header->key), s8unwrap(store, header->val));
   } while ((header = header->next));
   s8writeq(out, crlf);
   s8writeq(out, res.body);

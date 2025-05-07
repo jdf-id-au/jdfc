@@ -446,12 +446,12 @@ s8 s8wrap(const char *cstr, size maxlen) {
   return s8span(beg, end);
 }
 
-// Return copy of s into a, one byte longer for terminal zero.
-s8_ s8unwrap(arena *a, s8 s) {
+// Return pointer to copy of s into a, one byte longer for terminal zero.
+char *s8unwrap(arena *a, s8 s) {
   u8 *buf = new (a, u8, s.len + 1); // is zeroed
-  if (!buf) return (s8_){0};
+  if (!buf) return 0;
   copy(buf, s.buf, s.len);
-  return (s8_){ .v = {.buf = buf, .len = s.len + 1}}; 
+  return (char *)buf;
 }
 
 // https://www.reddit.com/r/C_Programming/comments/kzouxh/isspace_ctypeh_considered_harmful/
@@ -708,14 +708,18 @@ size s8write(void *out, s8 s) {
 
 int s8printf(arena scratch, Writer writer, void *out, const char *format, ...) {
   if (!scratch.beg) return -1;
-  // printf("s8printf store beg %p cur %p end %p remaining %ti\n", store->beg, store->cur, store->end, available(store));
-  // printf("s8printf trying to print something with format %s\n", format);
+  assert(scratch.beg == scratch.cur);
+  size avail = available(&scratch);
   va_list args;
   va_start(args, format);
-  scratch.cur = scratch.beg;
-  int n = vsnprintf(scratch.beg, available(&scratch), format, args);
+  // returns misleading n which disregards available size!
+  // also disregards terminal \0, as usual
+  i32 n = vsnprintf(scratch.beg, avail, format, args);
   va_end(args);
-  return writer(out, s8bytespan(scratch.beg, scratch.beg + n));
+  if (n > 0) {
+    scratch.cur += n > avail ? avail : n;
+    return writer(out, s8bytespan(scratch.beg, scratch.cur));
+  } else return n;
 }
 
 u32 oswrite(i32 fd, u8 *buf, i32 len);
