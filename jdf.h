@@ -40,7 +40,7 @@ typedef struct arena arena; // forward decl
 
 #define alignof(x) (size)_Alignof(x) // casting from size_t
 #define countof(arrayptr) (size)(sizeof(arrayptr) / sizeof(*(arrayptr))) // casting from size_t
-#define new(a, t, n) (t *)alloc(a, sizeof(t), alignof(t), n) // arena, type, number
+#define new(a, t, n) (t *)alloc(a, sizeof(t), alignof(t), n, #t) // arena, type, number
 #define ARRAY(tn, t) typedef struct { t *buf; size len; } tn; // new type name, el type
 #define endof(v) (v).buf + (v).len // one beyond last of sized value
 /*
@@ -273,8 +273,9 @@ typedef struct arena {
   NB It's somewhat redundant to test for failure of alloc_arena, because the
   first alloc here would fail if the arena is 0.
 */
-byte *alloc(arena *a, size objsize, size align, size count) {
+byte *alloc(arena *a, size objsize, size align, size count, const char *t) {
   if (!a || count <= 0 || align < 0) return 0; // why are count and size signed?
+  //printf("Trying to allocate %ti %ss of size %ti\n", count, t, objsize);
   size avail = a->end - a->cur;
   /*
     Padding is how far the next aligned address is beyond the cursor.
@@ -298,8 +299,11 @@ byte *alloc(arena *a, size objsize, size align, size count) {
     Deliberately return null pointer if arena can't allocate requested amount!
     This does propagate annoyingly.
     Distinction between OOM proper and getting killed by (Linux) OOM killer?
-  */ 
-  if (count > (avail - padding)/objsize) return 0;
+  */
+  if (count > (avail - padding) / objsize) {
+    printf("count %ti, count available %ti\n", count, (avail-padding)/objsize);
+    return 0;
+  }
   size total = count * objsize;
   byte *p = a->cur + padding;
   a->cur += padding + total;
@@ -604,6 +608,7 @@ b32 queue_mpop_commit(queue *q, u32 save) {
 // ╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴ Single consumer
 // Returns index for next value to be popped. -1 when empty.
 i32 queue_pop(queue *q, i32 len) {
+  printf("queue_pop %p 0x%x %i\n", q, *q, len);
   u32 r = *q; // ? memory_order_acquire from stdatomic.h
   i32 mask = len - 1;
   i32 head = r       & mask;
@@ -615,12 +620,14 @@ void queue_pop_commit(queue *q) {
 }
 // Returns index for next value to be pushed. -1 when full.
 i32 queue_push(queue *q, i32 len) {
+  printf("queue_push %p 0x%x %i\n", q, *q, len);
   u32 r = *q;
   i32 mask = len - 1;
-  i32 head = r       * mask;
+  i32 head = r       & mask;
   i32 tail = r >> 16 & mask;
   i32 next = (head + 1u) & mask;
   // 0x8000 == 1 << 15; ~0x8000 is zero at bit 15, rest ones.
+  printf("mask 0x%x, head 0x%x, tail 0x%x, next 0x%x\n", mask, head, tail, next); 
   if (r & 0x8000) *q &= ~0x8000;  // avoid overflow (of head into tail bytes) on commit
   return next == tail ? -1 : head;
 }
@@ -640,7 +647,7 @@ qout_ make_qout(arena *a, i32 len) {
   if (!cap) return nil;
   u8 *buf = new (a, u8, cap);
   if (!buf) return nil;
-  return (qout_) { .v = {.buf = (s8){.buf = buf, .len = cap}, .q = 0 } };
+  return (qout_) { .v = {.buf = (s8){.buf = buf, .len = len}, .q = 0 } };
 }
 size read_qout(qout *qo, s8 buf) {
   i32 qi = 0;
@@ -655,8 +662,9 @@ size read_qout(qout *qo, s8 buf) {
 size write_qout(qout *qo, u8 *buf, size maxlen) {
   i32 qi = 0;
   i32 bi = 0;
-  while ((qi = queue_push(&qo->q, qo->buf.len))) {
-    if (qi < 0) break; // full
+  while ((qi = queue_push(&qo->q, qo->buf.len)) &&
+         qi < 0 && // full
+         bi < maxlen) {
     qo->buf.buf[qi] = buf[bi++];
     queue_push_commit(&qo->q);
   }
@@ -691,6 +699,7 @@ size s8write(void *out, s8 s) {
   if (!b->buf || !s.buf) return 0;
   u8 *buf = s.buf;
   u8 *end = endof(s);
+  size total_copied = 0;
   while (!b->err && (buf < end)) {
     i32 avail = b->cap - b->len; // TODO learn about size -> i32
     i32 count = (avail < end - buf) ? avail : (i32)(end - buf);
@@ -698,8 +707,10 @@ size s8write(void *out, s8 s) {
     copy(b->buf + b->len, buf, count);
     buf += count;
     b->len += count;
+    total_copied += count;
     if (b->len == b->cap) flush(b);
   }
+  return total_copied;
 }
 
 int s8printf(arena scratch, Writer writer, void *out,

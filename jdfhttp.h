@@ -169,8 +169,9 @@ typedef struct {
 
 typedef struct { // Concurrent queue (multiple consumer)
   _Atomic Job *jobs;
-  // simpler than _Atomic Jobs *jobs from ARRAY(Jobs, Job):
-  size len; // because _Atomic struct member access is UB
+  // simpler than _Atomic Jobs *jobs from ARRAY(Jobs, Job)
+  // because _Atomic struct member access is UB:
+  size len; // this is 1 more than the number of jobs!!
   queue q;
 } Work;
 
@@ -297,7 +298,8 @@ Request parse_request(arena *store, arena scratch, s8 raw) {
 
 s8map *content_type(arena *store, s8map *head, enum content_type content_type) {
   s8mapassoc(store, head, s8("Content-Type"),
-             (s8){ .buf = (u8 *)spell_content_type[content_type]});
+             (s8){.buf = (u8 *)spell_content_type[content_type]});
+  return head;
 }
 
 // Associate cloned k & v.
@@ -400,8 +402,8 @@ void write_client(EV_P_ ev_io *w, int events) {
   while (1) {
     bytes_written = write(w->fd, buf, bytes_read);
     if (bytes_written == 0) { // TODO check semantics, client closed connection?
-      // printf("write client closed cleanup\n");
-      cleanup_client(EV_A_ w);
+      printf("write client wrote nothing\n");
+      //cleanup_client(EV_A_ w);
     } else if (bytes_written < 0) {
       if (errno == EAGAIN || errno == EWOULDBLOCK) {
         // just try again? NB don't lose qo data!
@@ -421,7 +423,8 @@ void write_client(EV_P_ ev_io *w, int events) {
 
 b32 enqueue_job(Server *server, Job job) {
   i32 idx = queue_push(&server->work.q, server->work.len);
-  if (idx < 0) return idx; // queue full
+  printf("queue_push %i\n", idx);
+  if (idx < 0) return 0; // queue full
   server->work.jobs[idx] = job;
   queue_push_commit(&server->work.q);
   pthread_mutex_lock(&server->work_waiting_lock);
@@ -429,6 +432,7 @@ b32 enqueue_job(Server *server, Job job) {
   pthread_mutex_unlock(&server->work_waiting_lock);
   // TODO check pthread_cond_signal to wake a thread to do the work
   // TODO check awake thread will do work from queue without needing to go via sleep
+  return 1;
 }
 
 void read_client(EV_P_ ev_io *w, int events) {
@@ -575,17 +579,18 @@ i32 nprocs(void) {
   GetSystemInfo(&sysinfo);
   return sysinfo.dwNumberOfProcessors;
 }
-#elif __APPLE__
-#include <sys/sysctl.h>
-i32 nproc(void) {
-  i32 v = 0;
-  usize len = 0;
-  if (!sysctlbyname("hw.logicalcpu", &v, &len, 0, 0)) // 0 is success
-    return v;
-  perror("Couldn't get system information");
-}
-#elif __linux
-i32 nprocs(void) { return sysconf(_SC_NPROCESSORS_ONLIN); }
+//#elif __APPLE__
+//#include <sys/sysctl.h>
+//i32 nproc(void) {
+  //  i32 v = 0;
+  //  usize len = 1;
+  //  if (!sysctlbyname("hw.logicalcpu", &v, &len, 0, 0)) // 0 is success return v;
+     //    perror("Couldn't get system information");
+  //  return v;
+  //}
+//#elif __linux
+#else
+i32 nproc(void) { return sysconf(_SC_NPROCESSORS_ONLN); }
 #endif
 
 typedef void *(*Worker)(void *);
@@ -600,23 +605,22 @@ Work_ make_Work(arena *a, i32 len) {
   i32 cap = queue_capacity(len);
   if (!cap) return nil;
   _Atomic Job *jobs = new (a, _Atomic Job, cap);
-  if (!jobs) return nil;
-  return (Work_) { .v = {.jobs = jobs, .len = cap, .q = 0} };
+  if (!jobs) return nil; // why
+  return (Work_) { .v = {.jobs = jobs, .len = len, .q = 0} };
 }
 
 void launch(Server *server) {
   server->store = alloc_arena(server->config.server_mem);
   server->scratch = alloc_arena(server->config.server_mem);
-
   i32 np = nproc();
   i32 nw = np == 1 ? np : np - 1;
   i32 rc = 0;
-  
   Workshop *workshops = new (&server->store, Workshop, nw); // seemingly > 8KiB ea
   if (!workshops) {
     perror("Unable to allocate workshops");
     exit(1);
   }
+  for (size i = 0; i < nw; i++) workshops[i].server = server; 
   server->workshops.buf = workshops;
   for (size i = 0; i < nw; i++)
     if ((rc = pthread_create(&(workshops[i].thread), 0, (Worker)worker, &workshops[i]))) {
@@ -626,7 +630,7 @@ void launch(Server *server) {
       break;
     }
 
-  Work_ work = make_Work(&server->store, 32768);
+  Work_ work = make_Work(&server->store, 32);
   if (!work.ok) {
     perror("Unable to make work queue");
     exit(1);
