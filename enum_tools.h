@@ -26,13 +26,28 @@ LIST(enum_values, enum_value)
 b32 render_enum(arena scratch, bufout *b, s8 identifier, enum_values *values) {
   s8 ind = s8("  ");
   // grug approve
-  s8write(b, s8("enum http_status {\n"));
+  s8write(b, s8("// This is auto-generated, do not edit\n"));
+  s8write(b, s8("enum "));
+  s8write(b, identifier);
+  s8write(b, s8(" {\n"));
   enum_values *cur = values;
-  do {
-    // grug approve
+  do { 
     s8write(b, ind);
     s8write(b, cur->val.symbol);
     s8printf(scratch, s8write, b, " = %i,\n", cur->val.number); // trailing comma ok in C99
+  } while ((cur = cur->next));
+  s8write(b, s8("};\n"));
+  s8write(b, s8("const char *spell_"));
+  s8write(b, identifier);
+  s8write(b, s8("[] = {\n"));
+  cur = values;
+  do {
+    s8write(b, ind);
+    s8write(b, s8("["));
+    s8write(b, cur->val.symbol);
+    s8write(b, s8("] = \""));
+    s8write(b, cur->val.description);
+    s8write(b, s8("\",\n"));
   } while ((cur = cur->next));
   s8write(b, s8("};\n"));
   flush(b);
