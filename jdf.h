@@ -40,16 +40,28 @@ typedef struct arena arena; // forward decl
 
 #define alignof(x) (size)_Alignof(x) // casting from size_t
 #define countof(arrayptr) (size)(sizeof(arrayptr) / sizeof(*(arrayptr))) // casting from size_t
-#define new(a, t, n) (t *)alloc(a, sizeof(t), alignof(t), n, #t) // arena, type, number
-#define ARRAY(tn, t) typedef struct { t *buf; size len; } tn; // new type name, el type
-#define endof(v) (v).buf + (v).len // one beyond last of sized value
 /*
-  Somewhat evil semantic affordance for structs starting with (possibly nested) nullable pointer.
-  Allows if(s.ok) process(s.v). Use to represent e.g. internal allocation failure.
+  Somewhat evil semantic affordance for structs starting with (possibly nested)
+  nullable pointer. Allows if(s.ok) process(s.v). Should be safer than null
+  pointer because of explicit types.
+  Use to represent e.g. internal allocation failure.
   (Can only cast scalars unfortunately.)
   https://stackoverflow.com/a/3995987/780743
 */
-#define MAYBE(t) typedef union { uptr ok; t v; } t##_;
+#define MAYBE(t) typedef union {uptr ok; t v;} t##_;
+#define new(a, t, n) (t *)alloc(a, sizeof(t), alignof(t), n, #t) // arena, type, number
+#define ARRAY(tn, t)                                          \
+  typedef struct {                                            \
+    t *buf;                                                   \
+    size len;                                                 \
+  } tn; /* new type name, el type */                          \
+  MAYBE(tn)                                                   \
+  tn##_ make_##tn(arena *a, size len) {                       \
+    t *buf = new (a, t, len);                                 \
+    if (buf) return (tn##_){.v = {.buf = buf, .len = len }};  \
+    else return (tn##_){0};                                   \
+  }
+#define endof(v) (v).buf + (v).len // one beyond last of sized value
 /*
   To enable assertions in release builds,
   put UBSan in trap mode with -fsanitize-trap
@@ -328,9 +340,7 @@ void copy(u8 *restrict dst, u8 *restrict src, size len) {
 ARRAY(s8, u8) // s8: Basic UTF-8 string. Not null terminated!
 // Wrap C string literal into s8 string.
 #define s8(s) (s8) { (u8 *)s, countof(s) - 1 }
-MAYBE(s8)
 ARRAY(s8s, s8)
-MAYBE(s8s)     
 #ifdef _WIN32
 ARRAY(s16, c16)
 #define s16(s) (s16) { (c16 *)s, countof(s) - 1 }
@@ -446,7 +456,7 @@ s8 s8wrap(const char *cstr, size maxlen) {
   return s8span(beg, end);
 }
 
-// Return pointer to copy of s in a, one byte longer for terminal zero.
+// Return pointer to copy of s in a, one byte longer for terminal zero. Null if allocation fails.
 char *s8unwrap(arena *a, s8 s) {
   u8 *buf = new (a, u8, s.len + 1); // is zeroed
   if (!buf) return 0;
@@ -536,17 +546,17 @@ s8s_ s8splitu8(arena *store, arena scratch, s8 s, u8 on, size max_splits) {
 }
 
 // Concatenate array of strings
-s8 s8concat(arena *a, s8 *ss, size len) {
+s8_ s8concat(arena *a, s8 *ss, size len) {
   size tot = 0;
   for (size i = 0; i < len; i++) tot += ss[i].len;
   u8 *buf = new (a, u8, tot);
-  if (!buf) return (s8){0};
+  if (!buf) return (s8_){0};
   u8 *beg = buf;
   for (size i = 0; i < len; i++) {
     copy(beg, ss[i].buf, ss[i].len);
     beg += ss[i].len;
   }
-  return (s8){.buf = buf, .len = tot};
+  return (s8_) {.v = {.buf = buf, .len = tot}};
 }
 
 s8_ u8fill(arena *buf, u8 with, size count) {
@@ -556,6 +566,7 @@ s8_ u8fill(arena *buf, u8 with, size count) {
   return (s8_) { .v = s8span(p, p + count) };
 }
 
+// Does effectively allocate by moving buf.cur, so MAYBE return type.
 s8_ s8sprintf(arena *buf, const char *format, ...) {
   if (!buf || !buf->cur) return (s8_){0};
   byte *start = buf->cur;
@@ -713,7 +724,7 @@ int s8printf(arena scratch, Writer writer, void *out, const char *format, ...) {
   i32 n = vsnprintf(scratch.beg, avail, format, args);
   va_end(args);
   if (n > 0) {
-    scratch.cur += (n > avail ? avail : n) - 1; // drop terminal \0
+    scratch.cur += (n > avail ? avail : n); // at terminal \0
     return writer(out, s8bytespan(scratch.beg, scratch.cur));
   } else return n;
 }
@@ -836,6 +847,7 @@ u32 oswrite(i32 fd, u8 *buf, i32 len) {
 #include <unistd.h> // read write _exit
 #include <errno.h>
 
+// malloc failure will return zero-capacity arena so its `alloc`s will just fail.
 arena alloc_arena(size cap) {
   byte* beg = malloc(cap);
   byte* end = beg ? beg + cap : 0;

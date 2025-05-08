@@ -32,7 +32,7 @@ Response handler(arena *store, arena scratch, Request req) {
     if (row.ok)
       cur = s8lappend(store, cur, row.v);
   }
-  cur = s8lappend(store, cur, s8("</tbody></table>"));
+  cur = s8lappend(store, cur, s8("</tbody></table></body></html>"));
   if (!body.ok) {
     res.body = 0;
     res.status = INTERNAL_SERVER_ERROR; 
