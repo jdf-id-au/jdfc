@@ -19,26 +19,6 @@
 #include <fcntl.h>
 #include <pthread.h>
 
-enum http_method { // https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Methods
-  INVALID_METHOD, GET, HEAD, POST, PUT, DELETE, CONNECT, OPTIONS, TRACE, PATCH
-};
-
-// TODO macrology?
-const char *spell_method[] = {
-    [INVALID_METHOD] = "",
-    [GET] = "GET",
-    [HEAD] = "HEAD",
-    [POST] = "POST",
-    [PUT] = "PUT",
-    [DELETE] = "DELETE",
-    [CONNECT] = "CONNECT",
-    [OPTIONS] = "OPTIONS",
-    [TRACE] = "TRACE",
-    [PATCH] =  "PATCH"
-};
-
-#define s8unsafe(s) (s8){ .buf = (u8 *)s, .len = strlen(s) }
-
 enum http_method parse_method(s8 s) {
   for (size i = 1; i < (size)PATCH; i++) 
     if (s8equal(s, s8unsafe(spell_method[i]))) // should be safe because literal??
@@ -56,63 +36,9 @@ size s8arenaprintf(arena *a, const char *format) {
   return printf(format, a->beg);
 }
 
-enum http_status { // https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Status
-  // incomplete list
-  OK = 200,
-  CREATED,
-  ACCEPTED,
-  NON_AUTHORITATIVE_INFORMATION,
-  NO_CONTENT,
-  RESET_CONTENT,
-  PARTIAL_CONTENT,
-  MULTIPLE_CHOICES = 300,
-  MOVED_PERMANENTLY,
-  FOUND,
-  SEE_OTHER,
-  NOT_MODIFIED,
-  TEMPORARY_REDIRECT = 307,
-  PERMANENT_REDIRECT,
-  BAD_REQUEST = 400,
-  UNAUTHORIZED,
-  PAYMENT_REQUIRED,
-  FORBIDDEN,
-  NOT_FOUND,
-  METHOD_NOT_ALLOWED,
-  NOT_ACCEPTABLE,
-  GONE = 410,
-  LENGTH_REQUIRED,
-  PRECONDITION_FAILED,
-  CONTENT_TOO_LARGE,
-  URI_TOO_LONG,
-  UNSUPPORTED_MEDIA_TYPE,
-  RANGE_NOT_SATISFIED,
-  EXPECTATION_FAILED,
-  IM_A_TEAPOT,
-  TOO_MANY_REQUESTS = 429,
-  INTERNAL_SERVER_ERROR = 500,
-  NOT_IMPLEMENTED,
-  BAD_GATEWAY,
-  SERVICE_UNAVAILABLE,
-  GATEWAY_TIMEOUT,
-  HTTP_VERSION_NOT_SUPPORTED
-};
-
-const char *spell_http_status[] = {
-    [OK] = "OK",
-    [NOT_FOUND] = "Not Found",
-    [INTERNAL_SERVER_ERROR] = "Internal Server Error"
-};
-
-enum content_type {
-  TEXT_HTML
-};
-
-const char *spell_content_type[] = {
-  [TEXT_HTML] = "text/html; charset=UTF-8"
-};
-
 MAP_LIST(s8map, s8, s8, s8equal)
-LIST(s8l, s8)
+
+#include "http_codes.h";
 
 enum request_error {
   REQUST_OK, REQUEST_OOM, REQUEST_EMPTY, INVALID_METHOD_LINE 
@@ -318,13 +244,6 @@ s8map *s8mapassocl(arena *store, s8map *head, s8 k, s8 v) {
   return head;
 }
 
-size s8llen(s8l *sl) {
-  size len = 0;
-  s8l *node = sl;
-  do { len += node->val.len; } while ((node = node->next));
-  return len;
-}
-
 // Append cloned
 s8l *s8lappendcl(arena *store, s8l *head, s8 s) {
   s8_ cl = s8clone(store, s);
@@ -418,7 +337,9 @@ void write_client(EV_P_ ev_io *w, int events) {
     buf[bytes_read] = qo->buf.buf[bytes_read];
     queue_pop_commit(&qo->q);
   }
-  if (bytes_read == 0) return; // FIXME ?wait for queue to be readable ?why necessary
+  // FIXME ?wait for queue to be readable ?why necessary
+  // FIXME responses sometimes fail to complete delivery
+  if (bytes_read == 0) return;
   size total_bytes_written = 0;
   size bytes_written = 0;
   while (1) {

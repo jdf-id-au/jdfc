@@ -159,7 +159,7 @@ caller retains it. Caller needs to retain list head.
   };                                                                  \
   /* Uniquely associate key to value. Caller must ensure kv validity. \
      Assoc to null head to make new association list.                 \
-   Returns null pointer if new fails. */                              \
+     Allows null val. Returns null pointer if new fails. */           \
   tn *tn##assoc(arena *a, tn *head, kt key, vt val) {                 \
     tn *beg = {0};                                                    \
     if (!head) {                                                      \
@@ -347,6 +347,7 @@ ARRAY(s16, c16)
 // TODO what about all the fns?!
 #endif
 
+LIST(s8l, s8)
 /*
   Make one s8 from unquoted multiline text, after collapsing whitespace.
   IDE may be annoying about it, try fundamental-mode.
@@ -497,11 +498,10 @@ b32 s8blank(s8 s) {
 
 // Copies buf
 s8_ s8clone(arena *a, s8 s) {
-  u8 *buf = new (a, u8, s.len);
-  if (!buf) return (s8_){0}; 
-  s8 c = (s8){.buf = buf, .len = s.len};
-  copy(c.buf, s.buf, s.len);
-  return (s8_){.v = c}; // cast to union is apparently a gnu extension
+  s8_ c = make_s8(a, s.len);
+  if (!c.ok) return c;
+  copy(c.v.buf, s.buf, s.len);
+  return c;
 }
 
 /* Split s, returning s8spans referring to it (zero copy of buffer). */
@@ -549,21 +549,40 @@ s8s_ s8splitu8(arena *store, arena scratch, s8 s, u8 on, size max_splits) {
 s8_ s8concat(arena *a, s8 *ss, size len) {
   size tot = 0;
   for (size i = 0; i < len; i++) tot += ss[i].len;
-  u8 *buf = new (a, u8, tot);
-  if (!buf) return (s8_){0};
-  u8 *beg = buf;
+  s8_ ret = make_s8(a, tot);
+  if (!ret.ok) return ret;
+  u8 *cur = ret.v.buf;
   for (size i = 0; i < len; i++) {
-    copy(beg, ss[i].buf, ss[i].len);
-    beg += ss[i].len;
+    copy(cur, ss[i].buf, ss[i].len);
+    cur += ss[i].len;
   }
-  return (s8_) {.v = {.buf = buf, .len = tot}};
+  return ret;
+}
+
+size s8llen(s8l *sl) {
+  size len = 0;
+  s8l *node = sl;
+  do { len += node->val.len; } while ((node = node->next));
+  return len;
+}
+     
+s8_ s8lconcat(arena *store, s8l *sl) {
+  s8_ ret = make_s8(store, s8llen(sl));
+  if (!ret.ok) return ret;
+  u8 *cur = ret.v.buf;
+  s8l *node = sl;
+  do {
+    copy(cur, sl->val.buf, sl->val.len);
+    cur += sl->val.len;
+  } while ((node = node->next));
+  return ret;
 }
 
 s8_ u8fill(arena *buf, u8 with, size count) {
-  u8 *p = new (buf, u8, count);
-  if (!p) return (s8_){0};
-  for (size i = 0; i < count; i++) p[i] = with;
-  return (s8_) { .v = s8span(p, p + count) };
+  s8_ ret = make_s8(buf, count);
+  if (!ret.ok) return ret;
+  for (size i = 0; i < count; i++) ret.v.buf[i] = with;
+  return ret;
 }
 
 // Does effectively allocate by moving buf.cur, so MAYBE return type.

@@ -10,6 +10,18 @@ void *store_alloc(usize count) { return alloc(store, sizeof(byte), 8, count, 0);
 void *scratch_alloc(usize count) { return alloc(&scratch, sizeof(byte), 8, count, 0); }
 void pretend_free(void *p) { (void)p; }
 
+s8 json_s8_value(json_t *s) {
+  return (s8){.buf = (u8 *)json_string_value(s), .len = json_string_length(s) };
+}
+
+s8 symbolise(arena *store, json_t *s) {
+  s8_ symbol = fussy_screaming_snake(store, json_s8_value(s));
+  if (symbol.ok) return symbol.v;
+  fprintf(stderr, "Invalid symbol: %s\n", json_string_value(s));
+  exit(1); // rudely doesn't close fp
+}
+
+// TODO nest all defs in one json; have defaults in case no number or description
 int main(int argc, char *argv[]) {
   arena storeval = alloc_arena(MiB(1));
   store = &storeval; // to make normal-looking fn calls
@@ -31,43 +43,76 @@ int main(int argc, char *argv[]) {
     fprintf(stderr, "%d: %s\n", error.line, error.text);
     goto exit;
   }
-  const char *k;
-  json_t *v;
-  json_t *code;
-  json_t *message;
+
+  /*
+    json should be map of enum name -> [value, ...]
+    value should be any combination of:
+    - symbol
+    - [code, symbol]
+    - [symbol, expansion]
+    - [code, symbol, expansion]
+    where code is integer and symbol and expansion are strings.
+    Codes are passed to enum definition without validation.
+   */
+
+  const char *j_id;
+  size j_id_len;
+  json_t *j_value_group, *j_value, *ja[3];
+  usize i;
+  s8enum *groups = 0;
+  enum_values *values = 0;
   
-  char const *symbols[600] = {0};
-  char const *messages[600] = {0};
-  json_object_foreach(root, k, v) {
-    code = json_object_get(v, "code");
-    message = json_object_get(v, "message");
-    if (json_is_integer(code) && json_is_string(message)) {
-      i64 c = json_integer_value(code);
-      const char *m = json_string_value(message);
-      size len = json_string_length(message); // excludes \0 terminator
-      symbols[c] = fussy_screaming_snake(store, (char *)m, len);
-      messages[c] = m;
+  // TODO json error handling
+  json_object_keylen_foreach(root, j_id, j_id_len, j_value_group) {
+    s8 id = (s8){.buf = (u8 *)j_id, .len = j_id_len};
+    json_array_foreach(j_value_group, i, j_value) {
+      enum_value construct = {0};
+      if (json_is_array(j_value)) {
+        switch (json_array_size(j_value)) {
+        case 3:
+          ja[2] = json_array_get(j_value, 2);
+          construct.text = json_s8_value(ja[2]);
+        case 2: // deliberate fall-through!
+          ja[0] = json_array_get(j_value, 0);
+          ja[1] = json_array_get(j_value, 1);
+          if (json_is_integer(ja[0])) {
+            construct.number = json_integer_value(ja[0]);
+            construct.symbol = symbolise(store, ja[1]);
+            values = enum_valuesappend(store, values, construct);
+          } else if (json_is_string(ja[0]) && json_array_size(j_value) == 2) {
+            construct.symbol = symbolise(store,ja[0]);
+            construct.text = json_s8_value(ja[1]);
+            values = enum_valuesappend(store, values, construct);
+          } else {
+            fprintf(stderr, "Invalid combination: %s\n", json_dumps(j_value, 0));
+          }
+          break;
+        default:
+          fprintf(stderr, "Invalid value: %s\n", json_dumps(j_value, 0));
+          goto exit;
+        }
+      } else if (json_is_string(j_value)) {
+        construct.symbol = symbolise(store, j_value);
+        values = enum_valuesappend(store, values, construct);
+      } else {
+        fprintf(stderr, "Invalid enum value definition: %s\n",
+                json_dumps(j_value, 0));
+        goto exit;
+      }
     }
+    groups = s8enumassoc(store, groups, id, values);
+    values = 0;
   }
 
-  enum_values *vs = 0;
-  enum_values *cur = vs; // hopefully this copies vs pointer to cur and leaves vs
-  for (size i = 0; i < countof(symbols); i++) {
-    if (symbols[i]) {
-      cur = enum_valuesappend(
-          store, cur,
-          (enum_value){.number = i,
-                       .symbol = s8wrap(symbols[i], 100),
-                       .description = s8wrap(messages[i], 100)});
-      if (!vs) vs = cur;
-    }
-  }
   bufout_ out = make_bufout(store, KiB(4), 1);
   if (!out.ok) {
     perror("Unable to allocate out buffer");
     goto exit;
   }
-  return render_enum(scratch, &out.v, s8("http_status"), vs);
+  
+  do {
+    render_enum(scratch, &out.v, groups->key, groups->val); 
+  } while ((groups = groups->next));
   fprintf(stderr, "\n%ti scratch and %ti store arena bytes used",
           used(&scratch), used(store));
       

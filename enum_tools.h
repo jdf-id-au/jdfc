@@ -9,47 +9,59 @@ char fss(char c) {
   return '_';
 }
 
-char *fussy_screaming_snake(arena *a, char *s, size len) {
-  char *ret = new (a, char, len + 1); // inculde \0 terminator
-  for (size i = 0; i <= len; i++) ret[i] = fss(s[i]); // include \0 terminator
+s8_ fussy_screaming_snake(arena *a, s8 s) {
+  s8_ ret = make_s8(a, s.len);
+  if (!ret.ok) return ret;
+  for (size i = 0; i < s.len; i++) ret.v.buf[i] = fss(s.buf[i]);
   return ret;
 }
 
 typedef struct {
   i32 number;
   s8 symbol;
-  s8 description;
+  s8 text;
 } enum_value;
 
 LIST(enum_values, enum_value)
+MAP_LIST(s8enum, s8, enum_values *, s8equal)
 
-b32 render_enum(arena scratch, bufout *b, s8 identifier, enum_values *values) {
+#define W(x) s8write(b, x);
+#define S(x) W(s8(x));
+
+// Refuse to use X macro...
+void render_enum(arena scratch, bufout *b, s8 id, enum_values *values) {
   s8 ind = s8("  ");
   // grug approve
-  s8write(b, s8("// This is auto-generated, do not edit\n"));
-  s8write(b, s8("enum "));
-  s8write(b, identifier);
-  s8write(b, s8(" {\n"));
+  S("// This is auto-generated, do not edit\n");
+  S("enum "); W(id); S(" {\n");
+  S("  INVALID_"); W(id); S(","); // always first i.e. 0
   enum_values *cur = values;
   do { 
-    s8write(b, ind);
-    s8write(b, cur->val.symbol);
+    W(ind);
+    W(cur->val.symbol);
     s8printf(scratch, s8write, b, " = %i,\n", cur->val.number); // trailing comma ok in C99
   } while ((cur = cur->next));
-  s8write(b, s8("};\n"));
-  s8write(b, s8("const char *spell_"));
-  s8write(b, identifier);
-  s8write(b, s8("[] = {\n"));
+  S("};\n");
+  
+  S("const char *spell_"); W(id); S("[] = {\n");
   cur = values;
   do {
-    s8write(b, ind);
-    s8write(b, s8("["));
-    s8write(b, cur->val.symbol);
-    s8write(b, s8("] = \""));
-    s8write(b, cur->val.description);
-    s8write(b, s8("\",\n"));
+    W(ind);
+    S("[");
+    W(cur->val.symbol);
+    S("] = \"");
+    W(cur->val.text);
+    S("\",\n");
   } while ((cur = cur->next));
-  s8write(b, s8("};\n"));
+  S("};\n");
+  
+  S("enum "); W(id); S(" parse_"); W(id); S("(s8 s) {\n");
+  s8printf(scratch, s8write, b,
+           "  for (size i; i < %ti; i++) {\n", count(values));
+  S("    if(s8equal(s, s8wrap(spell_"); W(id); S("[i])))\n");
+  S("      return (enum "); W(id); S("i;\n");
+  S("  return (enum "); W(id); S("0;\n"); // should be INVALID_<ID>
+  S("}\n");
   flush(b);
 }
 
