@@ -67,7 +67,6 @@ int main(int argc, char *argv[]) {
   json_object_keylen_foreach(root, j_id, j_id_len, j_value_group) {
     s8 id = (s8){.buf = (u8 *)j_id, .len = j_id_len};
     json_array_foreach(j_value_group, i, j_value) {
-      if (!head && values) head = values;
       enum_value construct = {0};
       if (json_is_array(j_value)) {
         switch (json_array_size(j_value)) {
@@ -105,6 +104,7 @@ int main(int argc, char *argv[]) {
                 json_dumps(j_value, 0));
         goto exit;
       }
+      if (!head && values) head = values;
     }
     groups = s8enumassoc(store, groups, id, head);
     head = 0;
