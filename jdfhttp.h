@@ -4,7 +4,8 @@
 // https://hoad.io/libev-is-neat/
 
 #include "jdf.h" // TODO remove if want flexibility of choosing relptr.h; may not be worth matching APIs though
-//#include "relptr.h"
+// #include "relptr.h"
+#include "http_codes.h"
 #include <ev.h>
 
 #ifndef jdfhttp_h
@@ -19,13 +20,6 @@
 #include <fcntl.h>
 #include <pthread.h>
 
-enum http_method parse_method(s8 s) {
-  for (size i = 1; i < (size)PATCH; i++) 
-    if (s8equal(s, s8unsafe(spell_method[i]))) // should be safe because literal??
-      return (enum http_method)i;
-  return INVALID_METHOD;
-}
-
 // Terminates string in situ! Only suitable for arenas being prepared for s8arena.
 size s8arenaprintf(arena *a, const char *format) {
   if (a->cur < a->end) *a->cur = 0;
@@ -37,8 +31,6 @@ size s8arenaprintf(arena *a, const char *format) {
 }
 
 MAP_LIST(s8map, s8, s8, s8equal)
-
-#include "http_codes.h";
 
 enum request_error {
   REQUST_OK, REQUEST_OOM, REQUEST_EMPTY, INVALID_METHOD_LINE 
@@ -186,19 +178,19 @@ int set_non_blocking(int sockfd) {
 // would be "better" to use llhttp (which depends on llvm...)
 Request parse_request(arena *store, arena scratch, s8 raw) {
   Request req = { .raw = raw };
-  s8s_ split = s8splitu8(store, scratch, raw, '\n', 100);
+  s8a_ split = s8splitu8(store, scratch, raw, '\n', 100);
   if (!split.ok) ReqErr(REQUEST_OOM);
   if (split.v.len < 1) ReqErr(REQUEST_EMPTY);
-  s8s_ line0 = s8splitu8(store, scratch, split.v.buf[0], ' ', 2);
+  s8a_ line0 = s8splitu8(store, scratch, split.v.buf[0], ' ', 2);
   if (!line0.ok) ReqErr(REQUEST_OOM);
   if (line0.v.len < 3) ReqErr(INVALID_METHOD_LINE);
-  req.method = parse_method(line0.v.buf[0]);
+  req.method = parse_http_method(line0.v.buf[0]);
   req.uri = line0.v.buf[1]; // copy s8, zerocopy its buffer
   req.protocol = line0.v.buf[2];
   s8map *headers = {0};
   for (size i = 1; i < split.v.len; i++) {
     if (s8blank(split.v.buf[i])) break; // TODO trailing headers...??
-    s8s_ header = s8split(store, scratch, split.v.buf[i], s8(": "), 1);
+    s8a_ header = s8split(store, scratch, split.v.buf[i], s8(": "), 1);
     if (!header.ok) ReqErr(REQUEST_OOM);
     if (header.v.len == 2)
       headers = s8mapassoc(store, headers, header.v.buf[0], header.v.buf[1]);
@@ -208,10 +200,10 @@ Request parse_request(arena *store, arena scratch, s8 raw) {
   // e.g. Cookie: name=value; name2=value2; name3=value3
   s8map *cookiekv = s8mapget(headers, s8("Cookie"));
   if (cookiekv) {
-    s8s_ cookiekvs = s8split(store, scratch, cookiekv->val, s8("; "), 32);
+    s8a_ cookiekvs = s8split(store, scratch, cookiekv->val, s8("; "), 32);
     if (!cookiekvs.ok) ReqErr(REQUEST_OOM);
     for (size i = 0; i < cookiekvs.v.len; i++) {
-      s8s_ cookie = s8splitu8(store, scratch, cookiekvs.v.buf[i], '=', 1);
+      s8a_ cookie = s8splitu8(store, scratch, cookiekvs.v.buf[i], '=', 1);
       if (!cookie.ok) ReqErr(REQUEST_OOM);
       if (cookie.v.len == 2)
         cookies = s8mapassoc(store, cookies, cookie.v.buf[0], cookie.v.buf[1]);

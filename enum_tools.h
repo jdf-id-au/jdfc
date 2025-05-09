@@ -9,10 +9,31 @@ char fss(char c) {
   return '_';
 }
 
-s8_ fussy_screaming_snake(arena *a, s8 s) {
-  s8_ ret = make_s8(a, s.len);
-  if (!ret.ok) return ret;
+s8_ fussy_screaming_snake(arena *store, s8 s) {
+  s8_ ret = make_s8(store, s.len);
+  assert(ret.ok);
   for (size i = 0; i < s.len; i++) ret.v.buf[i] = fss(s.buf[i]);
+  return ret;
+}
+
+s8_ sanitise(arena *store, arena scratch, s8 s) {
+  size fixes = 0; // to add one character per target for escaping
+  char targets[] = "\\\"\'";
+  for (size i = 0; i < s.len; i++) 
+    for (usize j = 0; j < countof(targets) - 1; j++)
+      if (s.buf[i] == targets[j])
+        fixes++;
+  s8_ ret = make_s8(store, s.len + fixes);
+  // assert(ret.ok); wtf what's wrong
+  size r = 0;
+  for (size i = 0; i < s.len; i++) {
+    b32 targeted = 0;
+    for (usize j = 0; j < sizeof(targets); j++)
+      if (s.buf[i] == targets[j])
+        targeted = 1;
+    if (targeted) ret.v.buf[r++] = '\\';
+    ret.v.buf[r++] = s.buf[i];
+  }
   return ret;
 }
 
@@ -54,7 +75,8 @@ void render_enum(arena *store, arena scratch, bufout *b, s8 id, enum_values *val
     S("[");
     W(cur->val.symbol);
     S("] = \"");
-    W(cur->val.name);
+    s8_ sanname = sanitise(store, scratch, cur->val.name);
+    W(sanname.v);
     S("\",\n");
   } while ((cur = cur->next));
   S("};\n");
@@ -66,17 +88,18 @@ void render_enum(arena *store, arena scratch, bufout *b, s8 id, enum_values *val
     S("[");
     W(cur->val.symbol);
     S("] = \"");
-    W(cur->val.text);
+    s8_ santext = sanitise(store, scratch, cur->val.text);
+    W(santext.v);
     S("\",\n");
   } while ((cur = cur->next));
   S("};\n");
   
   S("enum "); W(id); S(" parse_"); W(id); S("(s8 s) {\n");
   s8printf(scratch, s8write, b,
-           "  for (size i; i < %ti; i++) {\n", count(values));
-  S("    if(s8equal(s, s8wrap(spell_"); W(id); S("[i])))\n");
+           "  for (size i; i < %ti; i++)\n", count(values));
+  S("    if(s8equal(s, s8wrap(spell_"); W(id); S("[i], 1024)))\n");
   S("      return (enum "); W(id); S(")i;\n");
-  S("  return (enum "); W(id); S(");\n"); // should be INVALID_<ID>
+  S("  return (enum "); W(id); S(")0;\n"); // should be INVALID_<ID>
   S("}\n");
   flush(b);
 }

@@ -1,7 +1,7 @@
-#include "jdf.h"
-#include "enum_tools.h"
 #include <stdio.h>
 #include <jansson.h>
+#include "jdf.h"
+#include "enum_tools.h"
 
 arena *store, scratch;
 
@@ -116,7 +116,8 @@ int main(int argc, char *argv[]) {
     perror("Unable to allocate out buffer");
     goto exit;
   }
-  s8write(&out.v, s8("// This is auto-generated, do not edit\n"));
+  s8write(&out.v, s8("// This is auto-generated, do not edit!\n"));
+  s8write(&out.v, s8("#include \"jdf.h\"\n"));
   do {
     render_enum(store, scratch, &out.v, groups->key, groups->val); 
   } while ((groups = groups->next));

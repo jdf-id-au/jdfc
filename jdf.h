@@ -18,6 +18,7 @@
 #include <stdint.h>
 #include <stdarg.h>
 #include <stdio.h> // mainly vsnprintf
+#include <string.h> // just strlen eww
 #include <stdatomic.h>
 
 typedef uint8_t   u8;
@@ -340,7 +341,7 @@ void copy(u8 *restrict dst, u8 *restrict src, size len) {
 ARRAY(s8, u8) // s8: Basic UTF-8 string. Not null terminated!
 // Wrap C string literal into s8 string.
 #define s8(s) (s8) { (u8 *)s, countof(s) - 1 }
-ARRAY(s8s, s8)
+ARRAY(s8a, s8)
 #ifdef _WIN32
 ARRAY(s16, c16)
 #define s16(s) (s16) { (c16 *)s, countof(s) - 1 }
@@ -504,43 +505,52 @@ s8_ s8clone(arena *a, s8 s) {
   return c;
 }
 
-/* Split s, returning s8spans referring to it (zero copy of buffer). */
-// NB annoying choice between accepting s8 and making new s8 for no split
-// vs accepting s8* and reusing for no split; former prob marginally better
-s8s_ s8split(arena *store, arena scratch, s8 s, s8 on, size max_splits) {
-  s8s_ nil = {0};
+LIST(u8l, u8 *)
+/*
+  Split s, returning s8spans referring to it (zero copy of buffer).
+  max_splits can be 0 for unlimited splits.
+*/
+s8a_ s8split(arena *store, arena scratch, s8 s, s8 on, size max_splits) {
+  s8a_ nil = {0};
   u8 *end = endof(s);
   if (!s.buf) return nil; // exit early without allocating
   // Allocation-free hack to differentiate ok-but-empty from not-ok.
-  if (s.len == 0) return (s8s_){ .v = { .buf = (s8 *)s.buf, .len = 0 } };
-  u8 **matches = new (&scratch, u8 *, max_splits);
-  if (!matches) return nil;
+  if (s.len == 0) return (s8a_){.v = {.buf = (s8 *)s.buf, .len = 0}};
+  u8l *matches = 0, *curmatch = 0;
   size nmatches = 0;
-  for (u8 *cur = s.buf; cur && cur < end && nmatches < max_splits;) {
+  for (u8 *cur = s.buf; cur && cur < end &&
+         (max_splits == 0 || nmatches < max_splits);) {
     s8 rem = s8span(cur, end);
     cur = s8find(rem, on);
     if (cur) {
-      matches[nmatches++] = cur;
+      curmatch = u8lappend(&scratch, curmatch, cur);
+      if (!matches) matches = curmatch;
+      nmatches++;
       cur += on.len;
     }
   }
   s8 *buf = new (store, s8, nmatches + 1);
   if (!buf) return nil;
   if (nmatches == 0) buf[0] = s;
-  else for (size nth = 0; nth <= nmatches; nth++) {
-    if (nth == 0) {
-      buf[nth] = s8span(s.buf, matches[nth]);
-    } else if (nth == nmatches) {
-      buf[nth] = s8span(matches[nth-1] + on.len, end);
-    } else {
-      buf[nth] = s8span(matches[nth-1] + on.len, matches[nth]);
+  else {
+    size i = 0;
+    buf[i++] = s8span(s.buf, matches->val); // first match
+    curmatch = matches;
+    while (1) {
+      if (curmatch->next) {
+        buf[i++] = s8span(curmatch->val + on.len, curmatch->next->val);
+        curmatch = curmatch->next;
+      } else {
+        buf[i++] = s8span(curmatch->val + on.len, end);
+        break;
+      }
     }
   }
-  return (s8s_){.v = {.buf = buf, .len = nmatches + 1}};
+  return (s8a_){.v = {.buf = buf, .len = nmatches + 1}};
 }
 
 // Trivially less efficient than impl calling s8findu8, but easier to maintain.
-s8s_ s8splitu8(arena *store, arena scratch, s8 s, u8 on, size max_splits) {
+s8a_ s8splitu8(arena *store, arena scratch, s8 s, u8 on, size max_splits) {
   s8 ons = (s8){.buf = (u8[]){on}, .len = 1};
   return s8split(store, scratch, s, ons, max_splits);
 }
@@ -600,6 +610,25 @@ s8_ s8sprintf(arena *buf, const char *format, ...) {
     buf->cur += n > avail ? avail : n;
     return (s8_){.v = s8bytespan(start, buf->cur)};
   } else return (s8_){0};
+}
+
+s8_ s8replace(arena *store, arena scratch,
+              s8 source, s8 target, s8 replacement) {
+  s8a_ split = s8split(store, scratch, source, target, 0);
+  if (!split.ok) return (s8_){0};
+  if (split.v.len == 1) return (s8_) {.v = source};
+  size len = (split.v.len - 1) * replacement.len; // TODO check if initial or terminal match handled correctly
+  for (size i = 0; i < split.v.len; i++) len += split.v.buf[i].len;
+  s8_ ret = make_s8(store, len);
+  if (!ret.ok) return (s8_){0};
+  copy(ret.v.buf, split.v.buf[0].buf, split.v.buf[0].len);
+  u8 *cur = ret.v.buf + split.v.buf[0].len;
+  for (size i = 1; i < split.v.len; i++) {
+    copy(cur, replacement.buf, replacement.len);
+    cur += replacement.len;
+    copy(cur, split.v.buf[i].buf, split.v.buf[i].len);
+  }
+  return ret;
 }
 
 // ───────────────────────────────────────────────── Lock-free concurrent queues

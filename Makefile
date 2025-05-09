@@ -26,5 +26,5 @@ testhttp: testhttp.c
 make_constants: make_constants.c
 	time cc $(CFLAGS) -ljansson $^ -o $@
 
-constants: make_constants http_codes.json
-	$(PREAMBLE) ./make_constants http_codes.json
+http_codes.h: make_constants http_codes.json
+	$(PREAMBLE) ./make_constants http_codes.json > http_codes.h

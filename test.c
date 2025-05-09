@@ -78,7 +78,7 @@ int main(int argc, char *argv[]) {
   byte beg[1024] = {0};
   arena tmp = {.beg = beg, .cur = beg, .end = beg + 1024};
   s8 mess = s8("this, and that, and the other");
-  s8s_ spl = s8splitu8(&tmp, scratch, mess, ',', 4);
+  s8a_ spl = s8splitu8(&tmp, scratch, mess, ',', 4);
   for (size i = 0; i < spl.v.len; i++)
     log_debug(spl.v.buf[i]);
 
