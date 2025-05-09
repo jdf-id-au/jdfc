@@ -18,13 +18,13 @@ s8_ fussy_screaming_snake(arena *store, s8 s) {
 
 s8_ sanitise(arena *store, arena scratch, s8 s) {
   size fixes = 0; // to add one character per target for escaping
-  char targets[] = "\\\"\'";
+  char targets[] = "\\\"";
   for (size i = 0; i < s.len; i++) 
     for (usize j = 0; j < countof(targets) - 1; j++)
       if (s.buf[i] == targets[j])
         fixes++;
   s8_ ret = make_s8(store, s.len + fixes);
-  // assert(ret.ok); wtf what's wrong
+  assert(ret.ok);
   size r = 0;
   for (size i = 0; i < s.len; i++) {
     b32 targeted = 0;
@@ -96,7 +96,7 @@ void render_enum(arena *store, arena scratch, bufout *b, s8 id, enum_values *val
   
   S("enum "); W(id); S(" parse_"); W(id); S("(s8 s) {\n");
   s8printf(scratch, s8write, b,
-           "  for (size i; i < %ti; i++)\n", count(values));
+           "  for (size i = 0; i < %ti; i++)\n", count(values));
   S("    if(s8equal(s, s8wrap(spell_"); W(id); S("[i], 1024)))\n");
   S("      return (enum "); W(id); S(")i;\n");
   S("  return (enum "); W(id); S(")0;\n"); // should be INVALID_<ID>

@@ -82,7 +82,6 @@ int main(int argc, char *argv[]) {
             construct.symbol = symbolise(store, ja[1]);
             values = enum_valuesappend(store, values, construct);
           } else if (json_is_string(ja[0]) && json_array_size(j_value) == 2) {
-            // fprintf(stderr, "dealing with %s\n", json_dumps(j_value, 0));
             construct.name = json_s8_value(ja[0]);
             construct.symbol = symbolise(store,ja[0]);
             construct.text = json_s8_value(ja[1]);
