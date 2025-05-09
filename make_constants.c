@@ -60,12 +60,14 @@ int main(int argc, char *argv[]) {
   json_t *j_value_group, *j_value, *ja[3];
   usize i;
   s8enum *groups = 0;
+  enum_values *head = 0;
   enum_values *values = 0;
   
   // TODO json error handling
   json_object_keylen_foreach(root, j_id, j_id_len, j_value_group) {
     s8 id = (s8){.buf = (u8 *)j_id, .len = j_id_len};
     json_array_foreach(j_value_group, i, j_value) {
+      if (!head && values) head = values;
       enum_value construct = {0};
       if (json_is_array(j_value)) {
         switch (json_array_size(j_value)) {
@@ -77,9 +79,12 @@ int main(int argc, char *argv[]) {
           ja[1] = json_array_get(j_value, 1);
           if (json_is_integer(ja[0])) {
             construct.number = json_integer_value(ja[0]);
+            construct.name = json_s8_value(ja[1]);
             construct.symbol = symbolise(store, ja[1]);
             values = enum_valuesappend(store, values, construct);
           } else if (json_is_string(ja[0]) && json_array_size(j_value) == 2) {
+            // fprintf(stderr, "dealing with %s\n", json_dumps(j_value, 0));
+            construct.name = json_s8_value(ja[0]);
             construct.symbol = symbolise(store,ja[0]);
             construct.text = json_s8_value(ja[1]);
             values = enum_valuesappend(store, values, construct);
@@ -92,6 +97,7 @@ int main(int argc, char *argv[]) {
           goto exit;
         }
       } else if (json_is_string(j_value)) {
+        construct.name = json_s8_value(j_value);
         construct.symbol = symbolise(store, j_value);
         values = enum_valuesappend(store, values, construct);
       } else {
@@ -100,7 +106,8 @@ int main(int argc, char *argv[]) {
         goto exit;
       }
     }
-    groups = s8enumassoc(store, groups, id, values);
+    groups = s8enumassoc(store, groups, id, head);
+    head = 0;
     values = 0;
   }
 
@@ -109,11 +116,11 @@ int main(int argc, char *argv[]) {
     perror("Unable to allocate out buffer");
     goto exit;
   }
-  
+  s8write(&out.v, s8("// This is auto-generated, do not edit\n"));
   do {
-    render_enum(scratch, &out.v, groups->key, groups->val); 
+    render_enum(store, scratch, &out.v, groups->key, groups->val); 
   } while ((groups = groups->next));
-  fprintf(stderr, "\n%ti scratch and %ti store arena bytes used",
+  fprintf(stderr, "\n%ti scratch and %ti store arena bytes used\n",
           used(&scratch), used(store));
       
  exit:

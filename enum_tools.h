@@ -18,6 +18,7 @@ s8_ fussy_screaming_snake(arena *a, s8 s) {
 
 typedef struct {
   i32 number;
+  s8 name;
   s8 symbol;
   s8 text;
 } enum_value;
@@ -29,21 +30,36 @@ MAP_LIST(s8enum, s8, enum_values *, s8equal)
 #define S(x) W(s8(x));
 
 // Refuse to use X macro...
-void render_enum(arena scratch, bufout *b, s8 id, enum_values *values) {
+void render_enum(arena *store, arena scratch, bufout *b, s8 id, enum_values *values) {
   s8 ind = s8("  ");
+  s8_ ID = fussy_screaming_snake(store, id);
   // grug approve
-  S("// This is auto-generated, do not edit\n");
   S("enum "); W(id); S(" {\n");
-  S("  INVALID_"); W(id); S(","); // always first i.e. 0
+  S("  INVALID_"); W(ID.v); S(",\n"); // always first i.e. 0
   enum_values *cur = values;
   do { 
     W(ind);
     W(cur->val.symbol);
-    s8printf(scratch, s8write, b, " = %i,\n", cur->val.number); // trailing comma ok in C99
+    if (cur->val.number != 0)
+      s8printf(scratch, s8write, b, " = %i,\n",
+               cur->val.number); // trailing comma ok in C99
+    else S(",\n");
   } while ((cur = cur->next));
   S("};\n");
   
   S("const char *spell_"); W(id); S("[] = {\n");
+  cur = values;
+  do {
+    W(ind);
+    S("[");
+    W(cur->val.symbol);
+    S("] = \"");
+    W(cur->val.name);
+    S("\",\n");
+  } while ((cur = cur->next));
+  S("};\n");
+  
+  S("const char *describe_"); W(id); S("[] = {\n");
   cur = values;
   do {
     W(ind);
@@ -59,8 +75,8 @@ void render_enum(arena scratch, bufout *b, s8 id, enum_values *values) {
   s8printf(scratch, s8write, b,
            "  for (size i; i < %ti; i++) {\n", count(values));
   S("    if(s8equal(s, s8wrap(spell_"); W(id); S("[i])))\n");
-  S("      return (enum "); W(id); S("i;\n");
-  S("  return (enum "); W(id); S("0;\n"); // should be INVALID_<ID>
+  S("      return (enum "); W(id); S(")i;\n");
+  S("  return (enum "); W(id); S(");\n"); // should be INVALID_<ID>
   S("}\n");
   flush(b);
 }

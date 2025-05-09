@@ -161,7 +161,7 @@ caller retains it. Caller needs to retain list head.
      Assoc to null head to make new association list.                 \
      Allows null val. Returns null pointer if new fails. */           \
   tn *tn##assoc(arena *a, tn *head, kt key, vt val) {                 \
-    tn *beg = {0};                                                    \
+    tn *beg = 0;                                                      \
     if (!head) {                                                      \
       beg = new (a, tn, 1);                                           \
       if (!beg)                                                       \
@@ -800,7 +800,7 @@ void debytes(i32 fd, void *val, size len) { // too cool for stdio.h printf
 }
 
 #define inspect(ptr)                                 \
-  s8log(1, s8("Contents of pointer " #ptr ":"), 1);  \
+  s8log(1, s8("Contents of pointer " #ptr ":"));     \
   debytes(1, ptr, sizeof(*(ptr)))
 
 // TODO why are there so many signed ints below where negative is incorrect?

@@ -44,8 +44,6 @@ int main(int argc, char *argv[]) {
   log_debug(trimmed);
   // compound literal initialising array of pointers to s8; type should be sized
   s8 concs[] = {s8("concatenated s8s: "), frag, found_to_end, trimmed};
-  log_debug(s8concat(&store, concs, countof(concs)));
-  log_debug(s8concat(&store, (s8[]){s8("sadness "), s8("really")}, 2));
   
   assert(s8find(blurb, s8("quotes")));
   assert(!s8find(blurb, s8("nopey")));
