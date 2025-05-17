@@ -79,13 +79,12 @@ typedef struct node_t node_t; struct node_t { node_t *next; }; // ignore subsequ
 size countfn(node_t *node) {
   size c = 0;
   node_t *cur = node;
-  if (!cur)
-    return 0;
+  if (!cur) return 0;
   do { c++; } while ((cur = cur->next));
   return c;
 }
+// Indirections to allow use from multiple linked list-derived data structures...
 #define count(n) countfn((node_t *)n)
-// Indirection to allow use from multiple linked list-derived data structures...
 node_t *next(node_t *node) { return node->next; }
 node_t *nth(node_t *node, size n) {
   node_t *ret = node;
@@ -110,7 +109,6 @@ node_t *insert(node_t *after, node_t *from, node_t *to) {
   to->next = next;
   return tail;
 }
-// NB impl of `last` would need loop detector
 /*
   Define new linked list type tn, el type t.
   t can be typename * for pointer (i.e. reference list).
@@ -144,11 +142,11 @@ caller retains it. Caller needs to retain list head.
   }
 
 /*
-  Define new association list type with ...count, ...assoc, ...dissoc, ...get.
+  Define new association list type with ...assoc, ...dissoc, ...get.
   kt and vt can be typename * for pointer, caller provides appropriate keq fn.
   Does not check that head is actually head!
   Does not prevent inclusion of stack-allocated kvs in heap-allocated list!
-  Make sure to use returned head! Dissoc final key will return null.
+  Make sure to use `dissoc`s returned head! Dissoc final key will return null.
   Makes no attempt to compact or reorder storage within arena.
 */
 #define MAP_LIST(tn, kt, vt, keq)                                     \
@@ -210,7 +208,7 @@ caller retains it. Caller needs to retain list head.
     } while ((cur = cur->next));                                      \
     return 0;                                                         \
   }
-// Barely worth it vs ASSOCIATION_LIST with ignored vt. Make sure to use `disj`s returnd head!
+// Barely worth it vs ASSOCIATION_LIST with ignored vt. Make sure to use `disj`s returned head!
 #define SET_LIST(tn, kt, keq)                   \
   RPTR(tn)                                      \
   typedef struct tn tn;                         \
@@ -397,7 +395,7 @@ size s8cmp(s8 a, s8 b) {
   return a.len - b.len;
 }
 
-// Why `size`?
+// Why `size`? TODO visualise hashification of input
 size s8hash(s8 s) {
   u64 h = 0x100;
   for (size i = 0; i < s.len; i++) {
@@ -634,7 +632,7 @@ s8_ s8replace(arena *store, arena scratch,
 // ───────────────────────────────────────────────── Lock-free concurrent queues
 // https://nullprogram.com/blog/2022/05/14
 typedef _Atomic u32 queue; // typedef _Atomic ... is ok as per stdatomic.h
-// Lengthq must be positive, <= 32768, and a power of two.
+// len must be positive, <= 32768, and a power of two.
 i32 queue_capacity(i32 len) {
   if ((len <= 0) || (len > 1 << 16) || (len & (len -1))) return 0;
   return len - 1;
@@ -728,9 +726,7 @@ typedef struct {
   i32 fd; // 1 stdout, 2 stderr
   b32 err;
 } bufout;
-
 MAYBE(bufout)
-
 bufout_ make_bufout(arena *a, i32 cap, i32 fd) {
   u8 *buf = new (a, u8, cap);
   if (!buf) return (bufout_){0};
