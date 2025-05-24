@@ -65,8 +65,15 @@ void render_enum(arena *store, arena scratch, bufout *b, s8 id, enum_values *val
   s8_ ID = fussy_screaming_snake(store, id);
   // grug approve
   S("enum "); W(id); S(" {\n");
-  S("  INVALID_"); W(ID.v); S(",\n"); // first i.e. 0 unless clobbered (compiler to catch)
+  b32 defines_zero = 0;
   enum_values *cur = values;
+  do {
+    if ((defines_zero = cur->val.defines_zero)) break;
+  } while ((cur = cur->next));
+  if (!defines_zero) { // don't make "special" value for invalid
+    S("  INVALID_"); W(ID.v); S(",\n"); // first i.e. 0
+  }
+  cur = values;
   do { 
     W(ind);
     W(cur->val.symbol);

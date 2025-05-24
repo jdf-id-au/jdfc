@@ -52,7 +52,6 @@ enum month parse_month(s8 s) {
   return (enum month)0;
 }
 enum weekday {
-  INVALID_WEEKDAY,
   SUNDAY = 0,
   MONDAY,
   TUESDAY,

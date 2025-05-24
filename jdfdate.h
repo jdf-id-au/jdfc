@@ -11,9 +11,9 @@ typedef i32 epoch; // Number of days since 1970-01-01, can be negative.
 typedef i32 year;
 typedef u8 month; // January is 1
 typedef u8 day; // 1st is 1
-typedef u8 weekday; // Sunday is 0 
+typedef u8 weekday; // Sunday is 0 (vs ISO Sunday 7)
 
-typedef struct {
+typedef struct date {
   year y;
   month m;
   day d;
@@ -69,6 +69,18 @@ weekday epoch_weekday(epoch z) {
   return z >= -4 ? (z + 4) % 7 : (z + 5) % 7 + 6;
 }
 
+weekday date_weekday(date d) {
+  return epoch_weekday(date_epoch(d));
+}
+
+date first_monday(year y) {
+  date start = {y, 1, 1};
+  epoch e = date_epoch(start);
+  weekday w = epoch_weekday(e);
+  i32 offset = (8 - date_weekday(start)) % 7;
+  return epoch_date(e + offset);
+}
+
 b32 valid_date(date date) {
   return date.y > 1582 && date.y <= 9999 && //epoch_date(INT_MAX - 719468).y &&
     date.m >= JANUARY && date.m <= DECEMBER &&
@@ -81,6 +93,10 @@ b32 date_equal(date d1, date d2) {
 
 date date_offset(date d, i32 days) {
   return epoch_date(date_epoch(d) + days);
+}
+
+i32 in_days(date from, date to) {
+  return date_epoch(to) - date_epoch(from);
 }
 
 s8_ s8date(arena *store, date d) {

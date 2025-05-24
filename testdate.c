@@ -7,6 +7,7 @@ int main(void) {
   TEST(date_epoch(epoch_date(0)) == 0);
   TEST(valid_date((date){2020, 1, 2}));
   TEST(!valid_date((date){2020, 13, 2}));
+  TEST(INVALID_WEEKDAY==SUNDAY);
   TEST(date_equal((date){2020, 1, 2}, date_offset((date){2020, 2, 4}, -33)));
   return REPORT();
 }
