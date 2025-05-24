@@ -11,7 +11,7 @@ char fss(char c) {
 
 s8_ fussy_screaming_snake(arena *store, s8 s) {
   s8_ ret = make_s8(store, s.len);
-  assert(ret.ok);
+  assert(ret.ok); // TODO handle better
   for (size i = 0; i < s.len; i++) ret.v.buf[i] = fss(s.buf[i]);
   return ret;
 }
@@ -24,7 +24,7 @@ s8_ sanitise(arena *store, arena scratch, s8 s) {
       if (s.buf[i] == targets[j])
         fixes++;
   s8_ ret = make_s8(store, s.len + fixes);
-  assert(ret.ok);
+  assert(ret.ok); // TODO handle better
   size r = 0;
   for (size i = 0; i < s.len; i++) {
     b32 targeted = 0;

@@ -120,9 +120,26 @@ int main(int argc, char *argv[]) {
   }
   s8write(&out.v, s8("// This is auto-generated, do not edit!\n"));
   s8write(&out.v, s8("#include \"jdf.h\"\n"));
+
+  s8 source = s8wrap(argv[1], 256); // more conservative than FILENAME_MAX
+  s8_ header_guard = fussy_screaming_snake(store, source); // e.g. SOMETHING_JSON
+  assert(header_guard.ok);
+  s8write(&out.v, s8("#ifndef "));
+  s8write(&out.v, header_guard.v);
+  s8write(&out.v, s8("\n"));
+  s8write(&out.v, s8("#define "));
+  s8write(&out.v, header_guard.v);
+  s8write(&out.v, s8("\n"));
+  
   do {
-    render_enum(store, scratch, &out.v, groups->key, groups->val); 
+    render_enum(store, scratch, &out.v, groups->key, groups->val);
   } while ((groups = groups->next));
+
+  s8write(&out.v, s8("#endif // "));
+  s8write(&out.v, header_guard.v);
+  s8write(&out.v, s8("\n"));
+  flush(&out.v);
+  
   fprintf(stderr, "\n%ti scratch and %ti store arena bytes used\n",
           used(&scratch), used(store));
       
