@@ -61,6 +61,7 @@ date epoch_date(epoch z) {
   u32 mp = (5*doy + 2)/153;
   ret.d = doy - (153*mp + 2)/5 + 1;
   ret.m = mp < 10 ? mp + 3 : mp - 9;
+  ret.y += ret.m <= 2;
   return ret;
 }
 
