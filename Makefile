@@ -1,4 +1,3 @@
-.PHONY = run
 # ugh Apple https://stackoverflow.com/questions/64126942/malloc-nano-zone-abandoned-due-to-inability-to-preallocate-reserved-vm-space
 # https://nullprogram.com/blog/2023/04/29/
 # -g3 debug level 3
@@ -21,6 +20,10 @@ testrel: testrel.c
 
 testhttp: testhttp.c
 	time cc $(CFLAGS) -lev -lpthread $^ -o $@
+	$(PREAMBLE) ./$@
+
+testdate: testdate.c
+	time cc $(CFLAGS) $^ -o $@
 	$(PREAMBLE) ./$@
 
 make_constants: make_constants.c

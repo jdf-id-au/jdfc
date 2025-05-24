@@ -39,10 +39,19 @@ s8_ sanitise(arena *store, arena scratch, s8 s) {
 
 typedef struct {
   i32 number;
+  b32 defines_zero; // default number will be 0; don't want to use "special" i32...
   s8 name;
   s8 symbol;
   s8 text;
 } enum_value;
+
+// void errdebug_enum(enum_value e) {
+//   fprintf(stderr, "number: %d, defines_zero: %d\n", e.number, e.defines_zero);
+//   fflush(0);
+//   log_error(e.name);
+//   log_error(e.symbol);
+//   log_error(e.text);
+// }
 
 LIST(enum_values, enum_value)
 MAP_LIST(s8enum, s8, enum_values *, s8equal)
@@ -56,12 +65,12 @@ void render_enum(arena *store, arena scratch, bufout *b, s8 id, enum_values *val
   s8_ ID = fussy_screaming_snake(store, id);
   // grug approve
   S("enum "); W(id); S(" {\n");
-  S("  INVALID_"); W(ID.v); S(",\n"); // always first i.e. 0
+  S("  INVALID_"); W(ID.v); S(",\n"); // first i.e. 0 unless clobbered (compiler to catch)
   enum_values *cur = values;
   do { 
     W(ind);
     W(cur->val.symbol);
-    if (cur->val.number != 0) // actually prevent explicit assignment to 0!
+    if (cur->val.number || cur->val.defines_zero)
       s8printf(scratch, s8write, b, " = %i,\n",
                cur->val.number); // trailing comma ok in C99
     else S(",\n");

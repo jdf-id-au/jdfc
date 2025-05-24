@@ -80,8 +80,10 @@ int main(int argc, char *argv[]) {
           ja[1] = json_array_get(j_value, 1);
           if (json_is_integer(ja[0])) {
             construct.number = json_integer_value(ja[0]);
+            if (construct.number == 0) construct.defines_zero = 1;
             construct.name = json_s8_value(ja[1]);
             construct.symbol = symbolise(store, ja[1]);
+            construct.text = json_s8_value(ja[1]);
             values = enum_valuesappend(store, values, construct);
           } else if (json_is_string(ja[0]) && json_array_size(j_value) == 2) {
             construct.name = json_s8_value(ja[0]);

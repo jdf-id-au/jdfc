@@ -456,7 +456,9 @@ s8 s8wrap(const char *cstr, size maxlen) {
   return s8span(beg, end);
 }
 
-// Return pointer to copy of s in a, one byte longer for terminal zero. Null if allocation fails.
+// Return pointer to copy of s in a, one byte longer for terminal
+// zero. Null if allocation fails. May be simpler to do manually with
+// stack-allocated buffer for known-short strings.
 char *s8unwrap(arena *a, s8 s) {
   u8 *buf = new (a, u8, s.len + 1); // is zeroed
   if (!buf) return 0;
@@ -786,18 +788,15 @@ void flush(bufout *b) {
 // Unbuffered
 void s8log(i32 fd, s8 s) {
   oswrite(fd, (u8 *)s.buf, s.len);
+  oswrite(fd, (u8 *)"\n", 1);
 }
-
-// There's no shame in using prinf...
-#define log_debug(s) s8log(1, s); s8log(1, s8("\n"));
-#define log_error(s) s8log(2, s); s8log(2, s8("\n"));
 
 // ──────────────────────────────────────────────────────────── Operating System
 
 void osfail(i32 code);
 
 void failwith(i32 code, s8 msg) {
-  log_error(msg);
+  s8log(2, msg); s8log(2, s8("\n"));
   osfail(code);
 }
 
@@ -825,8 +824,12 @@ void debytes(i32 fd, void *val, size len) { // too cool for stdio.h printf
 }
 
 #define inspect(ptr)                                 \
-  s8log(1, s8("Contents of pointer " #ptr ":"));     \
-  debytes(1, ptr, sizeof(*(ptr)))
+  s8log(2, s8("Contents of pointer " #ptr ":"));     \
+  debytes(2, ptr, sizeof(*(ptr)))
+
+#define log_debug(s)                            \
+  s8log(2, s8("Value of " #s ":"));             \
+  s8log(2, s)
 
 // TODO why are there so many signed ints below where negative is incorrect?
 
