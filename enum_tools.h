@@ -61,7 +61,7 @@ void render_enum(arena *store, arena scratch, bufout *b, s8 id, enum_values *val
   do { 
     W(ind);
     W(cur->val.symbol);
-    if (cur->val.number != 0)
+    if (cur->val.number != 0) // actually prevent explicit assignment to 0!
       s8printf(scratch, s8write, b, " = %i,\n",
                cur->val.number); // trailing comma ok in C99
     else S(",\n");

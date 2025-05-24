@@ -52,6 +52,9 @@ int main(int argc, char *argv[]) {
     - [code, symbol, expansion]
     where code is integer and symbol and expansion are strings.
     Codes are passed to enum definition without validation.
+    C will require "globally" unique enum symbols...
+    Enums get INVALID_thing as first value, in enum_tools.h.
+    Underlying enum type is the default; no attempt to narrow.
    */
 
   const char *j_id;
