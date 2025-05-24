@@ -21,7 +21,6 @@ s8 symbolise(arena *store, json_t *s) {
   exit(1); // rudely doesn't close fp
 }
 
-// TODO nest all defs in one json; have defaults in case no number or description
 int main(int argc, char *argv[]) {
   arena storeval = alloc_arena(MiB(1));
   store = &storeval; // to make normal-looking fn calls
@@ -97,6 +96,7 @@ int main(int argc, char *argv[]) {
       } else if (json_is_string(j_value)) {
         construct.name = json_s8_value(j_value);
         construct.symbol = symbolise(store, j_value);
+        construct.text = json_s8_value(j_value);
         values = enum_valuesappend(store, values, construct);
       } else {
         fprintf(stderr, "Invalid enum value definition: %s\n",
