@@ -269,7 +269,7 @@ Response add_headers(arena *store, arena scratch, Response res) {
 size s8writeq(void *out, s8 s) {
   qout *q = (qout *)out;
   if (!q->buf.buf) {
-    perror("Tried to write to uninitialised qout");
+    fprintf(stderr, "💣 Tried to write to uninitialised qout\n");
     return 0;
   }
   if (!s.buf) {
@@ -309,14 +309,18 @@ void serialise_response(arena *store, arena scratch, Client *client, Response re
   printf("📣 %i\n", res.status);
 }
 
+void client_cleanup_basics(arena *store, arena *scratch, i32 fd) {
+  close(fd);
+  free_arena(scratch); // needs to be freed first because *client itself is within client->store span
+  free_arena(store);
+}
+
 void cleanup_client(EV_P_ ev_io *w) {
   Client *client = (Client *)w->data;
   // https://metacpan.org/dist/EV/view/libev/ev.pod#ev_TYPE_stop-(loop,-ev_TYPE-*watcher)
   ev_io_stop(EV_A_ &client->read_io);
   ev_io_stop(EV_A_ &client->write_io);
-  close(w->fd);
-  free_arena(&client->scratch); // needs to be freed first because *client itself is within client->store span
-  free_arena(&client->store);
+  client_cleanup_basics( &client->store, &client->scratch, w->fd);
 }
 
 // signature cosplay for consistency
@@ -329,6 +333,13 @@ void client_set_writable(EV_P_ ev_io *w, b32 writable) {
   else ev_io_stop(EV_A_ write_io);
 }
 
+const static s8 HTTP_OOM = s8("HTTP/1.1 503 Service Unavailable\r\n");
+
+void unavailable(i32 sock, char *msg) {
+  fprintf(stderr, "💣 Failed to %s\n", msg);
+  write(sock, HTTP_OOM.buf, HTTP_OOM.len);
+}
+
 /*
   Runs on main thread.
  */
@@ -339,7 +350,8 @@ void write_client(EV_P_ ev_io *w, int events) {
   arena scratch = client->scratch; // by value
   u8 *buf = new (&scratch, u8, outbuf_size);
   if (!buf) {
-    perror("Unable to allocate out buffer");
+    unavailable(w->fd, "allocate out buffer");
+    cleanup_client(EV_A_ w);
     return;
   }
   size bytes_read = 0;
@@ -385,7 +397,7 @@ void write_client(EV_P_ ev_io *w, int events) {
   if (complete) { 
     printf("✅ Done, %ti B written, %ti B client arena use\n", total_bytes_written, used(&client->store));
     client_set_writable(EV_A_ w, 0); // unset writable when write actually finished
-  } else printf("➡️  partial read %td B\n", bytes_read); // spacing required for terminal...?
+  } else printf("➡️  Partial read %td B\n", bytes_read); // spacing required for terminal...?
 }
 
 b32 enqueue_request(Request req) {
@@ -422,7 +434,7 @@ void read_client(EV_P_ ev_io *w, int events) {
     // then handle? For now, store (copy) request in client store arena.
     s8_ raw = s8clone(&client->store, s8bytespan(client->scratch.beg, client->scratch.cur));
     if (!raw.ok) {
-      perror("Failed to store raw request"); // TODO 503
+      unavailable(w->fd, "store raw request");
       cleanup_client(EV_A_ w);
       return;
     }
@@ -433,7 +445,7 @@ void read_client(EV_P_ ev_io *w, int events) {
     s8log(1, req.uri);
     req.client = client;
     if (!enqueue_request(req)) {
-      perror("Failed to enqueue job"); // TODO 503
+      unavailable(w->fd, "enqueue job");
       cleanup_client(EV_A_ w);
       return;
     }
@@ -458,8 +470,9 @@ void accept_client(EV_P_ ev_io *w, int events) {
     // https://metacpan.org/dist/EV/view/libev/ev.pod#ASSOCIATING-CUSTOM-DATA-WITH-A-WATCHER
     Client *client = new (&client_store, Client, 1);
     if (!client) {
-      perror("Failed to allocate client");
-      return; // TODO could give SERVICE_UNAVAILABLE...
+      unavailable(new_socket, "allocate client");
+      client_cleanup_basics(&client_store, &client_scratch, new_socket); 
+      return;
     }
     client->server = server;
     client->store = client_store; // for passing by reference
@@ -469,7 +482,8 @@ void accept_client(EV_P_ ev_io *w, int events) {
     qout_ deliver = make_qout(&client->store, server->config.outbuf);
     if (deliver.ok) client->deliver = deliver.v;
     else {
-      perror("Failed to allocate out buffer");
+      unavailable(new_socket, "allocate out queue");
+      client_cleanup_basics(&client->store, &client->scratch, new_socket);
       return;
     }
     ev_io_start(EV_A_ & client->read_io);
@@ -564,7 +578,7 @@ void launch(Server *server) {
   i32 rc = 0;
   Workshop *workshops = new (&server->store, Workshop, nw); // seemingly > 8KiB ea
   if (!workshops) {
-    perror("Unable to allocate workshops");
+    fprintf(stderr, "💣 Failed to allocate workshops\n");
     exit(1);
   }
   for (size i = 0; i < nw; i++) {
@@ -587,7 +601,7 @@ void launch(Server *server) {
   printf("Set up %ti workshops\n", successful);
   Work_ work = make_Work(&server->store, 32);
   if (!work.ok) {
-    perror("Unable to make work queue");
+    fprintf(stderr, "💣 Failed to make work queue\n");
     exit(1);
   }
   server->work = work.v;

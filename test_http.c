@@ -44,7 +44,7 @@ Response handler(arena *store, arena scratch, Request req) {
 }
 
 int main(void) {
-  Server server = make_server(handler, .port = 8080);
+  Server server = make_server(handler, .port = 8080, .client_mem = KiB(6));
   launch(&server);
   return 0;
 }
