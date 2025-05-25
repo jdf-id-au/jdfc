@@ -2,6 +2,29 @@
 
 #define print(x) cur = s8lappend(store, cur, x);
 
+// Response websocket_handler(arena *store, arena scratch, Request req) {
+//   Response res = {0};
+//   if (!s8equal(req.uri, s8("/ws"))) return (Response){.status = NOT_FOUND};
+//   if (req.method != GET) return (Response){.status = METHOD_NOT_ALLOWED};
+//   if (s8mapkeq(req.headers, s8("Upgrade"), s8("websocket")) &&
+//       s8mapkeq(req.headers, s8("Connection"), s8("Upgrade"))) {
+//     // TODO check Sec-WebSocket-Key, Sec-WebSocket-Version, Origin
+//     if (s8mapkeq(req.headers, s8("Sec-WebSocket-Version"), s8("13"))) {
+//       res.status = SWITCHING_PROTOCOLS;
+//       res.headers = s8mapassocl(store, res.headers, s8("Upgrade"),
+//       s8("websocket")); res.headers = s8mapassocl(store, res.headers,
+//       s8("Connection"), s8("Upgrade")); res.headers =
+//           s8mapassocl(store, res.headers, s8("Sec-WebSocket-Accept"), );
+//       // https://developer.mozilla.org/en-US/docs/Web/API/WebSockets_API/Writing_WebSocket_servers 
+//       // TODO openssl sha1; base64
+//     } else {
+//       res.status = BAD_REQUEST;
+//       res.headers = s8mapassocl(store, res.headers, s8("Sec-WebSocket-Version"), s8("13"));
+//       return res;
+//     }
+//   }
+// }
+
 Response handler(arena *store, arena scratch, Request req) {
   // TODO check and deal with req.error (and use it in jdfhttp.h)
   if (!s8equal(req.uri, s8("/"))) return (Response){.status = NOT_FOUND};
@@ -44,7 +67,7 @@ Response handler(arena *store, arena scratch, Request req) {
 }
 
 int main(void) {
-  Server server = make_server(handler, .port = 8080, .client_mem = KiB(6));
+  Server server = make_server(handler, .port = 8080);
   launch(&server);
   return 0;
 }

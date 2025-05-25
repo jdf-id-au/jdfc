@@ -71,7 +71,8 @@ int main(int argc, char *argv[]) {
     json_array_foreach(j_value_group, i, j_value) {
       enum_value construct = {0};
       if (json_is_array(j_value)) {
-        switch (json_array_size(j_value)) {
+        i32 jas = json_array_size(j_value);
+        switch (jas) {
         case 3:
           ja[2] = json_array_get(j_value, 2);
           construct.text = json_s8_value(ja[2]);
@@ -83,7 +84,7 @@ int main(int argc, char *argv[]) {
             if (construct.number == 0) construct.defines_zero = 1;
             construct.name = json_s8_value(ja[1]);
             construct.symbol = symbolise(store, ja[1]);
-            construct.text = json_s8_value(ja[1]);
+            if (jas==2) construct.text = json_s8_value(ja[1]);
             values = enum_valuesappend(store, values, construct);
           } else if (json_is_string(ja[0]) && json_array_size(j_value) == 2) {
             construct.name = json_s8_value(ja[0]);

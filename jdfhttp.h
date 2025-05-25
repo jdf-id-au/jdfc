@@ -21,28 +21,50 @@
 #include <fcntl.h>
 #include <pthread.h>
 
-// Terminates string in situ!
-size s8arenaprintf(arena *a, const char *format) {
-  if (a->cur < a->end) *a->cur = 0;
-  else {
-    const char *warning = "❗️(too long for buffer)";
-    snprintf(a->end - sizeof(warning), sizeof(warning), "%s", warning);
-  }
-  return printf(format, a->beg);
-}
-
 MAP_LIST(s8map, s8, s8, s8equal)
 
-enum request_error {
-  REQUST_OK, REQUEST_OOM, REQUEST_EMPTY, INVALID_METHOD_LINE 
-};
+// Electing not to introduce MAYBEness to MAP_LIST get for the moment.
+s8_ s8mapget_(s8map *head, s8 key) {
+  s8map *kv = s8mapget(head, key);
+  if (!kv) return (s8_){0};
+  return (s8_){.v = kv->val };
+}
+
+b32 s8mapkeq(s8map *head, s8 key, s8 val) {
+  s8_ v = s8mapget_(head, key);
+  if (!v.ok) return 0;
+  return s8equal(v.v, val);
+}
+
+// Dump s8 in desperation (debugging)
+void dumbp(s8 s) {
+  printf("%*ti B ✏ ", 5, s.len);
+  for (size i = 0; i < s.len; i++) printf("%c", s.buf[i]);
+  printf("\n");
+  fflush(0);
+}
+
+// Associate cloned k & v.
+s8map *s8mapassocl(arena *store, s8map *head, s8 k, s8 v) {
+  s8_ kc = s8clone(store, k);
+  s8_ vc = s8clone(store, v);
+  if (kc.ok && vc.ok) return s8mapassoc(store, head, kc.v, vc.v);
+  printf("Problem setting "); dumbp(k);
+  return head;
+}
+
+// Append cloned
+s8l *s8lappendcl(arena *store, s8l *head, s8 s) {
+  s8_ cl = s8clone(store, s);
+  return s8lappend(store, head, cl.v); // TODO error handling
+}
 
 typedef struct server Server; // forward decl for Request and Workshop
 typedef struct client Client; // forward decl for Request
 
 typedef struct {
   s8 raw;
-  enum request_error error;
+  enum http_status error; // in anticipation...
   enum http_method method;
   s8 uri;
   s8 protocol;
@@ -118,6 +140,7 @@ typedef struct client {
   qout deliver;
 } Client;
 
+// ────────────────────────────────────────────────────────────────────── Server
 Server make_server_fn(Handler h, Config c) {
   arena store = alloc_arena(MiB(1));
   arena scratch = alloc_arena(MiB(1));
@@ -191,19 +214,20 @@ int set_nodelay(int sockfd) {
 Request parse_request(arena *store, arena scratch, s8 raw) {
   Request req = { .raw = raw };
   s8a_ split = s8splitu8(store, scratch, raw, '\n', 100);
-  if (!split.ok) ReqErr(REQUEST_OOM);
-  if (split.v.len < 1) ReqErr(REQUEST_EMPTY);
+  if (!split.ok) ReqErr(SERVICE_UNAVAILABLE);
+  if (split.v.len < 1) ReqErr(BAD_REQUEST);
   s8a_ line0 = s8splitu8(store, scratch, split.v.buf[0], ' ', 2);
-  if (!line0.ok) ReqErr(REQUEST_OOM);
-  if (line0.v.len < 3) ReqErr(INVALID_METHOD_LINE);
+  if (!line0.ok) ReqErr(SERVICE_UNAVAILABLE);
+  if (line0.v.len < 3) ReqErr(BAD_REQUEST);
   req.method = parse_http_method(line0.v.buf[0]);
+  if (!req.method) ReqErr(METHOD_NOT_ALLOWED);
   req.uri = line0.v.buf[1]; // copy s8, zerocopy its buffer
   req.protocol = line0.v.buf[2];
   s8map *headers = {0};
   for (size i = 1; i < split.v.len; i++) {
     if (s8blank(split.v.buf[i])) break; // TODO trailing headers...??
     s8a_ header = s8split(store, scratch, split.v.buf[i], s8(": "), 1);
-    if (!header.ok) ReqErr(REQUEST_OOM);
+    if (!header.ok) ReqErr(SERVICE_UNAVAILABLE);
     if (header.v.len == 2)
       headers = s8mapassoc(store, headers, header.v.buf[0], header.v.buf[1]);
     req.headers = headers;
@@ -213,10 +237,10 @@ Request parse_request(arena *store, arena scratch, s8 raw) {
   s8map *cookiekv = s8mapget(headers, s8("Cookie"));
   if (cookiekv) {
     s8a_ cookiekvs = s8split(store, scratch, cookiekv->val, s8("; "), 32);
-    if (!cookiekvs.ok) ReqErr(REQUEST_OOM);
+    if (!cookiekvs.ok) ReqErr(SERVICE_UNAVAILABLE);
     for (size i = 0; i < cookiekvs.v.len; i++) {
       s8a_ cookie = s8splitu8(store, scratch, cookiekvs.v.buf[i], '=', 1);
-      if (!cookie.ok) ReqErr(REQUEST_OOM);
+      if (!cookie.ok) ReqErr(SERVICE_UNAVAILABLE);
       if (cookie.v.len == 2)
         cookies = s8mapassoc(store, cookies, cookie.v.buf[0], cookie.v.buf[1]);
     }
@@ -231,27 +255,14 @@ s8map *content_type(arena *store, s8map *head, enum content_type content_type) {
   return head;
 }
 
-// Dump s8 in desperation (debugging)
-void dumbp(s8 s) {
-  printf("%*ti B ✏ ", 5, s.len);
-  for (size i = 0; i < s.len; i++) printf("%c", s.buf[i]);
-  printf("\n");
-  fflush(0);
-}
-
-// Associate cloned k & v.
-s8map *s8mapassocl(arena *store, s8map *head, s8 k, s8 v) {
-  s8_ kc = s8clone(store, k);
-  s8_ vc = s8clone(store, v);
-  if (kc.ok && vc.ok) return s8mapassoc(store, head, kc.v, vc.v);
-  printf("Problem setting "); dumbp(k);
-  return head;
-}
-
-// Append cloned
-s8l *s8lappendcl(arena *store, s8l *head, s8 s) {
-  s8_ cl = s8clone(store, s);
-  return s8lappend(store, head, cl.v); // TODO error handling
+// Terminates string in situ!
+size s8arenaprintf(arena *a, const char *format) {
+  if (a->cur < a->end) *a->cur = 0;
+  else {
+    const char *warning = "❗️(too long for buffer)";
+    snprintf(a->end - sizeof(warning), sizeof(warning), "%s", warning);
+  }
+  return printf(format, a->beg);
 }
 
 Response add_headers(arena *store, arena scratch, Response res) {
@@ -530,8 +541,13 @@ void *worker(Workshop *workshop) {
     pthread_mutex_unlock(&server->work_waiting_lock);
     req = server->work.requests[qi];
     if (queue_mpop_commit(&server->work.q, save)) {
+      Client *client = req.client;
+      if (req.error == SERVICE_UNAVAILABLE) {
+        unavailable(client->write_io.fd, "parse request");
+        cleanup_client(server->loop, &client->write_io);
+      } // TODO 2025-05-25 16:02:09 REQUEST_EMPTY, INVALID_METHOD_LINE, ...
       Response res = server->handler(&workshop->store, workshop->scratch, req);
-      serialise_response(&workshop->store, workshop->scratch, req.client, res);
+      serialise_response(&workshop->store, workshop->scratch, client, res);
     }
   }
 }

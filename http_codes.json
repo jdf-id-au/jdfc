@@ -97,11 +97,11 @@
      ],[
          307,
          "Temporary Redirect",
-         "The requested page has moved temporarily to a new URL."
+         "The requested page has been temporarily moved to a new URL."
      ],[
          308,
-         "Resume Incomplete",
-         "Used in the resumable requests proposal to resume aborted PUT or POST requests."
+         "Permanent Redirect",
+         "The requested resource has been permanently moved to a new URL."
      ],[
          400,
          "Bad Request",
@@ -156,11 +156,11 @@
          "The precondition given in the request evaluated to false by the server."
      ],[
          413,
-         "Request Entity Too Large",
+         "Content Too Large",
          "The server will not accept the request, because the request entity is too large."
      ],[
          414,
-         "Request-URI Too Long",
+         "URI Too Long",
          "The server will not accept the request, because the URL is too long. Occurs when you convert a POST request to a GET request with a long query information."
      ],[
          415,
@@ -192,7 +192,7 @@
          "The request was directed at a server that is not able to produce a response (for example because a connection reuse)."
      ],[
          422,
-         "Unprocessable Entity",
+         "Unprocessable Content",
          "The request was well-formed but was unable to be followed due to semantic errors."
      ],[
          423,
