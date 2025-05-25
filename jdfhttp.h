@@ -335,6 +335,9 @@ void client_set_writable(EV_P_ ev_io *w, b32 writable) {
 
 const static s8 HTTP_OOM = s8("HTTP/1.1 503 Service Unavailable\r\n");
 
+// FIXME 2025-05-25 15:28:50 need to close client gracefully when arena
+// available below a threshold, or timeout since last read... 
+// TODO 2025-05-25 15:31:23 rate limitation, or leave it to nginx?
 void unavailable(i32 sock, char *msg) {
   fprintf(stderr, "💣 Failed to %s\n", msg);
   write(sock, HTTP_OOM.buf, HTTP_OOM.len);
