@@ -718,7 +718,7 @@ size write_qout(qout *qo, u8 *buf, size maxlen) {
     if (qi < 0 || bi >= maxlen) break;
     // printf("pushing %c to queue position %i\n", buf[bi], qi);
     // printf("%c", buf[bi]);
-    qo->buf.buf[qi] = buf[bi++];
+    qo->buf.buf[qi] = buf[bi++]; // byte at a time
     queue_push_commit(&qo->q);
   }
   return bi;
@@ -790,10 +790,14 @@ void flush(bufout *b) {
     }
 }
 
+void s8writefd(i32 fd, s8 s) {
+  oswrite(fd, (u8 *)s.buf, s.len);
+}
+
 // Unbuffered
 void s8log(i32 fd, s8 s) {
-  oswrite(fd, (u8 *)s.buf, s.len);
-  oswrite(fd, (u8 *)"\n", 1);
+  s8writefd(fd, s);
+  s8writefd(fd, s8("\n"));
 }
 
 // ──────────────────────────────────────────────────────────── Operating System
@@ -801,7 +805,7 @@ void s8log(i32 fd, s8 s) {
 void osfail(i32 code);
 
 void failwith(i32 code, s8 msg) {
-  s8log(2, msg); s8log(2, s8("\n"));
+  s8log(2, msg);
   osfail(code);
 }
 
@@ -829,11 +833,11 @@ void debytes(i32 fd, void *val, size len) { // too cool for stdio.h printf
 }
 
 #define inspect(ptr)                                 \
-  s8log(2, s8("Contents of pointer " #ptr ":"));     \
+  s8write_(2, s8("Contents of pointer " #ptr ":"));   \
   debytes(2, ptr, sizeof(*(ptr)))
 
 #define log_debug(s)                            \
-  s8log(2, s8("Value of " #s ":"));             \
+  s8writefd(2, s8("Value of " #s ": "));          \
   s8log(2, s)
 
 // TODO why are there so many signed ints below where negative is incorrect?

@@ -21,7 +21,7 @@
 #include <fcntl.h>
 #include <pthread.h>
 
-// Terminates string in situ! Only suitable for arenas being prepared for s8arena.
+// Terminates string in situ!
 size s8arenaprintf(arena *a, const char *format) {
   if (a->cur < a->end) *a->cur = 0;
   else {
@@ -257,6 +257,7 @@ s8l *s8lappendcl(arena *store, s8l *head, s8 s) {
 Response add_headers(arena *store, arena scratch, Response res) {
   // TODO should be conditional on client's invitation
   res.headers = s8mapassocl(store, res.headers, s8("Connection"), s8("keep-alive"));
+  if (!res.body) return res;
   s8 k = s8("Content-Length");
   s8_ v = s8sprintf(&scratch, "%ti", s8llen(res.body));
   if (v.ok) res.headers = s8mapassocl(store, res.headers, k, v.v);
@@ -276,7 +277,11 @@ size s8writeq(void *out, s8 s) {
     return 0;
   }
   // dumbp(s);
-  return write_qout(q, s.buf, s.len);
+  size bytes_written = write_qout(q, s.buf, s.len);
+  if (bytes_written < s.len) 
+    // NB 2025-05-25 13:30:51 doesn't seme to be happening
+    printf("⚠ only wrote %td/%td bytes\n", bytes_written, s.len);
+  return bytes_written;
 }
 
 /*
@@ -328,6 +333,9 @@ void client_set_writable(EV_P_ ev_io *w, b32 writable) {
   else ev_io_stop(EV_A_ write_io);
 }
 
+/*
+  Runs on main thread.
+ */
 void write_client(EV_P_ ev_io *w, int events) {
   Client *client = (Client *)w->data;
   qout *qo = &client->deliver;
@@ -425,9 +433,11 @@ void read_client(EV_P_ ev_io *w, int events) {
       cleanup_client(EV_A_ w);
       return;
     }
-    s8arenaprintf(&client->scratch, "🔔 %s\n");
+    // s8arenaprintf(&client->scratch, "🔔 %s\n");
     client->scratch.cur = client->scratch.beg; // Reset!
     Request req = parse_request(&client->store, client->scratch, raw.v);
+    s8writefd(1, s8("🔔 "));
+    s8log(1, req.uri);
     req.client = client;
     if (!enqueue_request(req)) {
       perror("Failed to enqueue job"); // TODO 503
