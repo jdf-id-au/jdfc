@@ -5,29 +5,32 @@
 # https://stackoverflow.com/a/43527114/780743
 
 PREAMBLE=MallocNanoZone='0' time
-
+# https://www.gnu.org/software/make/manual/html_node/Automatic-Variables.html
 CFLAGS=-std=c17 -g3 \
 -pedantic -Wall -Wextra \
 -fPIC -fsanitize=address,undefined
 
 test: test.c
-	time cc $(CFLAGS) $^ -o $@
+	time cc $(CFLAGS) $< -o $@
 	$(PREAMBLE) ./$@
 
 testrel: testrel.c
-	time cc $(CFLAGS) $^ -o $@
+	time cc $(CFLAGS) $< -o $@
 	$(PREAMBLE) ./$@
 
-testhttp: testhttp.c
-	time cc $(CFLAGS) -lev -lpthread $^ -o $@
+testhttp: testhttp.c http_codes.h
+	time cc $(CFLAGS) -lev -lpthread $< -o $@
 	$(PREAMBLE) ./$@
 
-testdate: testdate.c
-	time cc $(CFLAGS) $^ -o $@
+testdate: testdate.c dates.h
+	time cc $(CFLAGS) $< -o $@
 	$(PREAMBLE) ./$@
 
 make_constants: make_constants.c
-	time cc $(CFLAGS) -ljansson $^ -o $@
+	time cc $(CFLAGS) -ljansson $< -o $@
+
+dates.h: make_constants dates.json
+	$(PREAMBLE) ./@< dates.json > $@
 
 http_codes.h: make_constants http_codes.json
-	$(PREAMBLE) ./make_constants http_codes.json > http_codes.h
+	$(PREAMBLE) ./@< http_codes.json > $@

@@ -330,15 +330,17 @@ size KiB(u32 n) { return (1<<10) * n; }
 size MiB(u32 n) { return (1<<20) * n; }
 
 // Caller to check for null pointers, which fail silently.
-void copy(u8 *restrict dst, u8 *restrict src, size len) {
-  if (dst && src) for (size i = 0; i < len; i++) dst[i] = src[i];
+size copy(u8 *restrict dst, u8 *restrict src, size len) {
+  if (!(dst && src)) return 0;
+  for (size i = 0; i < len; i++) dst[i] = src[i];
+  return len;
 }
 
 // ───────────────────────────────────────────────────────────────────── Strings
 
 ARRAY(s8, u8) // s8: Basic UTF-8 string. Not null terminated!
 // Wrap C string literal into s8 string.
-#define s8(s) (s8) { (u8 *)s, countof(s) - 1 }
+#define s8(s) (s8){(u8 *)s, countof(s) - 1}
 ARRAY(s8a, s8)
 #ifdef _WIN32
 ARRAY(s16, c16)
@@ -604,6 +606,7 @@ s8_ s8sprintf(arena *buf, const char *format, ...) {
   va_start(args, format);
   // returns misleading n which disregards available size!
   // also disregards terminal \0, as usual
+  // would drop a character if avail didn't have room for \0
   i32 n = vsnprintf(start, avail, format, args);
   va_end(args);
   if (n > 0) {
