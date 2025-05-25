@@ -350,8 +350,9 @@ void write_client(EV_P_ ev_io *w, int events) {
     if (qidx < 0) {
       //printf("qout empty\n"); // NB 2025-05-25 14:25:18 happens minimum once per request
       break; // empty
+      //continue; // busy wait on empty blocks everything
     }
-    u8 b = qo->buf.buf[bytes_read];
+    u8 b = qo->buf.buf[qidx];
     if (b) buf[bytes_read++] = b;
     else complete = 1; // message finished as indicated by \0
     queue_pop_commit(&qo->q);
