@@ -174,6 +174,7 @@ int set_non_blocking(int sockfd) {
   return 0;
 }
 
+// https://stackoverflow.com/a/16213822/780743
 int set_nodelay(int sockfd) {
   i32 yes = 1;
   if (setsockopt(sockfd, IPPROTO_TCP, TCP_NODELAY, (byte *)&yes, sizeof(i32)) <
@@ -260,7 +261,7 @@ Response add_headers(arena *store, arena scratch, Response res) {
   s8_ v = s8sprintf(&scratch, "%ti", s8llen(res.body));
   if (v.ok) res.headers = s8mapassocl(store, res.headers, k, v.v);
   else fprintf(stderr, "Error setting Content-Length\n");
-  printf("✏ Expecting Content-Length: %td\n", s8llen(res.body));
+  //printf("✏ Expecting Content-Length: %td\n", s8llen(res.body));
   return res;
 }
 
@@ -373,7 +374,7 @@ void write_client(EV_P_ ev_io *w, int events) {
   }
   // FIXME handle arena oom... how?
   // FIXME 2025-05-25 12:10:33 not completing every time (e.g. rapid reload?)
-  // hmm https://stackoverflow.com/a/16213822/780743
+  
   b32 complete = 1;
   b32 incomplete = 0;
   if (atomic_compare_exchange_strong(&qo->complete, &complete, incomplete)) {
@@ -381,7 +382,8 @@ void write_client(EV_P_ ev_io *w, int events) {
     client_set_writable(EV_A_ w, 0); // unset writable when write actually finished
   } else {
     printf("❌ unable to set incomplete\n"); // FIXME 2025-05-25 12:44:44 this corresponds with corrupted responses!
-    // NB 2025-05-25 12:48:53 goto read_more didn't fix it
+    // NB 2025-05-25 12:48:53 neither set_nodelay nor goto read_more fixed it
+    // This means serialise_response hasn't finished yet. 
   }
 }
 
@@ -446,7 +448,7 @@ void accept_client(EV_P_ ev_io *w, int events) {
   if (new_socket < 0) perror("Socket connection failed");
   else {
     set_non_blocking(new_socket);
-    set_nodelay(new_socket);
+    //set_nodelay(new_socket);
     // Allocate arenas TODO monitor usage, tune
     arena client_store = alloc_arena(server->config.client_mem);
     arena client_scratch = alloc_arena(server->config.client_mem);
