@@ -10,19 +10,19 @@ CFLAGS=-std=c17 -g3 \
 -pedantic -Wall -Wextra \
 -fPIC -fsanitize=address,undefined
 
-test: test.c
+test: test.c jdf.h
 	time cc $(CFLAGS) $< -o $@
 	$(PREAMBLE) ./$@
 
-test_rel: test_rel.c
+test_rel: test_rel.c relptr.h 
 	time cc $(CFLAGS) $< -o $@
 	$(PREAMBLE) ./$@
 
-test_http: test_http.c http_codes.h
+test_http: test_http.c jdfhttp.h http_codes.h
 	time cc $(CFLAGS) -lev -lpthread $< -o $@
 	$(PREAMBLE) ./$@
 
-test_date: test_date.c dates.h
+test_date: test_date.c jdfdate.h dates.h
 	time cc $(CFLAGS) $< -o $@
 	$(PREAMBLE) ./$@
 

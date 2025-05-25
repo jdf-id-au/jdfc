@@ -342,20 +342,21 @@ void write_client(EV_P_ ev_io *w, int events) {
     perror("Unable to allocate out buffer");
     return;
   }
-  // read_more:
   size bytes_read = 0;
   b32 complete = 0;
   while (!complete && bytes_read < outbuf_size) {
     // pop a byte at time from qo into local buffer
     i32 qidx = queue_pop(&qo->q, qo->buf.len);
-    if (qidx < 0) break; // empty
+    if (qidx < 0) {
+      //printf("qout empty\n"); // NB 2025-05-25 14:25:18 happens minimum once per request
+      break; // empty
+    }
     u8 b = qo->buf.buf[bytes_read];
     if (b) buf[bytes_read++] = b;
     else complete = 1; // message finished as indicated by \0
     queue_pop_commit(&qo->q);
   }
   // FIXME ?wait for queue to be readable ?why necessary
-  // FIXME responses sometimes fail to complete delivery
   if (bytes_read == 0) return;
   size total_bytes_written = 0;
   size bytes_written = 0;
@@ -367,20 +368,24 @@ void write_client(EV_P_ ev_io *w, int events) {
     } else if (bytes_written < 0) {
       if (errno == EAGAIN || errno == EWOULDBLOCK) {
         // just try again? NB don't lose qo data!
+        printf("Should try again?\n");
       } else {
         perror("Error writing to client");
         cleanup_client(EV_A_ w);
       }
-    } else total_bytes_written += bytes_written;
-  
+    } else {
+      total_bytes_written += bytes_written;
+      // printf("Wrote %td/%td bytes\n", bytes_written, total_bytes_written); // NB 2025-05-25 14:29:12 generally in one go
+    }
     if (total_bytes_written < bytes_read) {
       printf("Incomplete socket write (%li/%li B), trying to continue.\n", bytes_written, bytes_read);
     } else break;
   }
   // TODO handle arena oom... how?
-  printf("✅ Done, %ti B written, %ti B client arena use\n", total_bytes_written, used(&client->store));
-  client_set_writable(EV_A_ w, 0); // unset writable when write actually finished
-  // NB 2025-05-25 14:10:46 writing problem seems to be on TCP side rather than qout side?
+  if (complete) { 
+    printf("✅ Done, %ti B written, %ti B client arena use\n", total_bytes_written, used(&client->store));
+    client_set_writable(EV_A_ w, 0); // unset writable when write actually finished
+  } else printf("❌ incomplete read %td B\n", bytes_read);
 }
 
 b32 enqueue_request(Request req) {
