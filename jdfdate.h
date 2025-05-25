@@ -77,7 +77,7 @@ date first_monday(year y) {
   date start = {y, 1, 1};
   epoch e = date_epoch(start);
   weekday w = epoch_weekday(e);
-  i32 offset = (8 - date_weekday(start)) % 7;
+  i32 offset = (8 - w) % 7;
   return epoch_date(e + offset);
 }
 
@@ -95,9 +95,9 @@ date date_offset(date d, i32 days) {
   return epoch_date(date_epoch(d) + days);
 }
 
-i32 in_days(date from, date to) {
-  return date_epoch(to) - date_epoch(from);
-}
+i32 in_days(date from, date to) { return date_epoch(to) - date_epoch(from); }
+
+i32 in_weeks(date from, date to) { return in_days(from, to) / 7; }
 
 s8_ s8date(arena *store, date d) {
   return s8sprintf(store, date_format, d.y, d.m, d.d);
@@ -111,6 +111,10 @@ date_ s8parsedate(s8 s) {
   if (sscanf((const char *)buf, date_format, &ret.v.y, &ret.v.m, &ret.v.d) == 3)
     return ret;
   return (date_){0};
+}
+
+s8 month_abbr(month m) {
+  return s8span((u8 *)spell_month[m], (u8 *)spell_month[m] + 3);
 }
 
 #endif // date_h

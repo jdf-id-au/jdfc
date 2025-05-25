@@ -14,15 +14,15 @@ test: test.c
 	time cc $(CFLAGS) $< -o $@
 	$(PREAMBLE) ./$@
 
-testrel: testrel.c
+test_rel: test_rel.c
 	time cc $(CFLAGS) $< -o $@
 	$(PREAMBLE) ./$@
 
-testhttp: testhttp.c http_codes.h
+test_http: test_http.c http_codes.h
 	time cc $(CFLAGS) -lev -lpthread $< -o $@
 	$(PREAMBLE) ./$@
 
-testdate: testdate.c dates.h
+test_date: test_date.c dates.h
 	time cc $(CFLAGS) $< -o $@
 	$(PREAMBLE) ./$@
 
@@ -30,7 +30,7 @@ make_constants: make_constants.c
 	time cc $(CFLAGS) -ljansson $< -o $@
 
 dates.h: make_constants dates.json
-	$(PREAMBLE) ./@< dates.json > $@
+	$(PREAMBLE) ./$< dates.json > $@
 
 http_codes.h: make_constants http_codes.json
-	$(PREAMBLE) ./@< http_codes.json > $@
+	$(PREAMBLE) ./$< http_codes.json > $@

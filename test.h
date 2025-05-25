@@ -11,6 +11,7 @@ void HEAD(char *title) {
   printf("\n👉 %s\n", title);
 }
 
+// Can't cope with compound literals... containing commas?
 #define PREP(expr) expr; printf("%s;\n", #expr)
 
 #define TEST(expr)                              \

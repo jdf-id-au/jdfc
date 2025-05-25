@@ -249,6 +249,7 @@ Response add_headers(arena *store, arena scratch, Response res) {
   s8_ v = s8sprintf(&scratch, "%ti", s8llen(res.body));
   if (v.ok) res.headers = s8mapassocl(store, res.headers, k, v.v);
   else fprintf(stderr, "Error setting Content-Length\n");
+  printf("✏ Expecting Content-Length: %td\n", s8llen(res.body));
   return res;
 }
 
@@ -354,6 +355,8 @@ void write_client(EV_P_ ev_io *w, int events) {
     } else break;
   }
   // FIXME handle arena oom... how?
+  // FIXME not completing every time (e.g. rapid reload?)
+  // fflush(0); // didn't fix; implies qout problem? emptiness?
   printf("✅ Done, %ti B written, %ti B client arena use\n", total_bytes_written, used(&client->store));
   client_set_writable(EV_A_ w, 0); // unset writable when write actually finished
 }

@@ -44,7 +44,7 @@ typedef struct arena arena; // forward decl
 /*
   Somewhat evil semantic affordance for structs starting with (possibly nested)
   nullable pointer. Allows if(s.ok) process(s.v). Should be safer than null
-  pointer because of explicit types.
+  pointer because of explicit types. Type name followed by underscore.
   Use to represent e.g. internal allocation failure.
   (Can only cast scalars unfortunately.)
   https://stackoverflow.com/a/3995987/780743
@@ -341,6 +341,7 @@ size copy(u8 *restrict dst, u8 *restrict src, size len) {
 ARRAY(s8, u8) // s8: Basic UTF-8 string. Not null terminated!
 // Wrap C string literal into s8 string.
 #define s8(s) (s8){(u8 *)s, countof(s) - 1}
+const static s8_ s8OOM = {.v = s8("error: out of memory")};
 ARRAY(s8a, s8)
 #ifdef _WIN32
 ARRAY(s16, c16)
