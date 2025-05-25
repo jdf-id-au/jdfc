@@ -272,7 +272,8 @@ size s8writeq(void *out, s8 s) {
   drains it from the main thread.
 */
 void serialise_response(arena *store, arena scratch, Client *client, Response res) {
-  qout *out = &client->deliver;
+  qout *out = &client->deliver; // FIXME 2025-05-25 12:08:25 vuln to UAF? Can't reproduce
+  // FIXME 2025-05-25 12:09:08 
   s8 crlf = s8("\r\n");
   res = add_headers(store, scratch, res); // reassigning to pass-by-value arg
   s8map *header = res.headers;
@@ -287,8 +288,12 @@ void serialise_response(arena *store, arena scratch, Client *client, Response re
   s8writeq(out, crlf);
   for (s8l *node = res.body; node; node = node->next)
     s8writeq(out, node->val);
-
-  printf("📣 %i\n", res.status);
+  b32 complete = 1;
+  b32 incomplete = 0;
+  if (atomic_compare_exchange_strong(&out->complete, &incomplete, complete))
+    printf("📣 %i\n", res.status);
+  else
+    printf("❌ unable to set complete\n");
 }
 
 void cleanup_client(EV_P_ ev_io *w) {
@@ -355,10 +360,14 @@ void write_client(EV_P_ ev_io *w, int events) {
     } else break;
   }
   // FIXME handle arena oom... how?
-  // FIXME not completing every time (e.g. rapid reload?)
+  // FIXME 2025-05-25 12:10:33 not completing every time (e.g. rapid reload?)
   // fflush(0); // didn't fix; implies qout problem? emptiness?
-  printf("✅ Done, %ti B written, %ti B client arena use\n", total_bytes_written, used(&client->store));
-  client_set_writable(EV_A_ w, 0); // unset writable when write actually finished
+  b32 complete = 1;
+  b32 incomplete = 0;
+  if (atomic_compare_exchange_strong(&qo->complete, &complete, incomplete)) {
+    printf("✅ Done, %ti B written, %ti B client arena use\n", total_bytes_written, used(&client->store));
+    client_set_writable(EV_A_ w, 0); // unset writable when write actually finished
+  }
 }
 
 b32 enqueue_request(Request req) {
