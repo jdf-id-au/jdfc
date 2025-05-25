@@ -337,6 +337,7 @@ void write_client(EV_P_ ev_io *w, int events) {
     perror("Unable to allocate out buffer");
     return;
   }
+  // read_more:
   size bytes_read = 0;
   for (; bytes_read < os; bytes_read++) {
     // pop a byte at time from qo into local buffer
@@ -378,6 +379,9 @@ void write_client(EV_P_ ev_io *w, int events) {
   if (atomic_compare_exchange_strong(&qo->complete, &complete, incomplete)) {
     printf("✅ Done, %ti B written, %ti B client arena use\n", total_bytes_written, used(&client->store));
     client_set_writable(EV_A_ w, 0); // unset writable when write actually finished
+  } else {
+    printf("❌ unable to set incomplete\n"); // FIXME 2025-05-25 12:44:44 this corresponds with corrupted responses!
+    // NB 2025-05-25 12:48:53 goto read_more didn't fix it
   }
 }
 
