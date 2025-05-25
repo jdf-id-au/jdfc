@@ -689,7 +689,6 @@ void queue_push_commit(queue *q) {
 typedef struct {
   s8 buf; // correct capacity in .len when make_qout
   queue q;
-  _Atomic b32 complete;
 } qout;
 MAYBE(qout)
 qout_ make_qout(arena *a, i32 len) {

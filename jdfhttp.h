@@ -305,12 +305,8 @@ void serialise_response(arena *store, arena scratch, Client *client, Response re
   s8writeq(out, crlf);
   for (s8l *node = res.body; node; node = node->next)
     s8writeq(out, node->val);
-  b32 complete = 1;
-  b32 incomplete = 0;
-  if (atomic_compare_exchange_strong(&out->complete, &incomplete, complete))
-    printf("📣 %i\n", res.status);
-  else
-    printf("❌ unable to set complete\n");
+  s8writeq(out, s8("\0")); // message finished
+  printf("📣 %i\n", res.status);
 }
 
 void cleanup_client(EV_P_ ev_io *w) {
@@ -339,21 +335,23 @@ void client_set_writable(EV_P_ ev_io *w, b32 writable) {
 void write_client(EV_P_ ev_io *w, int events) {
   Client *client = (Client *)w->data;
   qout *qo = &client->deliver;
-  size os = client->server->config.outbuf;
+  size outbuf_size = client->server->config.outbuf;
   arena scratch = client->scratch; // by value
-  u8 *buf = new (&scratch, u8, os);
+  u8 *buf = new (&scratch, u8, outbuf_size);
   if (!buf) {
     perror("Unable to allocate out buffer");
     return;
   }
   // read_more:
   size bytes_read = 0;
-  for (; bytes_read < os; bytes_read++) {
+  b32 complete = 0;
+  while (!complete && bytes_read < outbuf_size) {
     // pop a byte at time from qo into local buffer
     i32 qidx = queue_pop(&qo->q, qo->buf.len);
     if (qidx < 0) break; // empty
-    // TODO is a `complete` _Atomic b32 needed?
-    buf[bytes_read] = qo->buf.buf[bytes_read];
+    u8 b = qo->buf.buf[bytes_read];
+    if (b) buf[bytes_read++] = b;
+    else complete = 1; // message finished as indicated by \0
     queue_pop_commit(&qo->q);
   }
   // FIXME ?wait for queue to be readable ?why necessary
@@ -365,7 +363,6 @@ void write_client(EV_P_ ev_io *w, int events) {
     bytes_written = write(w->fd, buf, bytes_read);
     if (bytes_written == 0) { // TODO check semantics, client closed connection?
       printf("Write client wrote nothing\n");
-      
       //cleanup_client(EV_A_ w);
     } else if (bytes_written < 0) {
       if (errno == EAGAIN || errno == EWOULDBLOCK) {
@@ -377,22 +374,13 @@ void write_client(EV_P_ ev_io *w, int events) {
     } else total_bytes_written += bytes_written;
   
     if (total_bytes_written < bytes_read) {
-      printf("Incomplete socket write (%li/%li B), trying to continue.", bytes_written, bytes_read);
+      printf("Incomplete socket write (%li/%li B), trying to continue.\n", bytes_written, bytes_read);
     } else break;
   }
-  // FIXME handle arena oom... how?
-  // FIXME 2025-05-25 12:10:33 not completing every time (e.g. rapid reload?)
-  
-  b32 complete = 1;
-  b32 incomplete = 0;
-  if (atomic_compare_exchange_strong(&qo->complete, &complete, incomplete)) {
-    printf("✅ Done, %ti B written, %ti B client arena use\n", total_bytes_written, used(&client->store));
-    client_set_writable(EV_A_ w, 0); // unset writable when write actually finished
-  } else {
-    printf("❌ unable to set incomplete\n"); // FIXME 2025-05-25 12:44:44 this corresponds with corrupted responses!
-    // NB 2025-05-25 12:48:53 neither set_nodelay nor goto read_more fixed it
-    // This means serialise_response hasn't finished yet. 
-  }
+  // TODO handle arena oom... how?
+  printf("✅ Done, %ti B written, %ti B client arena use\n", total_bytes_written, used(&client->store));
+  client_set_writable(EV_A_ w, 0); // unset writable when write actually finished
+  // NB 2025-05-25 14:10:46 writing problem seems to be on TCP side rather than qout side?
 }
 
 b32 enqueue_request(Request req) {
@@ -458,7 +446,7 @@ void accept_client(EV_P_ ev_io *w, int events) {
   if (new_socket < 0) perror("Socket connection failed");
   else {
     set_non_blocking(new_socket);
-    //set_nodelay(new_socket);
+    set_nodelay(new_socket);
     // Allocate arenas TODO monitor usage, tune
     arena client_store = alloc_arena(server->config.client_mem);
     arena client_scratch = alloc_arena(server->config.client_mem);
