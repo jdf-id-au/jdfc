@@ -17,6 +17,7 @@
 #include <sys/socket.h>
 #include <arpa/inet.h>
 #include <netinet/in.h>
+#include <netinet/tcp.h>
 #include <fcntl.h>
 #include <pthread.h>
 
@@ -168,6 +169,16 @@ int set_non_blocking(int sockfd) {
   int flags = fcntl(sockfd, F_GETFL, 0);
   if (fcntl(sockfd, F_SETFL, (flags < 0 ? 0 : flags) | O_NONBLOCK) == -1) {
     perror("Failed to set nonblocking");
+    exit(1);
+  }
+  return 0;
+}
+
+int set_nodelay(int sockfd) {
+  i32 yes = 1;
+  if (setsockopt(sockfd, IPPROTO_TCP, TCP_NODELAY, (byte *)&yes, sizeof(i32)) <
+      0) {
+    perror("Failed to set nodelay");
     exit(1);
   }
   return 0;
@@ -361,7 +372,7 @@ void write_client(EV_P_ ev_io *w, int events) {
   }
   // FIXME handle arena oom... how?
   // FIXME 2025-05-25 12:10:33 not completing every time (e.g. rapid reload?)
-  // fflush(0); // didn't fix; implies qout problem? emptiness?
+  // hmm https://stackoverflow.com/a/16213822/780743
   b32 complete = 1;
   b32 incomplete = 0;
   if (atomic_compare_exchange_strong(&qo->complete, &complete, incomplete)) {
@@ -431,6 +442,7 @@ void accept_client(EV_P_ ev_io *w, int events) {
   if (new_socket < 0) perror("Socket connection failed");
   else {
     set_non_blocking(new_socket);
+    set_nodelay(new_socket);
     // Allocate arenas TODO monitor usage, tune
     arena client_store = alloc_arena(server->config.client_mem);
     arena client_scratch = alloc_arena(server->config.client_mem);
