@@ -350,7 +350,6 @@ void write_client(EV_P_ ev_io *w, int events) {
     if (qidx < 0) {
       //printf("qout empty\n"); // NB 2025-05-25 14:25:18 happens minimum once per request
       break; // empty
-      //continue; // busy wait on empty blocks everything
     }
     u8 b = qo->buf.buf[qidx];
     if (b) buf[bytes_read++] = b;
@@ -386,7 +385,7 @@ void write_client(EV_P_ ev_io *w, int events) {
   if (complete) { 
     printf("✅ Done, %ti B written, %ti B client arena use\n", total_bytes_written, used(&client->store));
     client_set_writable(EV_A_ w, 0); // unset writable when write actually finished
-  } else printf("❌ incomplete read %td B\n", bytes_read);
+  } else printf("➡️  partial read %td B\n", bytes_read); // spacing required for terminal...?
 }
 
 b32 enqueue_request(Request req) {
