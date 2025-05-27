@@ -342,12 +342,12 @@ size copy(u8 *restrict dst, u8 *restrict src, size len) {
 
 ARRAY(s8, u8) // s8: Basic UTF-8 string. Not null terminated!
 // Wrap C string literal into s8 string.
-#define s8(s) (s8){(u8 *)s, countof(s) - 1}
+#define s8(s) (s8){(u8 *)(s), countof(s) - 1}
 const static s8_ s8OOM = {.v = s8("error: out of memory")};
 ARRAY(s8a, s8)
 #ifdef _WIN32
 ARRAY(s16, c16)
-#define s16(s) (s16) { (c16 *)s, countof(s) - 1 }
+#define s16(s) (s16) { (c16 *)(s), countof(s) - 1 }
 // TODO what about all the fns?!
 #endif
 
