@@ -51,18 +51,18 @@ typedef struct arena arena; // forward decl
 */
 #define MAYBE(t) typedef union {uptr ok; t v;} t##_;
 #define new(a, t, n) (t *)alloc(a, sizeof(t), alignof(t), n, #t) // arena, type, number
-#define ARRAY(tn, t)                                          \
-  typedef struct {                                            \
-    t *buf;                                                   \
-    size len;                                                 \
-  } tn; /* new type name, el type */                          \
-  MAYBE(tn)                                                   \
-  tn##_ make_##tn(arena *a, size len) {                       \
-    t *buf = new (a, t, len);                                 \
-    if (buf) return (tn##_){.v = {.buf = buf, .len = len }};  \
-    else return (tn##_){0};                                   \
+#define ARRAY(tn, t) /* new type name, el type */            \
+  typedef struct {                                           \
+    t *buf;                                                  \
+    size len;                                                \
+  } tn;                                                      \
+  MAYBE(tn)                                                  \
+  tn##_ make_##tn(arena *a, size len) {                      \
+    t *buf                  = new (a, t, len);               \
+    if (buf) return (tn##_){.v = {.buf = buf, .len = len }}; \
+    else return (tn##_){0};                                  \
   }
-#define endof(v) (v).buf + (v).len // one beyond last of sized value
+#define endof(v) ((v).buf + (v).len) // one beyond last of sized value
 /*
   To enable assertions in release builds,
   put UBSan in trap mode with -fsanitize-trap
@@ -88,26 +88,28 @@ size countfn(node_t *node) {
 node_t *next(node_t *node) { return node->next; }
 node_t *nth(node_t *node, size n) {
   node_t *ret = node;
-  for (size i = 0; i < n; i++) ret = ret->next;
+  for (size i = 0; i < n; i++) {
+    if (!ret) return 0;
+    ret = ret->next;
+  }
   return ret;
 }
-// Connect two nodes. Can cause loop!
+// Connect two nodes. Can cause loop! Returns any previous `from` tail.
 node_t *extend(node_t *from, node_t *to) {
   if (!from) return 0;
+  node_t *from_tail = from->next;
   from->next = to;
-  return to;
+  return from->next;
 }
-/*
-  Connect `after` to `from`, and `to` to `after`s tail.
-  Returns `to`s tail. Does not check `to` follows `from`.
-  (This could be used to exchange tails...)
- */
-node_t *insert(node_t *after, node_t *from, node_t *to) {
-  node_t *next = after->next;
-  node_t *tail = to->next;
+// Insert up to `count` nodes from `from` after `after`, returning any remaining `from` tail.
+node_t *insert(node_t *after, node_t *from, size count) {
+  if (!after || !from || count <= 0) return from;
+  node_t *after_tail = after->next;
+  node_t *to = nth(from, count - 1);
+  node_t *to_tail = to ? to->next : 0;
   after->next = from;
-  to->next = next;
-  return tail;
+  to->next = after_tail;
+  return to_tail;
 }
 /*
   Define new linked list type tn, el type t.
@@ -137,8 +139,8 @@ caller retains it. Caller needs to retain list head.
   tn *tn##extend(tn *from, tn *to) {                                           \
     return (tn *)extend((node_t *)from, (node_t *)to);                         \
   }                                                                            \
-  tn *tn##insert(tn *after, tn *from, tn *to) {                                \
-    return (tn *)insert((node_t *)after, (node_t *)from, (node_t *)to);        \
+  tn *tn##insert(tn *after, tn *from, size n) {                                \
+    return (tn *)insert((node_t *)after, (node_t *)from, n);                   \
   }
 
 /*
