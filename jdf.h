@@ -97,7 +97,6 @@ node_t *nth(node_t *node, size n) {
 // Connect two nodes. Can cause loop! Returns any previous `from` tail.
 node_t *extend(node_t *from, node_t *to) {
   if (!from) return 0;
-  node_t *from_tail = from->next;
   from->next = to;
   return from->next;
 }
@@ -764,7 +763,7 @@ size s8write(void *out, s8 s) {
   return total_copied;
 }
 
-int s8printf(arena scratch, Writer writer, void *out, const char *format, ...) {
+i32 s8printf(arena scratch, Writer writer, void *out, const char *format, ...) {
   if (!scratch.beg) return -1;
   assert(scratch.beg == scratch.cur);
   size avail = available(&scratch);
@@ -844,7 +843,7 @@ void debytes(i32 fd, void *val, size len) { // too cool for stdio.h printf
 
 #ifdef _WIN32 // ╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴ _WIN32
 
-typedef struct { int dummy; } *handle;
+typedef struct { i32 dummy; } *handle;
 #define W32(r) __declspec(dllimport) r __stdcall
 W32(byte *) VirtualAlloc(byte *, usize, u32, u32);
 W32(handle) GetStdHandle(u32);
@@ -938,7 +937,7 @@ u32 oswrite(i32 fd, u8 *buf, i32 len) {
   return 0;
 }
 
-// int main(void) { stuff; return r; }
+// i32 main(void) { stuff; return r; }
 
 #endif // ╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴
 

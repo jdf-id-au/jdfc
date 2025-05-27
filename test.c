@@ -8,7 +8,7 @@ MAP_LIST(i32s8, i32, s8, i32eq)
 SET_LIST(i32set, i32, i32eq)
 SET_LIST(s8set, s8, s8equal)
 
-int main(void) {
+i32 main(void) {
   HEAD("s8 string functions");
   TEST(s8equal(s8("hello"), s8wrap("hello", 10)));
   TEST(s8equal(s8("inner"), s8slice(s8("hello inner world"), 6, 11)));

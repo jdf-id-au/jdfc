@@ -69,7 +69,7 @@ typedef struct {
 } Request;
   
 typedef struct {
-  int status; // http status
+  i32 status; // http status
   s8map *headers; // does not accommodate repeat keys, which are permitted by http spec https://stackoverflow.com/a/4371395/780743
   s8map *cookies; 
   s8l *body;
@@ -154,7 +154,7 @@ Server make_server_fn(Handler h, Config c) {
     perror("Socket creation failed");
     exit(1);
   }
-  int yes = 1; // allow faster relaunch
+  i32 yes = 1; // allow faster relaunch
   if (setsockopt(server.socket, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes)) < 0) {
     perror("Socket option setting failed");
     exit(1);
@@ -182,8 +182,8 @@ Server make_server_fn(Handler h, Config c) {
                              .outbuf = KiB(4),        \
                              __VA_ARGS__})
 
-int set_non_blocking(int sockfd) {
-  int flags = fcntl(sockfd, F_GETFL, 0);
+i32 set_non_blocking(int sockfd) {
+  i32 flags = fcntl(sockfd, F_GETFL, 0);
   if (fcntl(sockfd, F_SETFL, (flags < 0 ? 0 : flags) | O_NONBLOCK) == -1) {
     perror("Failed to set nonblocking");
     exit(1);
@@ -192,7 +192,7 @@ int set_non_blocking(int sockfd) {
 }
 
 // https://stackoverflow.com/a/16213822/780743
-int set_nodelay(int sockfd) {
+i32 set_nodelay(int sockfd) {
   i32 yes = 1;
   if (setsockopt(sockfd, IPPROTO_TCP, TCP_NODELAY, (byte *)&yes, sizeof(i32)) <
       0) {
@@ -351,7 +351,7 @@ void unavailable(i32 sock, char *msg) {
 /*
   Runs on main thread.
  */
-void write_client(EV_P_ ev_io *w, int events) {
+void write_client(EV_P_ ev_io *w, i32 events) {
   Client *client = (Client *)w->data;
   qout *qo = &client->deliver;
   size outbuf_size = client->server->config.outbuf;
@@ -421,7 +421,7 @@ b32 enqueue_request(Request req) {
   return 1;
 }
 
-void read_client(EV_P_ ev_io *w, int events) {
+void read_client(EV_P_ ev_io *w, i32 events) {
   Client *client = (Client *)w->data;
   // using scratch arena as a buffer here, instead of local array
   // printf("client scratch usage should be 0: %ti\n", used(&client->scratch));
@@ -462,10 +462,10 @@ void read_client(EV_P_ ev_io *w, int events) {
   }
 }
 
-void accept_client(EV_P_ ev_io *w, int events) {
+void accept_client(EV_P_ ev_io *w, i32 events) {
   Server *server = (Server *)w->data;
-  int addrlen = sizeof(server->address);
-  int new_socket = accept(w->fd, // should be same as server->socket
+  i32 addrlen = sizeof(server->address);
+  i32 new_socket = accept(w->fd, // should be same as server->socket
                           (struct sockaddr *)&server->address,
                           (socklen_t *)&addrlen);
   if (new_socket < 0) perror("Socket connection failed");
@@ -569,7 +569,7 @@ i32 nproc(void) { return sysconf(_SC_NPROCESSORS_ONLN); }
 
 typedef void *(*Worker)(void *);
 
-void sigint_cb(EV_P_ ev_signal *w, int events) {
+void sigint_cb(EV_P_ ev_signal *w, i32 events) {
   fprintf(stderr, "SIGINT\n");
   ev_break (EV_A_ EVBREAK_ALL);
 }

@@ -21,7 +21,7 @@ s8 symbolise(arena *store, json_t *s) {
   exit(1); // rudely doesn't close fp
 }
 
-int main(int argc, char *argv[]) {
+i32 main(i32 argc, char *argv[]) {
   arena storeval = alloc_arena(MiB(1));
   store = &storeval; // to make normal-looking fn calls
   scratch = alloc_arena(MiB(1));

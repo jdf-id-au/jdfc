@@ -1,7 +1,7 @@
 #include "jdfdate.h"
 #include "test.h"
 
-int main(void) {
+i32 main(void) {
   HEAD("date functions");
   TEST(date_epoch((date){1970,1,1})==0);
   TEST(date_epoch(epoch_date(0)) == 0);

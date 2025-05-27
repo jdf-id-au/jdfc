@@ -1,11 +1,12 @@
 // Resist temptation to write whole testing framework...
+#include "jdf.h"
 
 #ifndef test_h
 #define test_h
 
 #include <stdio.h>
-int passed_tests;
-int total_tests;
+i32 passed_tests;
+i32 total_tests;
 
 void HEAD(char *title) {
   printf("\n👉 %s\n", title);
@@ -25,7 +26,7 @@ void HEAD(char *title) {
   }                                             \
   printf(" %s\n", #expr)
 
-int REPORT(void) {
+i32 REPORT(void) {
   printf("%i/%i passed\n", passed_tests, total_tests);
   return passed_tests != total_tests; // if equal, would return 0 i.e. success (conventionally)
 }

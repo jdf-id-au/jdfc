@@ -68,7 +68,7 @@ Response handler(arena *store, arena scratch, Request req) {
   return res;
 }
 
-int main(void) {
+i32 main(void) {
   Server server = make_server(handler, .port = 8080);
   launch(&server);
   return 0;
