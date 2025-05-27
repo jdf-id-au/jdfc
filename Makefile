@@ -1,7 +1,6 @@
 # ugh Apple https://stackoverflow.com/questions/64126942/malloc-nano-zone-abandoned-due-to-inability-to-preallocate-reserved-vm-space
 # https://nullprogram.com/blog/2023/04/29/
 # -g3 debug level 3
-# ugh can't really include .h files as deps
 # https://stackoverflow.com/a/43527114/780743
 
 PREAMBLE=MallocNanoZone='0' time

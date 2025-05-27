@@ -1,89 +1,70 @@
 #include "jdf.h"
-#include <stdio.h> // not reimplementing printf...
+#include "test.h"
+#include <stdio.h>
 
-s8 blurb = text(This will be included with whitespace collapsed
-                and trimmed
-                and "quotes" escaped.
-                );
+LIST(i32s, i32)
+b32 i32eq(i32 a, i32 b) { return a == b; }
+MAP_LIST(i32s8, i32, s8, i32eq)
+SET_LIST(i32set, i32, i32eq)
+SET_LIST(s8set, s8, s8equal)
 
-MAP_LIST(s8map, s8, s8, s8equal)
-LIST(s8rs, s8 *)
+int main(void) {
+  HEAD("s8 string functions");
+  TEST(s8equal(s8("hello"), s8wrap("hello", 10)));
+  TEST(s8equal(s8("inner"), s8slice(s8("hello inner world"), 6, 11)));
+  TEST(s8equal(s8("inner"), s8slice(s8("hello inner world"), 6, -6)));  
+  TEST(s8equal(s8("inner"), s8slice(s8("hello inner world"), -11, 11)));  
+  TEST(s8cmp(s8("a"), s8("b")) == -1);
+  TEST(s8cmp(s8("b"), s8("a")) == 1);
+  TEST(s8hash(s8("a")) != s8hash(s8("b")));
+  PREP(s8 haystack = s8("abcdef"));
+  TEST(s8find(haystack, s8("cd")) == haystack.buf + 2);
+  TEST(!s8find(haystack, s8("g")));
+  TEST(s8findu8(haystack, 'e') == haystack.buf + 4);
+  TEST(s8startswith(haystack, s8("abc")));
+  TEST(s8endswith(haystack, s8("def")));
+  TEST(s8equal(s8("hello"), s8trim(s8("       hello\t\r\n\v\f"))));
+  TEST(s8blank(s8("  \t\r\v\n\f  "
+                  "    ")));
 
-// TODO more descriptive testing ??framework
-int main(int argc, char *argv[]) {
-  (void)argc;
-  (void)argv;
-  arena store = alloc_arena(KiB(2));
-  arena scratch = alloc_arena(MiB(1));
+  HEAD("s8 split, using arena");
+  PREP(arena store = alloc_arena(KiB(2)));
+  PREP(arena scratch = alloc_arena(KiB(1)));
+  PREP(s8a_ split = s8split(&store, scratch, s8("ab, cd, ef"), s8(", "), 10););
+  TEST(split.v.len == 3);
+  TEST(s8equal(split.v.buf[1], s8("cd")));
 
-  u8 *end = endof(blurb);
-  s8 frag = s8("escaped.");
-  s8 span = s8span(blurb.buf + (blurb.len - 8), end);
-  s8 slice = s8slice(blurb, -8, 0);
-  u8 *found = s8find(blurb, s8("whitespace"));
-  s8 found_to_end = s8span(found, end);
-  u8 *f2 = s8findu8(blurb, '"');
-  s8 f2_to_end = s8span(f2, end);
-  s8 trimmed = s8trim(s8("   escaped.                "));
+  // TODO etc...
 
-  // bufout *stdout = bufout(&store, 64, 1);
-  // s8write(stdout, s8("Demonstrate s8 string functions:"));
-  // flush(stdout);
-
-  log_debug(blurb);
-  log_debug(frag);
-  log_debug(span);
-  log_debug(slice);
+  HEAD("linked list");
+  PREP(i32s *ll = i32sappend(&scratch, 0, 42));
+  PREP(i32sappend(&scratch, ll, 84));
+  TEST(ll->val == 42);
+  TEST(i32snext(ll)->val == 84);
+  TEST(i32snth(ll, 0)->val == 42);
+  TEST(count(ll) == 2);
   
-  log_debug(blurb);
-  log_debug(frag);
-  log_debug(span);
-  log_debug(slice);
-  log_debug(found_to_end);
-  log_debug(f2_to_end);
-  log_debug(trimmed);
-  // compound literal initialising array of pointers to s8; type should be sized
-  s8 concs[] = {s8("concatenated s8s: "), frag, found_to_end, trimmed};
+  HEAD("map (assocation) list");
+  PREP(i32s8 *m = i32s8assoc(&scratch, 0, 42, s8("meaning of life")));
+  TEST(s8equal(i32s8get(m, 42)->val, s8("meaning of life")));
+  PREP(i32s8assoc(&scratch, m, 84, s8("moar")));
+  TEST(count(m) == 2);
+  PREP(m = i32s8dissoc(m, 42));
+  TEST(!i32s8get(m, 42));
+  TEST(i32s8get(m, 84));
+  TEST(!i32s8dissoc(m, 84));
+
+  HEAD("set list");
+  PREP(i32set *is = i32setconj(&scratch, 0, 42));
+  TEST(i32sethas(is, 42));
+  TEST(!i32sethas(is, 84));
+
+  PREP(s8set *ss = s8setconj(&scratch, 0, s8("hello")));
+  TEST(s8setconj(&scratch, ss, s8("there")));
+  TEST(s8sethas(ss, s8("hello")));
   
-  assert(s8find(blurb, s8("quotes")));
-  assert(!s8find(blurb, s8("nopey")));
-  assert(s8equal(frag, span));
-  assert(s8equal(frag, slice));
-  assert(s8equal(frag, trimmed));
+  printf("sizeof(s8set) %ti, scratch usage %ti B \n",
+         sizeof(s8set), used(&scratch));
 
-  inspect(&(u64){0xabcd000012340000});
-
-  s8rs *rs = s8rsappend(&store, 0, &s8("first"));
-  s8rs *tail = s8rsappend(&store, rs, &s8("second"));
-  tail = s8rsappend(&store, tail, &s8("third"));
-  tail = s8rsappend(&store, tail, &s8("fourth"));
-  tail = s8rsappend(&store, tail, &s8("fifth"));
-  tail = s8rsappend(&store, tail, &s8("sixth"));
-  printf("rs has %ti entries\n", count(rs));
-
-  s8map *al = s8mapassoc(&store, 0, s8("a"), s8("b"));
-  al = s8mapassoc(&store, al, s8("c"), s8("d"));
-  al = s8mapassoc(&store, al, s8("e"), s8("f"));
-  al = s8mapassoc(&store, al, s8("g"), s8("h"));
-  
-  printf("al has %ti entries\n", count(al));
-  al = s8mapdissoc(al, s8("a"));
-  printf("al now has %ti entries\n", count(al));
-
-  s8map *match = s8mapget(al, s8("e"));
-  if(match) log_debug(match->val);
-
-  // stupid example of stack allocated arena and s8 split
-  // should normally both be heap allocated
-  byte beg[1024] = {0};
-  arena tmp = {.beg = beg, .cur = beg, .end = beg + 1024};
-  s8 mess = s8("this, and that, and the other");
-  s8a_ spl = s8splitu8(&tmp, scratch, mess, ',', 4);
-  for (size i = 0; i < spl.v.len; i++)
-    log_debug(spl.v.buf[i]);
-
-  assert(s8endswith(s8("thing some"), s8("some")));
-  assert(s8startswith(s8("thing some"), s8("thing")));
-  
-  failwith(0, s8("Finished"));
+  return REPORT();
 }

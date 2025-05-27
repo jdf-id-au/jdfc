@@ -212,7 +212,6 @@ caller retains it. Caller needs to retain list head.
   }
 // Barely worth it vs ASSOCIATION_LIST with ignored vt. Make sure to use `disj`s returned head!
 #define SET_LIST(tn, kt, keq)                   \
-  RPTR(tn)                                      \
   typedef struct tn tn;                         \
   struct tn {                                   \
     tn *next;                                   \

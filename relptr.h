@@ -1,7 +1,7 @@
 /*
   Like jdf.h but with relative internal pointers.
   API likely to be affected. TODO #ifdef RELPTR to adapt jdf.h ?
-  Has already drifted behid jdf.h...
+  FIXME 2025-05-27 21:49:45 drifted and unmaintained at the moment!
 */
 
 #ifndef jdf_h // guard deliberately same as non-internal pointer impl
