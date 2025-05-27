@@ -30,7 +30,7 @@ s8_ s8mapget_(s8map *head, s8 key) {
   return (s8_){.v = kv->val };
 }
 
-b32 s8mapkeq(s8map *head, s8 key, s8 val) {
+b32 s8mapcontains(s8map *head, s8 key, s8 val) {
   s8_ v = s8mapget_(head, key);
   if (!v.ok) return 0;
   return s8equal(v.v, val);
@@ -51,12 +51,6 @@ s8map *s8mapassocl(arena *store, s8map *head, s8 k, s8 v) {
   if (kc.ok && vc.ok) return s8mapassoc(store, head, kc.v, vc.v);
   printf("Problem setting "); dumbp(k);
   return head;
-}
-
-// Append cloned
-s8l *s8lappendcl(arena *store, s8l *head, s8 s) {
-  s8_ cl = s8clone(store, s);
-  return s8lappend(store, head, cl.v); // TODO error handling
 }
 
 typedef struct server Server; // forward decl for Request and Workshop
@@ -331,7 +325,7 @@ void cleanup_client(EV_P_ ev_io *w) {
   // https://metacpan.org/dist/EV/view/libev/ev.pod#ev_TYPE_stop-(loop,-ev_TYPE-*watcher)
   ev_io_stop(EV_A_ &client->read_io);
   ev_io_stop(EV_A_ &client->write_io);
-  client_cleanup_basics( &client->store, &client->scratch, w->fd);
+  client_cleanup_basics(&client->store, &client->scratch, w->fd);
 }
 
 // signature cosplay for consistency

@@ -6,10 +6,10 @@
 //   Response res = {0};
 //   if (!s8equal(req.uri, s8("/ws"))) return (Response){.status = NOT_FOUND};
 //   if (req.method != GET) return (Response){.status = METHOD_NOT_ALLOWED};
-//   if (s8mapkeq(req.headers, s8("Upgrade"), s8("websocket")) &&
-//       s8mapkeq(req.headers, s8("Connection"), s8("Upgrade"))) {
+//   if (s8mapcontains(req.headers, s8("Upgrade"), s8("websocket")) &&
+//       s8mapcontains(req.headers, s8("Connection"), s8("Upgrade"))) {
 //     // TODO check Sec-WebSocket-Key, Sec-WebSocket-Version, Origin
-//     if (s8mapkeq(req.headers, s8("Sec-WebSocket-Version"), s8("13"))) {
+//     if (s8mapcontains(req.headers, s8("Sec-WebSocket-Version"), s8("13"))) {
 //       res.status = SWITCHING_PROTOCOLS;
 //       res.headers = s8mapassocl(store, res.headers, s8("Upgrade"),
 //       s8("websocket")); res.headers = s8mapassocl(store, res.headers,
@@ -30,19 +30,21 @@ Response handler(arena *store, arena scratch, Request req) {
   if (!s8equal(req.uri, s8("/"))) return (Response){.status = NOT_FOUND};
   
   s8map *headers = s8mapassocl(store, 0, s8("Content-Type"), s8("text/html; charset=UTF-8"));
-  s8_ body = s8sprintf(&scratch,
-                       "<!doctype html>"
-                       "<html>"
-                       "<head>"
-                       "<title>Hello from C</title>"
-                       "</head>"
-                       "<body>Using %ti/%ti B for server, %ti/%ti B for this client"
-                       "<h1>Workshops</h1>",
-                       used(&req.client->server->store),
-                       capacity(&req.client->server->store),
-                       used(&req.client->store), capacity(&req.client->store));
+  s8_ body =
+      s8sprintf(store,
+                "<!doctype html>"
+                "<html>"
+                "<head>"
+                "<title>Hello from C</title>"
+                "</head>"
+                "<body>Using %ti/%ti B for server, %ti/%ti B for this client"
+                "<h1>Workshops</h1>",
+                used(&req.client->server->store),
+                capacity(&req.client->server->store), used(&req.client->store),
+                capacity(&req.client->store));
   Response res = {0};
-  res.body = s8lappendcl(store, res.body, body.v);
+  assert(body.ok);
+  res.body = s8lappend(store, res.body, body.v);
   s8l *cur = res.body;
   Workshops *ws = &req.client->server->workshops;
   
