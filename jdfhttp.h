@@ -206,8 +206,10 @@ i32 set_nodelay(int sockfd) {
 
 // would be "better" to use llhttp (which depends on llvm...)
 Request parse_request(arena *store, arena scratch, s8 raw) {
-  Request req = { .raw = raw };
-  s8a_ split = s8splitu8(store, scratch, raw, '\n', 100);
+  Request req = {.raw = raw};
+  // TODO 2025-05-30 22:54:19 could rewrite using s8cut and compare readability
+  s8a_ split =
+    s8splitu8(store, scratch, raw, '\n', 100);
   if (!split.ok) ReqErr(SERVICE_UNAVAILABLE);
   if (split.v.len < 1) ReqErr(BAD_REQUEST);
   s8a_ line0 = s8splitu8(store, scratch, split.v.buf[0], ' ', 2);
@@ -233,10 +235,9 @@ Request parse_request(arena *store, arena scratch, s8 raw) {
     s8a_ cookiekvs = s8split(store, scratch, cookiekv->val, s8("; "), 32);
     if (!cookiekvs.ok) ReqErr(SERVICE_UNAVAILABLE);
     for (size i = 0; i < cookiekvs.v.len; i++) {
-      s8a_ cookie = s8splitu8(store, scratch, cookiekvs.v.buf[i], '=', 1);
+      s8pair cookie = s8cutu8(cookiekvs.v.buf[i], '=');
       if (!cookie.ok) ReqErr(SERVICE_UNAVAILABLE);
-      if (cookie.v.len == 2)
-        cookies = s8mapassoc(store, cookies, cookie.v.buf[0], cookie.v.buf[1]);
+      cookies = s8mapassoc(store, cookies, cookie.head, cookie.tail);
     }
     req.cookies = cookies;
   }
