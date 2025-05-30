@@ -559,6 +559,24 @@ s8a_ s8splitu8(arena *store, arena scratch, s8 s, u8 on, size max_splits) {
   return s8split(store, scratch, s, ons, max_splits);
 }
 
+typedef struct {
+  s8 head;
+  s8 tail;
+  b32 ok; // different to MAYBE because head could be empty
+} s8pair;
+
+s8pair s8cut(s8 s, s8 on) {
+  u8 *found = s8find(s, on);
+  if (!found) return (s8pair){0};
+  return (s8pair) {.head = s8span(s.buf, found), .tail = s8span(found + on.len, endof(s)), .ok = 1};
+}
+
+s8pair s8cutu8(s8 s, u8 on) {
+  u8 *found = s8findu8(s, on);
+  if (!found) return (s8pair){0};
+  return (s8pair) {.head = s8span(s.buf, found), .tail = s8span(found + 1, endof(s)), .ok = 1};
+}
+
 // Concatenate array of strings
 s8_ s8concat(arena *a, s8 *ss, size len) {
   size tot = 0;

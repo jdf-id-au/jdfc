@@ -34,6 +34,12 @@ i32 main(void) {
   TEST(split.v.len == 3);
   TEST(s8equal(split.v.buf[1], s8("cd")));
 
+  HEAD("s8 cut");
+  PREP(s8pair cut = s8cut(s8("ab, cd, ef"), s8(", ")));
+  TEST(s8equal(cut.tail, s8("cd, ef")));
+  PREP(cut = s8cutu8(s8("ab, cd, ef"), (u8)','));
+  TEST(s8equal(cut.tail, s8(" cd, ef")));
+
   // TODO etc...
 
   HEAD("linked list");
