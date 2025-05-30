@@ -23,6 +23,7 @@
 
 typedef uint8_t   u8;
 #ifdef _WIN32
+#include <uchar.h>
 typedef char16_t  c16;
 #endif
 typedef int32_t   b32; // 0 false, 1 true
@@ -341,7 +342,7 @@ size copy(u8 *restrict dst, u8 *restrict src, size len) {
 ARRAY(s8, u8) // s8: Basic UTF-8 string. Not null terminated!
 // Wrap C string literal into s8 string.
 #define s8(s) (s8){(u8 *)(s), countof(s) - 1}
-const static s8_ s8OOM = {.v = s8("error: out of memory")};
+static const s8_ s8OOM = {.v = s8("error: out of memory")};
 ARRAY(s8a, s8)
 #ifdef _WIN32
 ARRAY(s16, c16)
@@ -842,14 +843,17 @@ void debytes(i32 fd, void *val, size len) { // too cool for stdio.h printf
 // TODO why are there so many signed ints below where negative is incorrect?
 
 #ifdef _WIN32 // ╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴ _WIN32
-
+// msys2 clang64 to get asan & usan
+// /usr/share/mintty/emojis/getemojis -d
 typedef struct { i32 dummy; } *handle;
 #define W32(r) __declspec(dllimport) r __stdcall
 W32(byte *) VirtualAlloc(byte *, usize, u32, u32);
+W32(b32) VirtualFree(byte *, usize, u32);
 W32(handle) GetStdHandle(u32);
 W32(b32) ReadFile(handle, u8 *, u32, u32 *, void *);
 W32(b32) WriteFile(handle, u8 *, u32, u32 *, void *);
 W32(void) ExitProcess(u32);
+W32(u32) GetLastError(void);
 
 arena alloc_arena(size cap) {
   // https://learn.microsoft.com/en-us/windows/win32/api/memoryapi/nf-memoryapi-virtualalloc
@@ -864,7 +868,7 @@ arena alloc_arena(size cap) {
 }
 
 b32 free_arena(arena *a) {
-  b32 ret;
+  b32 ret = 0;
   if (!a) return 0;
   byte *me = a->beg;
   a->beg = 0;
@@ -878,17 +882,17 @@ void osfail(i32 code) {
   ExitProcess(code); // TOOD check vs 1
 }
 
-i32 osread(i32 fb, u8 *buf, i32 cap) {
-  handle stdin = GetStdHandle(-10 - fd);
+i32 osread(i32 fd, u8 *buf, i32 cap) {
+  handle in = GetStdHandle(-10 - fd);
   u32 len;
-  ReadFile(stdin, buf, cap, &len, 0);
+  ReadFile(in, buf, cap, &len, 0);
   return len;
 }
 
 u32 oswrite(i32 fd, u8 *buf, i32 len) {
-  handle stdout = GetStdHandle(-10 - fd);
+  handle out = GetStdHandle(-10 - fd);
   u32 dummy;
-  b32 stat = WriteFile(stdout, buf, len, &dummy, 0); // TODO GetLastError if fails
+  b32 stat = WriteFile(out, buf, len, &dummy, 0); // TODO GetLastError if fails
   if (stat) return 0;
   else return GetLastError();
 }
