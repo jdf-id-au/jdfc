@@ -30,9 +30,15 @@ i32 main(void) {
   HEAD("s8 split, using arena");
   PREP(arena store = alloc_arena(KiB(2)));
   PREP(arena scratch = alloc_arena(KiB(1)));
-  PREP(s8a_ split = s8split(&store, scratch, s8("ab, cd, ef"), s8(", "), 10););
+  PREP(s8 source = s8("ab, cd, ef"));
+  PREP(s8 target = s8(", "));
+  PREP(s8a_ split = s8split(&store, scratch, source, target, 10););
   TEST(split.v.len == 3);
   TEST(s8equal(split.v.buf[1], s8("cd")));
+  PREP(s8_ replaced = s8replace(&store, scratch, source, target, s8("other")));
+  TEST(s8equal(replaced.v, s8("abothercdotheref")));
+  PREP(replaced = s8replace(&store, scratch, source, s8("ab"), s8("_")));
+  TEST(s8equal(replaced.v, s8("_, cd, ef")));
 
   HEAD("s8 cut");
   PREP(s8pair cut = s8cut(s8("ab, cd, ef"), s8(", ")));

@@ -195,7 +195,7 @@ caller retains it. Caller needs to retain list head.
     for (; cur; prev = cur, cur = cur->next) {                        \
       if (keq(cur->key, key)) {                                       \
         if (prev) prev->next = cur->next;                             \
-        return cur->next;                                             \
+        else return cur->next;                                        \
       }                                                               \
     }                                                                 \
     return head;                                                      \
@@ -248,7 +248,7 @@ caller retains it. Caller needs to retain list head.
       if (keq(cur->key, key)) {                 \
         if (prev)                               \
           prev->next = cur->next;               \
-        return cur->next;                       \
+        else return cur->next;                  \
       }                                         \
     }                                           \
     return head;                                \
@@ -342,7 +342,7 @@ size copy(u8 *restrict dst, u8 *restrict src, size len) {
 ARRAY(s8, u8) // s8: Basic UTF-8 string. Not null terminated!
 // Wrap C string literal into s8 string.
 #define s8(s) (s8){(u8 *)(s), countof(s) - 1}
-static const s8_ s8OOM = {.v = s8("error: out of memory")};
+static const s8_ s8_OOM = {.v = s8("error: out of memory")};
 ARRAY(s8a, s8)
 #ifdef _WIN32
 ARRAY(s16, c16)
@@ -515,9 +515,8 @@ LIST(u8l, u8 *)
   max_splits can be 0 for unlimited splits.
 */
 s8a_ s8split(arena *store, arena scratch, s8 s, s8 on, size max_splits) {
-  s8a_ nil = {0};
   u8 *end = endof(s);
-  if (!s.buf) return nil; // exit early without allocating
+  if (!s.buf) return (s8a_){0}; // exit early without allocating
   // Allocation-free hack to differentiate ok-but-empty from not-ok.
   if (s.len == 0) return (s8a_){.v = {.buf = (s8 *)s.buf, .len = 0}};
   u8l *matches = 0, *curmatch = 0;
@@ -534,7 +533,7 @@ s8a_ s8split(arena *store, arena scratch, s8 s, s8 on, size max_splits) {
     }
   }
   s8 *buf = new (store, s8, nmatches + 1);
-  if (!buf) return nil;
+  if (!buf) return (s8a_){0};
   if (nmatches == 0) buf[0] = s;
   else {
     size i = 0;
@@ -638,7 +637,7 @@ s8_ s8sprintf(arena *buf, const char *format, ...) {
 s8_ s8replace(arena *store, arena scratch,
               s8 source, s8 target, s8 replacement) {
   s8a_ split = s8split(store, scratch, source, target, 0);
-  if (!split.ok) return (s8_){0};
+  if (!split.ok) return (s8_){0}; // FIXME 2025-06-06 22:46:47 does this fail if source starts with target?
   if (split.v.len == 1) return (s8_) {.v = source};
   size len = (split.v.len - 1) * replacement.len; // TODO check if initial or terminal match handled correctly
   for (size i = 0; i < split.v.len; i++) len += split.v.buf[i].len;
@@ -650,6 +649,7 @@ s8_ s8replace(arena *store, arena scratch,
     copy(cur, replacement.buf, replacement.len);
     cur += replacement.len;
     copy(cur, split.v.buf[i].buf, split.v.buf[i].len);
+    cur += split.v.buf[i].len;
   }
   return ret;
 }
