@@ -59,7 +59,7 @@ typedef struct arena arena; // forward decl
   } tn;                                                      \
   MAYBE(tn)                                                  \
   tn##_ make_##tn(arena *a, size len) {                      \
-    t *buf                  = new (a, t, len);               \
+    t *buf = new (a, t, len);                                \
     if (buf) return (tn##_){.v = {.buf = buf, .len = len }}; \
     else return (tn##_){0};                                  \
   }
@@ -129,6 +129,7 @@ caller retains it. Caller needs to retain list head.
   };                                                                           \
   tn *tn##append(arena *a, tn *maybe, t m) {                                   \
     tn *cur = new (a, tn, 1);                                                  \
+    if (!cur) return 0;                                                        \
     cur->val = m;                                                              \
     if (maybe)                                                                 \
       maybe->next = cur;                                                       \
@@ -363,7 +364,7 @@ LIST(s8l, s8)
   Not MAYBE because doesn't allocate.
 */
 s8 s8span(u8 *beg, u8 *end) {
-  if (beg && end && end >= beg) return (s8){.buf = beg, .len = end - beg};
+  if (beg && end >= beg) return (s8){.buf = beg, .len = end - beg};
   return (s8){0};
 }
 
@@ -488,8 +489,8 @@ b32 whitespace(u8 c) { // too cool for ctype.h isspace
 s8 s8trim(s8 src) {
   u8 *beg = src.buf;
   u8 *end = endof(src);
-  while (beg < end && whitespace(*beg)) beg++;
   while (end > beg && whitespace(*(end - 1))) end--;
+  while (beg < end && whitespace(*beg)) beg++;
   return s8span(beg, end);
 }
 
@@ -509,55 +510,6 @@ s8_ s8clone(arena *a, s8 s) {
   return c;
 }
 
-LIST(u8l, u8 *)
-/*
-  Split s, returning s8spans referring to it (zero copy of buffer).
-  max_splits can be 0 for unlimited splits.
-*/
-s8a_ s8split(arena *store, arena scratch, s8 s, s8 on, size max_splits) {
-  u8 *end = endof(s);
-  if (!s.buf) return (s8a_){0}; // exit early without allocating
-  // Allocation-free hack to differentiate ok-but-empty from not-ok.
-  if (s.len == 0) return (s8a_){.v = {.buf = (s8 *)s.buf, .len = 0}};
-  u8l *matches = 0, *curmatch = 0;
-  size nmatches = 0;
-  for (u8 *cur = s.buf; cur && cur < end &&
-         (max_splits == 0 || nmatches < max_splits);) {
-    s8 rem = s8span(cur, end);
-    cur = s8find(rem, on);
-    if (cur) {
-      curmatch = u8lappend(&scratch, curmatch, cur);
-      if (!matches) matches = curmatch;
-      nmatches++;
-      cur += on.len;
-    }
-  }
-  s8 *buf = new (store, s8, nmatches + 1);
-  if (!buf) return (s8a_){0};
-  if (nmatches == 0) buf[0] = s;
-  else {
-    size i = 0;
-    buf[i++] = s8span(s.buf, matches->val); // first match
-    curmatch = matches;
-    while (1) {
-      if (curmatch->next) {
-        buf[i++] = s8span(curmatch->val + on.len, curmatch->next->val);
-        curmatch = curmatch->next;
-      } else {
-        buf[i++] = s8span(curmatch->val + on.len, end);
-        break;
-      }
-    }
-  }
-  return (s8a_){.v = {.buf = buf, .len = nmatches + 1}};
-}
-
-// Trivially less efficient than impl calling s8findu8, but easier to maintain.
-s8a_ s8splitu8(arena *store, arena scratch, s8 s, u8 on, size max_splits) {
-  s8 ons = (s8){.buf = (u8[]){on}, .len = 1};
-  return s8split(store, scratch, s, ons, max_splits);
-}
-
 typedef struct {
   s8 head;
   s8 tail;
@@ -574,6 +526,61 @@ s8pair s8cutu8(s8 s, u8 on) {
   u8 *found = s8findu8(s, on);
   if (!found) return (s8pair){0};
   return (s8pair) {.head = s8span(s.buf, found), .tail = s8span(found + 1, endof(s)), .ok = 1};
+}
+
+LIST(u8l, u8 *)
+/*
+  Split s, returning s8spans referring to it (zero copy of buffer).
+  max_splits can be 0 for unlimited splits.
+*/
+s8a_ s8split(arena *store, arena scratch, s8 s, s8 on, size max_splits) {
+  if (!s.buf) return (s8a_){0};
+  // Allocation-free hack to differentiate ok-but-empty from not-ok.
+  if (s.len == 0) return (s8a_){.v = {.buf = (s8 *)s.buf, .len = 0}};
+  u8 **matches = (u8 **)scratch.beg;
+  size match_count = 0;
+  u8 *end = endof(s);
+  for (u8 *cur = s.buf; cur && cur < end && (max_splits == 0 || match_count < max_splits);) {
+    cur = s8find(s8span(cur, end), on);
+    if (!cur) continue;
+    u8 **match = new (&scratch, u8 *, 1); 
+    if (!match) return (s8a_){0}; // FIXME 2025-08-10 21:53:36 clearer indication of alloc fail
+    matches[match_count++] = cur;
+    cur += on.len;
+  }
+  s8 *buf = new (store, s8, match_count + 1);
+  if (!buf) return (s8a_){0};
+  if (match_count == 0) buf[0] = s;
+  else for (size i = 0; i <= match_count; i++) 
+         buf[i] = s8span(i == 0 ? s.buf : (matches[i - 1] + on.len),
+                         i == match_count ? end : matches[i]);
+  return (s8a_){.v = {.buf = buf, .len = match_count + 1}};
+}
+
+// Trivially less efficient than impl calling s8findu8, but easier to maintain.
+s8a_ s8splitu8(arena *store, arena scratch, s8 s, u8 on, size max_splits) {
+  s8 ons = (s8){.buf = (u8[]){on}, .len = 1};
+  return s8split(store, scratch, s, ons, max_splits);
+}
+
+s8_ s8replace(arena *store, arena scratch,
+              s8 source, s8 target, s8 replacement) {
+  s8a_ split = s8split(store, scratch, source, target, 0);
+  if (!split.ok) return (s8_){0}; // FIXME 2025-06-06 22:46:47 does this fail if source starts with target?
+  if (split.v.len == 1) return (s8_) {.v = source};
+  size len = (split.v.len - 1) * replacement.len; // TODO check if initial or terminal match handled correctly
+  for (size i = 0; i < split.v.len; i++) len += split.v.buf[i].len;
+  s8_ ret = make_s8(store, len);
+  if (!ret.ok) return (s8_){0};
+  copy(ret.v.buf, split.v.buf[0].buf, split.v.buf[0].len);
+  u8 *cur = ret.v.buf + split.v.buf[0].len;
+  for (size i = 1; i < split.v.len; i++) {
+    copy(cur, replacement.buf, replacement.len);
+    cur += replacement.len;
+    copy(cur, split.v.buf[i].buf, split.v.buf[i].len);
+    cur += split.v.buf[i].len;
+  }
+  return ret;
 }
 
 // Concatenate array of strings
@@ -632,26 +639,6 @@ s8_ s8sprintf(arena *buf, const char *format, ...) {
     buf->cur += n > avail ? avail : n;
     return (s8_){.v = s8bytespan(start, buf->cur)};
   } else return (s8_){0};
-}
-
-s8_ s8replace(arena *store, arena scratch,
-              s8 source, s8 target, s8 replacement) {
-  s8a_ split = s8split(store, scratch, source, target, 0);
-  if (!split.ok) return (s8_){0}; // FIXME 2025-06-06 22:46:47 does this fail if source starts with target?
-  if (split.v.len == 1) return (s8_) {.v = source};
-  size len = (split.v.len - 1) * replacement.len; // TODO check if initial or terminal match handled correctly
-  for (size i = 0; i < split.v.len; i++) len += split.v.buf[i].len;
-  s8_ ret = make_s8(store, len);
-  if (!ret.ok) return (s8_){0};
-  copy(ret.v.buf, split.v.buf[0].buf, split.v.buf[0].len);
-  u8 *cur = ret.v.buf + split.v.buf[0].len;
-  for (size i = 1; i < split.v.len; i++) {
-    copy(cur, replacement.buf, replacement.len);
-    cur += replacement.len;
-    copy(cur, split.v.buf[i].buf, split.v.buf[i].len);
-    cur += split.v.buf[i].len;
-  }
-  return ret;
 }
 
 // ───────────────────────────────────────────────── Lock-free concurrent queues
