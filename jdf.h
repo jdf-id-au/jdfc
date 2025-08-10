@@ -528,21 +528,18 @@ s8pair s8cutu8(s8 s, u8 on) {
   return (s8pair) {.head = s8span(s.buf, found), .tail = s8span(found + 1, endof(s)), .ok = 1};
 }
 
-LIST(u8l, u8 *)
 /*
   Split s, returning s8spans referring to it (zero copy of buffer).
   max_splits can be 0 for unlimited splits.
 */
 s8a_ s8split(arena *store, arena scratch, s8 s, s8 on, size max_splits) {
-  if (!s.buf) return (s8a_){0};
-  // Allocation-free hack to differentiate ok-but-empty from not-ok.
-  if (s.len == 0) return (s8a_){.v = {.buf = (s8 *)s.buf, .len = 0}};
+  if (s.len == 0) return (s8a_){.v = {.buf = (s8 *)s.buf, .len = 0}}; // Hack to show ok-ness.
+  u8 *end = endof(s);
   u8 **matches = (u8 **)scratch.beg;
   size match_count = 0;
-  u8 *end = endof(s);
-  for (u8 *cur = s.buf; cur && cur < end && (max_splits == 0 || match_count < max_splits);) {
+  for (u8 *cur = s.buf; cur < end && (max_splits == 0 || match_count < max_splits);) {
     cur = s8find(s8span(cur, end), on);
-    if (!cur) continue;
+    if (!cur) break;
     u8 **match = new (&scratch, u8 *, 1); 
     if (!match) return (s8a_){0}; // FIXME 2025-08-10 21:53:36 clearer indication of alloc fail
     matches[match_count++] = cur;
@@ -550,10 +547,9 @@ s8a_ s8split(arena *store, arena scratch, s8 s, s8 on, size max_splits) {
   }
   s8 *buf = new (store, s8, match_count + 1);
   if (!buf) return (s8a_){0};
-  if (match_count == 0) buf[0] = s;
-  else for (size i = 0; i <= match_count; i++) 
-         buf[i] = s8span(i == 0 ? s.buf : (matches[i - 1] + on.len),
-                         i == match_count ? end : matches[i]);
+  for (size i = 0; i <= match_count; i++) 
+    buf[i] = s8span(i == 0 ? s.buf : (matches[i - 1] + on.len),
+                    i == match_count ? end : matches[i]);
   return (s8a_){.v = {.buf = buf, .len = match_count + 1}};
 }
 
@@ -566,9 +562,9 @@ s8a_ s8splitu8(arena *store, arena scratch, s8 s, u8 on, size max_splits) {
 s8_ s8replace(arena *store, arena scratch,
               s8 source, s8 target, s8 replacement) {
   s8a_ split = s8split(store, scratch, source, target, 0);
-  if (!split.ok) return (s8_){0}; // FIXME 2025-06-06 22:46:47 does this fail if source starts with target?
+  if (!split.ok) return (s8_){0};
   if (split.v.len == 1) return (s8_) {.v = source};
-  size len = (split.v.len - 1) * replacement.len; // TODO check if initial or terminal match handled correctly
+  size len = (split.v.len - 1) * replacement.len;
   for (size i = 0; i < split.v.len; i++) len += split.v.buf[i].len;
   s8_ ret = make_s8(store, len);
   if (!ret.ok) return (s8_){0};

@@ -39,6 +39,8 @@ i32 main(void) {
   TEST(s8equal(replaced.v, s8("abothercdotheref")));
   PREP(replaced = s8replace(&store, scratch, source, s8("ab"), s8("_")));
   TEST(s8equal(replaced.v, s8("_, cd, ef")));
+  PREP(replaced = s8replace(&store, scratch, source, s8("ef"), s8("_")));
+  TEST(s8equal(replaced.v, s8("ab, cd, _")));
 
   HEAD("s8 cut");
   PREP(s8pair cut = s8cut(s8("ab, cd, ef"), s8(", ")));
