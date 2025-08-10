@@ -136,9 +136,6 @@ typedef struct client {
 
 // ────────────────────────────────────────────────────────────────────── Server
 Server make_server_fn(Handler h, Config c) {
-  arena store = alloc_arena(MiB(1));
-  arena scratch = alloc_arena(MiB(1));
-  if (!store.beg || !scratch.beg) failwith(1, s8("Failed to allocate server arenas."));
   Server server = {
     .config = c,
       // learn about SOCK_DGRAM, SOCK_RAW types later
@@ -146,8 +143,6 @@ Server make_server_fn(Handler h, Config c) {
     .address = {.sin_family = c.domain,
                 .sin_port = htons(c.port), // convert byte order
                 .sin_addr = {.s_addr = htonl(c.interface)}},
-    .store = store,
-    .scratch = scratch,
     .handler = h
   };
   if (server.socket < 0) {
@@ -250,7 +245,7 @@ s8map *content_type(arena *store, s8map *head, enum content_type content_type) {
   return head;
 }
 
-// Terminates string in situ!
+// printf contents of arena. Terminates string in situ!
 size s8arenaprintf(arena *a, const char *format) {
   if (a->cur < a->end) *a->cur = 0;
   else {
@@ -273,7 +268,7 @@ Response add_headers(arena *store, arena scratch, Response res) {
 }
 
 size s8writeq(void *out, s8 s) {
-  qout *q = (qout *)out;
+  qout *q = (qout *)out; // see Writer
   if (!q->buf.buf) {
     fprintf(stderr, "💣 Tried to write to uninitialised qout\n");
     return 0;
@@ -285,7 +280,7 @@ size s8writeq(void *out, s8 s) {
   // dumbp(s);
   size bytes_written = write_qout(q, s.buf, s.len);
   if (bytes_written < s.len) 
-    // NB 2025-05-25 13:30:51 doesn't seme to be happening
+    // NB 2025-05-25 13:30:51 doesn't seem to be happening
     printf("⚠ only wrote %td/%td bytes\n", bytes_written, s.len);
   return bytes_written;
 }
@@ -298,7 +293,7 @@ void serialise_response(arena *store, arena scratch, Client *client, Response re
   qout *out = &client->deliver; // FIXME 2025-05-25 12:08:25 vuln to UAF? Can't reproduce
   // FIXME 2025-05-25 12:09:08 
   s8 crlf = s8("\r\n");
-  res = add_headers(store, scratch, res); // reassigning to pass-by-value arg
+  res = add_headers(store, scratch, res); // reassigning to pass-by-value parameter
   s8map *header = res.headers;
   s8printf(scratch, s8writeq, out, "HTTP/1.1 %i %s\r\n",
            res.status, spell_http_status[res.status]); // TODO adapt to make_constants stuff when ready
@@ -587,6 +582,7 @@ Work_ make_Work(arena *a, i32 len) {
 void launch(Server *server) {
   server->store = alloc_arena(server->config.server_mem);
   server->scratch = alloc_arena(server->config.server_mem);
+  if (!server->store.beg || !server->scratch.beg) fprintf(stderr, "💣 Failed to allocate server arenas.");
   i32 np = nproc();
   i32 nw = np == 1 ? np : np - 1;
   i32 rc = 0;
