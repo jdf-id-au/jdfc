@@ -44,11 +44,14 @@ void dumbp(s8 s) {
   fflush(0); // flush all open output streams
 }
 
-// Associate cloned k & v.
+// Associate cloned k & v. May fail (and just return previous head).
 s8map *s8mapassocl(arena *store, s8map *head, s8 k, s8 v) {
   s8_ kc = s8clone(store, k);
   s8_ vc = s8clone(store, v);
-  if (kc.ok && vc.ok) return s8mapassoc(store, head, kc.v, vc.v);
+  if (kc.ok && vc.ok) {
+    s8map *ret = s8mapassoc(store, head, kc.v, vc.v);
+    if (ret) return ret;
+  }
   fprintf(stderr, "Problem setting "); dumbp(k);
   return head;
 }
@@ -332,7 +335,7 @@ Response add_headers(arena *store, arena scratch, Response res) {
   default:
     break;
   }
-  add_header(store, &res, CONNECTION, s8("keep-alive"));
+  res = add_header(store, &res, CONNECTION, s8("keep-alive"));
   switch (res.type) {
   case INVALID_CONTENT_TYPE: // fall through
   case EVENT_STREAM:
@@ -340,10 +343,17 @@ Response add_headers(arena *store, arena scratch, Response res) {
   default:
     break;
   }
-  add_header(store, &res, CONTENT_TYPE, describe_content_type[res.type]);
+  res = add_header(store, &res, CONTENT_TYPE, describe_content_type[res.type]);
   s8_ v = s8sprintf(&scratch, "%ti", res.body ? s8llen(res.body) : 0);
-  if (v.ok) add_header(store, &res, CONTENT_LENGTH, v.v);
+  if (v.ok) res = add_header(store, &res, CONTENT_LENGTH, v.v);
   else fprintf(stderr, "Error setting Content-Length\n");
+
+  s8map *kv = res.headers;
+  while (kv) { // FIXME 2025-09-29 16:30:15 headers not being written
+    log_debug(kv->key);
+    log_debug(kv->val);
+    kv = kv->next;
+  }
   return res;
 }
 
@@ -376,12 +386,13 @@ void serialise_response(arena *store, arena scratch, Client *client, Response re
   s8map *header = res.headers;
   s8printf(scratch, s8writeq, out, "HTTP/1.1 %i %s\r\n",
            res.status, spell_http_status[res.status]);
-  do { // grug approve
+  while (header) { // grug approve
     s8writeq(out, header->key);
     s8writeq(out, s8(": "));
     s8writeq(out, header->val);
     s8writeq(out, crlf);
-  } while ((header = header->next));
+    header = header->next;
+  }
   s8writeq(out, crlf);
   for (s8l *node = res.body; node; node = node->next)
     s8writeq(out, node->val);

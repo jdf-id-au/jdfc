@@ -314,19 +314,21 @@ enum header {
   INVALID_HEADER,
   CONTENT_TYPE,
   CONTENT_LENGTH,
+  TRANSFER_ENCODING,
+  CACHE_CONTROL,
   CONNECTION,
   UPGRADE,
-  WEBSOCKET,
 };
 const s8 spell_header[] = {
   [CONTENT_TYPE] = s8("Content-Type"),
   [CONTENT_LENGTH] = s8("Content-Length"),
+  [TRANSFER_ENCODING] = s8("Transfer-Encoding"),
+  [CACHE_CONTROL] = s8("Cache-Control"),
   [CONNECTION] = s8("Connection"),
   [UPGRADE] = s8("Upgrade"),
-  [WEBSOCKET] = s8("websocket"),
 };
 enum header parse_header(s8 s) {
-  for (size i = 0; i < 5; i++)
+  for (size i = 0; i < 6; i++)
     if(s8equal(s, spell_header[i]))
       return (enum header)i;
   return (enum header)0;
