@@ -30,18 +30,17 @@ Response handler(arena *store, arena scratch, Request req) {
   if (!s8equal(req.uri, s8("/"))) return (Response){.status = NOT_FOUND};
   
   s8map *headers = s8mapassocl(store, 0, s8("Content-Type"), s8("text/html; charset=UTF-8"));
-  s8_ body =
-      s8sprintf(store,
-                "<!doctype html>"
-                "<html>"
-                "<head>"
-                "<title>Hello from C</title>"
-                "</head>"
-                "<body>Using %ti/%ti B for server, %ti/%ti B for this client"
-                "<h1>Workshops</h1>",
-                used(&req.client->server->store),
-                capacity(&req.client->server->store), used(&req.client->store),
-                capacity(&req.client->store));
+  s8_ body = s8sprintf(
+      store,
+      "<!doctype html>"
+      "<html>"
+      "<head>"
+      "<title>Hello from C</title>"
+      "</head>"
+      "<body>Using %ti/%ti B for server, %ti/%ti B for this client %p"
+      "<h1>Workshops</h1>",
+      used(&req.client->server->store), capacity(&req.client->server->store),
+      used(&req.client->store), capacity(&req.client->store), &req.client);
   Response res = {0};
   assert(body.ok);
   res.body = s8lappend(store, res.body, body.v);

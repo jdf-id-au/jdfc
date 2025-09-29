@@ -86,10 +86,11 @@ typedef struct {
   size server_mem;
   size client_mem;
   size worker_mem;
+  i32 workers;
   size outbuf;
   arena store;
   arena scratch;
-} Config;
+} Config; // see make_server macro for defaults
 
 typedef struct { // Resources for one worker!
   Server *server;
@@ -167,6 +168,32 @@ Server make_server_fn(Handler h, Config c) {
   return server;
 }
 
+#ifdef _WIN32
+#include <sysinfoapi.h>
+i32 nproc(void) {
+  SYSTEM_INFO sysinfo;
+  GetSystemInfo(&sysinfo);
+  return sysinfo.dwNumberOfProcessors;
+}
+//#elif __APPLE__
+//#include <sys/sysctl.h>
+//i32 nproc(void) {
+  //  i32 v = 0;
+  //  usize len = 1;
+  //  if (!sysctlbyname("hw.logicalcpu", &v, &len, 0, 0)) // 0 is success return v;
+     //    perror("Couldn't get system information");
+  //  return v;
+  //}
+//#elif __linux
+#else
+i32 nproc(void) { return sysconf(_SC_NPROCESSORS_ONLN); }
+#endif
+
+i32 nworkers(void) {
+  i32 np = nproc();
+  return np==1 ? np : np-1;
+}
+
 #define make_server(h, ...) /* default config */      \
   make_server_fn(h, (Config){.domain = PF_INET,       \
                              .backlog = 10,           \
@@ -174,6 +201,7 @@ Server make_server_fn(Handler h, Config c) {
                              .server_mem = MiB(1),    \
                              .client_mem = MiB(1),    \
                              .worker_mem = MiB(1),    \
+                             .workers = nworkers(),   \
                              .outbuf = KiB(4),        \
                              __VA_ARGS__})
 
@@ -228,6 +256,10 @@ Request parse_request(arena *store, arena scratch, s8 raw) {
     s8pair header = s8cut(line.head, s8(": "));
     if (!header.ok) ReqErr(BAD_REQUEST);
     headers = s8mapassoc(store, headers, header.head, header.tail);
+    if (!headers) {
+      fprintf(stderr, "💣 OOM saving headers \n");
+      ReqErr(SERVICE_UNAVAILABLE);
+    }
     req.headers = headers;
   }
 
@@ -243,6 +275,10 @@ Request parse_request(arena *store, arena scratch, s8 raw) {
       s8pair cookie = s8cutu8(line.head, '=');
       if (!cookie.ok) ReqErr(BAD_REQUEST);
       cookies = s8mapassoc(store, cookies, cookie.head, cookie.tail);
+      if (!cookies) {
+        fprintf(stderr, "💣 OOM saving cookies \n");
+        ReqErr(SERVICE_UNAVAILABLE);
+      }
       req.cookies = cookies;
     }
   }
@@ -408,8 +444,9 @@ void write_client(EV_P_ ev_io *w, i32 events) {
     } else break;
   }
   // TODO handle arena oom... how?
-  if (complete) { 
-    printf("✅ Done, %ti B written, %ti B client arena use\n", total_bytes_written, used(&client->store));
+  if (complete) {
+    printf("✅ Done, %ti B written, %ti B client arena use for %p\n",
+           total_bytes_written, used(&client->store), (void *)client);
     client_set_writable(EV_A_ w, 0); // unset writable when write actually finished
   } else printf("➡️  Partial read %td B\n", bytes_read); // spacing required for terminal...?
 }
@@ -549,30 +586,10 @@ void *worker(Workshop *workshop) {
       } // TODO 2025-05-25 16:02:09 REQUEST_EMPTY, INVALID_METHOD_LINE, ...
       Response res = server->handler(&workshop->store, workshop->scratch, req);
       serialise_response(&workshop->store, workshop->scratch, client, res);
+      workshop->store.cur = workshop->store.beg; // NB 2025-09-29 12:44:43 reset arena!
     }
   }
 }
-
-#ifdef _WIN32
-#include <sysinfoapi.h>
-i32 nprocs(void) {
-  SYSTEM_INFO sysinfo;
-  GetSystemInfo(&sysinfo);
-  return sysinfo.dwNumberOfProcessors;
-}
-//#elif __APPLE__
-//#include <sys/sysctl.h>
-//i32 nproc(void) {
-  //  i32 v = 0;
-  //  usize len = 1;
-  //  if (!sysctlbyname("hw.logicalcpu", &v, &len, 0, 0)) // 0 is success return v;
-     //    perror("Couldn't get system information");
-  //  return v;
-  //}
-//#elif __linux
-#else
-i32 nproc(void) { return sysconf(_SC_NPROCESSORS_ONLN); }
-#endif
 
 typedef void *(*Worker)(void *);
 
@@ -594,8 +611,7 @@ void launch(Server *server) {
   server->store = alloc_arena(server->config.server_mem);
   server->scratch = alloc_arena(server->config.server_mem);
   if (!server->store.beg || !server->scratch.beg) fprintf(stderr, "💣 Failed to allocate server arenas.");
-  i32 np = nproc(); // TODO 2025-09-29 11:51:23 only if not configured?
-  i32 nw = np == 1 ? np : np - 1;
+  i32 nw = server->config.workers;
   i32 rc = 0;
   Workshop *workshops = new (&server->store, Workshop, nw); // seemingly > 8KiB ea
   if (!workshops) {
