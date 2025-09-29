@@ -75,8 +75,9 @@ typedef struct {
   enum http_status status;
   enum content_type type;
   s8map *headers; // does not accommodate repeat keys, which are permitted by http spec https://stackoverflow.com/a/4371395/780743
-  s8map *cookies; 
+  s8map *cookies;
   s8l *body;
+  Client *client;
 } Response;
 
 // Runs within worker thread with its store and scratch arenas.
@@ -104,6 +105,7 @@ typedef struct {
   arena store;
   arena scratch;
   pthread_t thread;
+  ev_io write_io;
 } Workshop; // Resources for one worker!
 
 ARRAY(Workshops, Workshop)
@@ -140,7 +142,7 @@ typedef struct client {
   ev_io read_io;
   ev_io write_io;
   qout deliver;
-} Client; // Server's resources for serving one client
+} Client; // Server's resources for serving one client // TODO 2025-09-29 22:24:48 rename to Connection ?
 
 // ────────────────────────────────────────────────────────────────────── Server
 Server make_server_fn(Handler h, Config c) {
@@ -348,12 +350,6 @@ Response add_headers(arena *store, arena scratch, Response res) {
   if (v.ok) res = add_header(store, &res, CONTENT_LENGTH, v.v);
   else fprintf(stderr, "Error setting Content-Length\n");
 
-  s8map *kv = res.headers;
-  while (kv) { // FIXME 2025-09-29 16:30:15 headers not being written
-    log_debug(kv->key);
-    log_debug(kv->val);
-    kv = kv->next;
-  }
   return res;
 }
 
@@ -379,8 +375,8 @@ size s8writeq(void *out, s8 s) {
   Runs on worker thread. Expect to block when qout full, until client loop
   drains it from the main thread.
 */
-void serialise_response(arena *store, arena scratch, Client *client, Response res) {
-  qout *out = &client->deliver;
+void serialise_response(arena *store, arena scratch, Response res) {
+  qout *out = &res.client->deliver;
   s8 crlf = s8("\r\n");
   // TODO 2025-09-29 18:50:35 for SSE, could branch if res.type ==
   // EVENT_STREAM... (after inital headers sent) Would adjust
@@ -424,6 +420,15 @@ void cleanup_client(EV_P_ ev_io *w) {
 }
 
 // signature cosplay for consistency
+void client_set_readable(EV_P_ ev_io *w, b32 readable) {
+  Client *client = (Client *)w->data;
+  ev_io *read_io = &client->read_io;
+  if (readable == ev_is_active(read_io))
+    printf("Inconsistent client %s readable call\n", readable ? "set" : "unset");
+  if (readable) ev_io_start(EV_A_ read_io);
+  else ev_io_stop(EV_A_ read_io);
+}
+
 void client_set_writable(EV_P_ ev_io *w, b32 writable) {
   Client *client = (Client *)w->data;
   ev_io *write_io = &client->write_io;
@@ -499,6 +504,7 @@ void write_client(EV_P_ ev_io *w, i32 events) {
   if (complete) {
     printf("✅ Done, %ti B written, %ti B client arena use for %p\n",
            total_bytes_written, used(&client->store), (void *)client);
+    client_set_readable(EV_A_ w, 1);
     client_set_writable(EV_A_ w, 0); // unset writable when write actually finished
   } else printf("➡️  Partial read %td B\n", bytes_read); // spacing required for terminal...?
 }
@@ -552,6 +558,7 @@ void read_client(EV_P_ ev_io *w, i32 events) {
       cleanup_client(EV_A_ w);
       return;
     }
+    client_set_readable(EV_A_ w, 0); // enforce half-duplex! see worker fn
     client_set_writable(EV_A_ w, 1); // unset in write_client when actually finished
     // not closing socket
   }
@@ -582,6 +589,7 @@ void accept_client(EV_P_ ev_io *w, i32 events) {
     client->server = server;
     client->store = client_store; // for passing by reference
     client->scratch = client_scratch; // for passing by value
+    
     ev_io_init(&client->read_io, read_client, new_socket, EV_READ);
     client->read_io.data = client; // I'm a woozie (see libev doc)
     qout_ deliver = make_qout(&client->store, server->config.outbuf);
@@ -591,7 +599,8 @@ void accept_client(EV_P_ ev_io *w, i32 events) {
       client_cleanup_basics(&client->store, &client->scratch, new_socket);
       return;
     }
-    ev_io_start(EV_A_ & client->read_io);
+    client_set_readable(EV_A_ &client->read_io, 1);
+      
     // This is started and stopped conditionally on whether there is data to
     // write, to prevent excessive activation...
     // https://buildmage.com/blog/libev-tutorial-and-wrapper
@@ -618,10 +627,10 @@ void *worker(Workshop *workshop) {
     job = server->work.jobs[qi];
   } while (!queue_mpop_commit(&server->work.q, save));
   // ╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴ with this
-  pthread_mutex_lock(&server->work_waiting_lock);
+  pthread_mutex_lock(&server->work_waiting_lock); // this thread will be the only one waiting for work
   while ((qi = queue_mpop(&server->work.q, server->work.len, &save)) < 0)
     // loop to cover suprious wakeup
-    pthread_cond_wait(&server->work_waiting, &server->work_waiting_lock);
+    pthread_cond_wait(&server->work_waiting, &server->work_waiting_lock); // blocks thread instead of busy-waiting
   pthread_mutex_unlock(&server->work_waiting_lock);
   */
   // ╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴ as follows
@@ -646,25 +655,35 @@ void *worker(Workshop *workshop) {
       default:
         if (req.error) printf("Disregarding Request.error status %d.\n", req.error);
         // NB 2025-09-29 16:13:45 handler is currently also responsible for routing!
+
+        // https://developer.mozilla.org/en-US/docs/Web/HTTP/Guides/Connection_management_in_HTTP_1.x
+        // Electing not to implement pipelining ("not activated by
+        // default in modern browsers"!) or HTTP/2 or /3. Client can
+        // open multiple connections (resulting in multiple jdfhttp
+        // Clients, probably served by different workers/threads).
+
+        // Multiple workers should therefore not serialise to the same
+        // client->deliver queue simultaneously. Writer is on main
+        // thread so libev can deal with delays writing.
+
+        // TODO 2025-09-29 22:41:29 still really should depipeline
+        // anyone who tries it on (to prevent contention on
+        // ->deliver). Could make "half-duplex" by watching
+        // ev_is_active(write_io) aka client_set_writable? Unset
+        // readable when writing?
         res = server->handler(&workshop->store, workshop->scratch, req);
       }
-      // FIXME 2025-09-29 21:12:25 what stops two workers from
-      // serialising to client->deliver simultaneously? Response needs
-      // to follow the related Request. (& further considerations if
-      // impl SSE or WS) Need to claim spot in outgoing queue before
-      // (possibly expensive) calculation of response... Does writer need to be on main thread?
-      serialise_response(&workshop->store, workshop->scratch, client, res);
+
+      res.client = client;
+      // TODO 2025-09-29 22:21:10 some server-level notion of Client
+      // for session state.
+      serialise_response(&workshop->store, workshop->scratch, res);
       workshop->store.cur = workshop->store.beg; // NB 2025-09-29 12:44:43 reset arena!
     }
   }
 }
 
 typedef void *(*Worker)(void *);
-
-void sigint_cb(EV_P_ ev_signal *w, i32 events) {
-  fprintf(stderr, "SIGINT\n");
-  ev_break (EV_A_ EVBREAK_ALL);
-}
 
 Work_ make_Work(arena *a, i32 len) {
   Work_ nil = (Work_){0};
@@ -673,6 +692,11 @@ Work_ make_Work(arena *a, i32 len) {
   _Atomic Request *requests = new (a, _Atomic Request, cap);
   if (!requests) return nil;
   return (Work_) { .v = {.requests = requests, .len = len, .q = 0} };
+}
+
+void sigint_cb(EV_P_ ev_signal *w, i32 events) {
+  fprintf(stderr, "SIGINT\n");
+  ev_break (EV_A_ EVBREAK_ALL);
 }
 
 void launch(Server *server) {
