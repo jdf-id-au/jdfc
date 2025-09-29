@@ -70,6 +70,7 @@ typedef struct {
   
 typedef struct {
   enum http_status status;
+  enum content_type type;
   s8map *headers; // does not accommodate repeat keys, which are permitted by http spec https://stackoverflow.com/a/4371395/780743
   s8map *cookies; 
   s8l *body;
@@ -318,19 +319,31 @@ Response add_header(arena *store, Response *maybe, enum header h, s8 v) {
   return res;
 }
 
-Response add_content_type(arena *store, Response *maybe, enum content_type ty) {
-  return add_header(store, maybe, CONTENT_TYPE, describe_content_type[ty]);
-}
-
 Response add_headers(arena *store, arena scratch, Response res) {
   // TODO  2025-09-29 13:40:10 Transfer-Encoding: chunked
   // https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Content-Length
   // TODO should be conditional on client's invitation
+  switch (res.status) {
+  case INVALID_HTTP_STATUS:
+    res.status = INTERNAL_SERVER_ERROR;
+    return res;
+  case NO_CONTENT:
+    return res;
+  default:
+    break;
+  }
   add_header(store, &res, CONNECTION, s8("keep-alive"));
+  switch (res.type) {
+  case INVALID_CONTENT_TYPE: // fall through
+  case EVENT_STREAM:
+    return res;
+  default:
+    break;
+  }
+  add_header(store, &res, CONTENT_TYPE, describe_content_type[res.type]);
   s8_ v = s8sprintf(&scratch, "%ti", res.body ? s8llen(res.body) : 0);
   if (v.ok) add_header(store, &res, CONTENT_LENGTH, v.v);
   else fprintf(stderr, "Error setting Content-Length\n");
-  //printf("✏ Expecting Content-Length: %td\n", s8llen(res.body));
   return res;
 }
 
@@ -602,11 +615,19 @@ void *worker(Workshop *workshop) {
     req = server->work.requests[qi];
     if (queue_mpop_commit(&server->work.q, save)) {
       Client *client = req.client;
-      if (req.error == SERVICE_UNAVAILABLE) {
+      Response res = {0};
+      switch (req.error) {
+      case SERVICE_UNAVAILABLE: // mainly being some disaster allocating memory
         unavailable(client->write_io.fd, "parse request");
         cleanup_client(server->loop, &client->write_io);
+        break;
+      case BAD_REQUEST: // TODO 2025-09-29 16:12:55 fall throughs relating only to request parsing
+        res = (Response){.status = req.error};
+        break;
+      default:
+        // NB 2025-09-29 16:13:45 handler is currently also responsible for routing!
+        res = server->handler(&workshop->store, workshop->scratch, req);
       }
-      Response res = server->handler(&workshop->store, workshop->scratch, req);
       // TODO  2025-09-29 14:30:27 SSE: how not to block worker?
       serialise_response(&workshop->store, workshop->scratch, client, res);
       workshop->store.cur = workshop->store.beg; // NB 2025-09-29 12:44:43 reset arena!

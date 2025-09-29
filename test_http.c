@@ -31,7 +31,7 @@
 Response handler(arena *store, arena scratch, Request req) {
   // TODO check and deal with req.error (and use it in jdfhttp.h)
   if (!s8equal(req.uri, s8("/"))) return (Response){.status = NOT_FOUND};
-  Response res = add_content_type(store, 0, HTML);
+  Response res = (Response){.type = HTML};
   s8_ body = s8sprintf(
       store,
       "<!doctype html>"
@@ -68,7 +68,7 @@ Response handler(arena *store, arena scratch, Request req) {
 
 Response sse_handler(arena *store, arena scratch, Request req) {
   if (!s8equal(req.uri, s8("/sse"))) return (Response){.status = NOT_FOUND};
-  Response res = add_content_type(store, 0, EVENT_STREAM);
+  Response res = (Response){.type = EVENT_STREAM};
   // TODO 2025-09-29 15:13:43 how not to block worker?
   return res;
 }
