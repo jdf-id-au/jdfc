@@ -29,7 +29,6 @@
 // }
 
 Response handler(arena *store, arena scratch, Request req) {
-  // TODO check and deal with req.error (and use it in jdfhttp.h)
   if (!s8equal(req.uri, s8("/"))) return (Response){.status = NOT_FOUND};
   Response res = (Response){.type = HTML};
   s8_ body = s8sprintf(

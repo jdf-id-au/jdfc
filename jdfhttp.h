@@ -6,7 +6,6 @@
 #include "jdf.h" // TODO remove if want flexibility of choosing relptr.h; may not be worth matching APIs though
 // #include "relptr.h"
 #include "http_codes.h"
-#include <ev.h>
 
 #ifndef jdfhttp_h
 #define jdfhttp_h
@@ -20,6 +19,7 @@
 #include <netinet/tcp.h>
 #include <fcntl.h>
 #include <pthread.h>
+#include <ev.h>
 
 MAP_LIST(s8map, s8, s8, s8equal)
 
@@ -39,8 +39,8 @@ b32 s8mapcontains(s8map *head, s8 key, s8 val) {
 // Dump s8 in desperation (debugging)
 void dumbp(s8 s) {
   printf("%*ti B ✏ ", 5, s.len);
-  for (size i = 0; i < s.len; i++) fprintf(stderr, "%c", s.buf[i]);
-  fprintf(stderr, "\n");
+  for (size i = 0; i < s.len; i++) printf("%c", s.buf[i]);
+  printf("\n");
   fflush(0); // flush all open output streams
 }
 
@@ -99,22 +99,22 @@ typedef struct {
   arena scratch;
 } Config; // see make_server macro for defaults
 
-typedef struct { // Resources for one worker!
+typedef struct {
   Server *server;
   arena store;
   arena scratch;
   pthread_t thread;
-} Workshop;
+} Workshop; // Resources for one worker!
 
 ARRAY(Workshops, Workshop)
 
-typedef struct { // Concurrent queue (multiple consumer)
+typedef struct {
   _Atomic Request *requests;
   // simpler than _Atomic Requests *requests from ARRAY(Requests, Request)
   // because _Atomic struct member access is UB:
   size len; // this is 1 more than the number of requests!!
   queue q;
-} Work;
+} Work; // Concurrent queue (multiple consumer)
 
 MAYBE(Work)
 
@@ -140,7 +140,7 @@ typedef struct client {
   ev_io read_io;
   ev_io write_io;
   qout deliver;
-} Client;
+} Client; // Server's resources for serving one client
 
 // ────────────────────────────────────────────────────────────────────── Server
 Server make_server_fn(Handler h, Config c) {
@@ -380,8 +380,17 @@ size s8writeq(void *out, s8 s) {
   drains it from the main thread.
 */
 void serialise_response(arena *store, arena scratch, Client *client, Response res) {
-  qout *out = &client->deliver; // FIXME 2025-05-25 12:08:25 vuln to UAF? Can't reproduce
+  qout *out = &client->deliver;
   s8 crlf = s8("\r\n");
+  // TODO 2025-09-29 18:50:35 for SSE, could branch if res.type ==
+  // EVENT_STREAM... (after inital headers sent) Would adjust
+  // write_client to detect \n\n and not unset writable. Would need to
+  // decide where to track work generator. How would
+  // subsequent Fetch requests ([necessarily?] new Client connections) cause
+  // feedback on an established SSE channel?
+  // Track qout pointers in Server ?
+  // server->work.requests could be Req-or-Update union, the latter with qout ref ?
+  // Responses could be Res-or-Update union
   res = add_headers(store, scratch, res); // reassigning to pass-by-value parameter
   s8map *header = res.headers;
   s8printf(scratch, s8writeq, out, "HTTP/1.1 %i %s\r\n",
@@ -396,7 +405,7 @@ void serialise_response(arena *store, arena scratch, Client *client, Response re
   s8writeq(out, crlf);
   for (s8l *node = res.body; node; node = node->next)
     s8writeq(out, node->val);
-  s8writeq(out, s8("\0")); // message finished
+  s8writeq(out, s8("\0")); // message finished, detected by write_client
   printf("📣 %i\n", res.status);
 }
 
@@ -487,7 +496,6 @@ void write_client(EV_P_ ev_io *w, i32 events) {
       printf("Incomplete socket write (%li/%li B), trying to continue.\n", bytes_written, bytes_read);
     } else break;
   }
-  // TODO handle arena oom... how?
   if (complete) {
     printf("✅ Done, %ti B written, %ti B client arena use for %p\n",
            total_bytes_written, used(&client->store), (void *)client);
@@ -636,6 +644,7 @@ void *worker(Workshop *workshop) {
         res = (Response){.status = req.error};
         break;
       default:
+        if (req.error) printf("Disregarding Request.error status %d.\n", req.error);
         // NB 2025-09-29 16:13:45 handler is currently also responsible for routing!
         res = server->handler(&workshop->store, workshop->scratch, req);
       }
