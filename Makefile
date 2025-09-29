@@ -19,6 +19,7 @@ test_rel: test_rel.c relptr.h
 
 test_http: test_http.c jdfhttp.h http_codes.h
 	time cc $(CFLAGS) -lev -lpthread $< -o $@
+	du -sh $@
 	$(PREAMBLE) ./$@
 
 test_date: test_date.c jdfdate.h dates.h

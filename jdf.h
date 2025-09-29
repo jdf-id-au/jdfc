@@ -639,6 +639,7 @@ s8_ s8sprintf(arena *buf, const char *format, ...) {
 
 // ───────────────────────────────────────────────── Lock-free concurrent queues
 // https://nullprogram.com/blog/2022/05/14
+// "inline"s are just expression of intent... 
 typedef _Atomic u32 queue; // typedef _Atomic ... is ok as per stdatomic.h
 // len must be positive, <= 32768, and a power of two.
 i32 queue_capacity(i32 len) {
@@ -646,7 +647,7 @@ i32 queue_capacity(i32 len) {
   return len - 1;
 }
 // ╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴ Multiple consumer
-i32 queue_mpop(queue *q, i32 len, u32 *save) {
+inline i32 queue_mpop(queue *q, i32 len, u32 *save) {
   u32 r = *save = *q;
   i32 mask = len - 1;
   i32 head = r       & mask;
@@ -654,12 +655,12 @@ i32 queue_mpop(queue *q, i32 len, u32 *save) {
   return head == tail ? -1 : tail;
 }
 // NB element load must be atomic
-b32 queue_mpop_commit(queue *q, u32 save) {
+inline b32 queue_mpop_commit(queue *q, u32 save) {
   return atomic_compare_exchange_strong(q, &save, save + 0x10000);
 }
 // ╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴ Single consumer
 // Returns index for next value to be popped. -1 when empty.
-i32 queue_pop(queue *q, i32 len) {
+inline i32 queue_pop(queue *q, i32 len) {
   // printf("queue_pop %p 0x%x %i\n", q, *q, len);
   u32 r = *q; // ? memory_order_acquire from stdatomic.h
   i32 mask = len - 1;
@@ -671,7 +672,7 @@ void queue_pop_commit(queue *q) {
   *q += 0x10000; // 0x10000 == 1u << 16 i.e. increment tail ; ? memory_order_release
 }
 // Returns index for next value to be pushed. -1 when full.
-i32 queue_push(queue *q, i32 len) {
+inline i32 queue_push(queue *q, i32 len) {
   // printf("queue_push %p 0x%x %i\n", q, *q, len);
   u32 r = *q;
   i32 mask = len - 1;
@@ -684,7 +685,7 @@ i32 queue_push(queue *q, i32 len) {
   return next == tail ? -1 : head;
 }
 // After storing into (separately allocated) element array.
-void queue_push_commit(queue *q) {
+inline void queue_push_commit(queue *q) {
   *q += 1;
 }
 // ╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴ Concurrent output buffer
@@ -701,7 +702,7 @@ qout_ make_qout(arena *a, i32 len) {
   if (!buf) return nil;
   return (qout_) { .v = {.buf = (s8){.buf = buf, .len = len}, .q = 0 } };
 }
-size read_qout(qout *qo, s8 buf) {
+inline size read_qout(qout *qo, s8 buf) {
   i32 qi = 0;
   size bi = 0;
   while ((qi = queue_pop(&qo->q, qo->buf.len))) {
@@ -711,7 +712,7 @@ size read_qout(qout *qo, s8 buf) {
   }
   return bi;
 }
-size write_qout(qout *qo, u8 *buf, size maxlen) {
+inline size write_qout(qout *qo, u8 *buf, size maxlen) {
   i32 qi = 0;
   i32 bi = 0;
   while (1) {

@@ -141,7 +141,7 @@ typedef struct client {
   arena scratch;
   ev_io read_io;
   ev_io write_io;
-  qout deliver;
+  qout deliver; // FIXME 2025-09-30 08:20:29 needn't be a byte at a time...
 } Client; // Server's resources for serving one client // TODO 2025-09-29 22:24:48 rename to Connection ?
 
 // ────────────────────────────────────────────────────────────────────── Server
@@ -662,15 +662,11 @@ void *worker(Workshop *workshop) {
         // open multiple connections (resulting in multiple jdfhttp
         // Clients, probably served by different workers/threads).
 
-        // Multiple workers should therefore not serialise to the same
-        // client->deliver queue simultaneously. Writer is on main
-        // thread so libev can deal with delays writing.
-
-        // TODO 2025-09-29 22:41:29 still really should depipeline
-        // anyone who tries it on (to prevent contention on
-        // ->deliver). Could make "half-duplex" by watching
-        // ev_is_active(write_io) aka client_set_writable? Unset
-        // readable when writing?
+        // Multiple workers would therefore not serialise to the same
+        // client->deliver queue simultaneously. Pipelining is
+        // prevented by half-duplex using client_set_readable. Writer
+        // is on main thread so libev can deal with delays writing.
+        // client->deliver should buffer 32KiB.
         res = server->handler(&workshop->store, workshop->scratch, req);
       }
 
