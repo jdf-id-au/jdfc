@@ -39,9 +39,9 @@ b32 s8mapcontains(s8map *head, s8 key, s8 val) {
 // Dump s8 in desperation (debugging)
 void dumbp(s8 s) {
   printf("%*ti B ✏ ", 5, s.len);
-  for (size i = 0; i < s.len; i++) printf("%c", s.buf[i]);
-  printf("\n");
-  fflush(0);
+  for (size i = 0; i < s.len; i++) fprintf(stderr, "%c", s.buf[i]);
+  fprintf(stderr, "\n");
+  fflush(0); // flush all open output streams
 }
 
 // Associate cloned k & v.
@@ -49,7 +49,7 @@ s8map *s8mapassocl(arena *store, s8map *head, s8 k, s8 v) {
   s8_ kc = s8clone(store, k);
   s8_ vc = s8clone(store, v);
   if (kc.ok && vc.ok) return s8mapassoc(store, head, kc.v, vc.v);
-  printf("Problem setting "); dumbp(k);
+  fprintf(stderr, "Problem setting "); dumbp(k);
   return head;
 }
 
@@ -69,7 +69,7 @@ typedef struct {
 } Request;
   
 typedef struct {
-  i32 status; // http status
+  enum http_status status;
   s8map *headers; // does not accommodate repeat keys, which are permitted by http spec https://stackoverflow.com/a/4371395/780743
   s8map *cookies; 
   s8l *body;
@@ -197,44 +197,54 @@ i32 set_nodelay(int sockfd) {
   return 0;
 }
 
-#define ReqErr(e) do { req.error = e; return req; } while (0) // macrology semicolon hack
+#define ReqErr(e) do { req.error = e; return req; } while (0) // macro block semicolon hack
 
-// would be "better" to use llhttp (which depends on llvm...)
 Request parse_request(arena *store, arena scratch, s8 raw) {
   Request req = {.raw = raw};
-  // TODO 2025-05-30 22:54:19 could rewrite using s8cut and compare readability
-  s8a_ split =
-    s8splitu8(store, scratch, raw, '\n', 100);
-  if (!split.ok) ReqErr(SERVICE_UNAVAILABLE);
-  if (split.v.len < 1) ReqErr(BAD_REQUEST);
-  s8a_ line0 = s8splitu8(store, scratch, split.v.buf[0], ' ', 2);
-  if (!line0.ok) ReqErr(SERVICE_UNAVAILABLE);
-  if (line0.v.len < 3) ReqErr(BAD_REQUEST);
-  req.method = parse_http_method(line0.v.buf[0]);
-  if (!req.method) ReqErr(METHOD_NOT_ALLOWED);
-  req.uri = line0.v.buf[1]; // copy s8, zerocopy its buffer
-  req.protocol = line0.v.buf[2];
+  // https://developer.mozilla.org/en-US/docs/Web/HTTP/Guides/Messages
+  s8pair line = s8cutu8(raw, '\n'); // .head is next line, .tail is rest
+  if (!line.ok) ReqErr(BAD_REQUEST); // HTTP request always >1 line
+  s8pair seg = s8cutu8(line.head, ' '); // e.g. "POST /path/to/thing HTTP/1.1"
+  if (!seg.ok) ReqErr(BAD_REQUEST);
+
+  req.method = parse_http_method(seg.head);
+  if (!req.method) ReqErr(BAD_REQUEST);
+
+  seg = s8cutu8(seg.tail, ' ');
+  if (!seg.ok) ReqErr(BAD_REQUEST);
+
+  req.uri = seg.head;
+  req.protocol = seg.tail;
+
   s8map *headers = {0};
-  for (size i = 1; i < split.v.len; i++) {
-    if (s8blank(split.v.buf[i])) break; // TODO trailing headers...??
-    s8a_ header = s8split(store, scratch, split.v.buf[i], s8(": "), 1);
-    if (!header.ok) ReqErr(SERVICE_UNAVAILABLE);
-    if (header.v.len == 2)
-      headers = s8mapassoc(store, headers, header.v.buf[0], header.v.buf[1]);
+  while (line.tail.len) {
+    s8pair next = s8cutu8(line.tail, '\n');
+    if (next.ok) line = next;
+    else line = (s8pair){.head = line.tail, .tail = (s8){0}};
+    if (s8blank(line.head)) {
+      req.body = line.tail;
+      break; // blank line indicating end of metadata
+    }
+    s8pair header = s8cut(line.head, s8(": "));
+    if (!header.ok) ReqErr(BAD_REQUEST);
+    headers = s8mapassoc(store, headers, header.head, header.tail);
     req.headers = headers;
   }
+
   s8map *cookies = {0};
   // e.g. Cookie: name=value; name2=value2; name3=value3
   s8map *cookiekv = s8mapget(headers, s8("Cookie"));
   if (cookiekv) {
-    s8a_ cookiekvs = s8split(store, scratch, cookiekv->val, s8("; "), 32);
-    if (!cookiekvs.ok) ReqErr(SERVICE_UNAVAILABLE);
-    for (size i = 0; i < cookiekvs.v.len; i++) {
-      s8pair cookie = s8cutu8(cookiekvs.v.buf[i], '=');
-      if (!cookie.ok) ReqErr(SERVICE_UNAVAILABLE);
+    line = (s8pair){.head = (s8){0}, .tail = cookiekv->val};
+    while (line.tail.len) {
+      s8pair next = s8cut(line.tail, s8("; "));
+      if (next.ok) line = next;
+      else line = (s8pair){.head = line.tail, .tail = (s8){0}};
+      s8pair cookie = s8cutu8(line.head, '=');
+      if (!cookie.ok) ReqErr(BAD_REQUEST);
       cookies = s8mapassoc(store, cookies, cookie.head, cookie.tail);
+      req.cookies = cookies;
     }
-    req.cookies = cookies;
   }
   return req;
 }
@@ -523,6 +533,7 @@ void *worker(Workshop *workshop) {
     pthread_cond_wait(&server->work_waiting, &server->work_waiting_lock);
   pthread_mutex_unlock(&server->work_waiting_lock);
   */
+  // ╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴ as follows
   while (1) {
     pthread_mutex_lock(&server->work_waiting_lock);
     while ((qi = queue_mpop(&server->work.q, server->work.len, &save)) < 0)
@@ -583,7 +594,7 @@ void launch(Server *server) {
   server->store = alloc_arena(server->config.server_mem);
   server->scratch = alloc_arena(server->config.server_mem);
   if (!server->store.beg || !server->scratch.beg) fprintf(stderr, "💣 Failed to allocate server arenas.");
-  i32 np = nproc();
+  i32 np = nproc(); // TODO 2025-09-29 11:51:23 only if not configured?
   i32 nw = np == 1 ? np : np - 1;
   i32 rc = 0;
   Workshop *workshops = new (&server->store, Workshop, nw); // seemingly > 8KiB ea
