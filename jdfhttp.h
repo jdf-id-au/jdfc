@@ -302,11 +302,12 @@ size s8arenaprintf(arena *a, const char *format) {
 }
 
 Response add_headers(arena *store, arena scratch, Response res) {
+  // TODO  2025-09-29 13:40:10 Transfer-Encoding: chunked
+  // https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Content-Length
   // TODO should be conditional on client's invitation
   res.headers = s8mapassocl(store, res.headers, s8("Connection"), s8("keep-alive"));
-  if (!res.body) return res;
   s8 k = s8("Content-Length");
-  s8_ v = s8sprintf(&scratch, "%ti", s8llen(res.body));
+  s8_ v = s8sprintf(&scratch, "%ti", res.body ? s8llen(res.body) : 0);
   if (v.ok) res.headers = s8mapassocl(store, res.headers, k, v.v);
   else fprintf(stderr, "Error setting Content-Length\n");
   //printf("✏ Expecting Content-Length: %td\n", s8llen(res.body));
