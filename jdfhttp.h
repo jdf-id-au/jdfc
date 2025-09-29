@@ -75,6 +75,7 @@ typedef struct {
   s8l *body;
 } Response;
 
+// Runs within worker thread with its store and scratch arenas.
 typedef Response (*Handler)(arena *store, arena scratch, Request req);
 //                 ^^^^^^^
 
@@ -83,6 +84,8 @@ typedef struct {
   i32 port;
   i32 backlog; // max pending connection queue length
   u32 interface;
+  i32 rcvtimeo;
+  i32 sndtimeo;
   size server_mem;
   size client_mem;
   size worker_mem;
@@ -198,6 +201,8 @@ i32 nworkers(void) {
   make_server_fn(h, (Config){.domain = PF_INET,       \
                              .backlog = 10,           \
                              .interface = INADDR_ANY, \
+                             .rcvtimeo = 5,           \
+                             .sndtimeo = 5,           \
                              .server_mem = MiB(1),    \
                              .client_mem = MiB(1),    \
                              .worker_mem = MiB(1),    \
@@ -220,6 +225,18 @@ i32 set_nodelay(int sockfd) {
   if (setsockopt(sockfd, IPPROTO_TCP, TCP_NODELAY, (byte *)&yes, sizeof(i32)) <
       0) {
     perror("Failed to set nodelay");
+    exit(1);
+  }
+  return 0;
+}
+
+// https://stackoverflow.com/a/2939145/780743
+i32 set_timeout(int sockfd, int which, int seconds) {
+  struct timeval tv;
+  tv.tv_sec = seconds;
+  tv.tv_usec = 0;
+  if (setsockopt(sockfd, SOL_SOCKET, which, (byte *)&tv, sizeof tv) < 0) {
+    perror("Failed to set timeout");
     exit(1);
   }
   return 0;
@@ -516,6 +533,8 @@ void accept_client(EV_P_ ev_io *w, i32 events) {
   else {
     set_non_blocking(new_socket);
     set_nodelay(new_socket);
+    set_timeout(new_socket, SO_RCVTIMEO, server->config.rcvtimeo);
+    set_timeout(new_socket, SO_SNDTIMEO, server->config.sndtimeo);
     // Allocate arenas TODO monitor usage, tune
     arena client_store = alloc_arena(server->config.client_mem);
     arena client_scratch = alloc_arena(server->config.client_mem);

@@ -27,7 +27,7 @@
 
 Response handler(arena *store, arena scratch, Request req) {
   // TODO check and deal with req.error (and use it in jdfhttp.h)
-  if (!s8equal(req.uri, s8("/"))) return (Response){.status = NOT_FOUND}; // FIXME 2025-09-29 13:35:18 not closing connection
+  if (!s8equal(req.uri, s8("/"))) return (Response){.status = NOT_FOUND};
   
   s8map *headers = s8mapassocl(store, 0, s8("Content-Type"), s8("text/html; charset=UTF-8"));
   s8_ body = s8sprintf(
