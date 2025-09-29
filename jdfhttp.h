@@ -648,7 +648,11 @@ void *worker(Workshop *workshop) {
         // NB 2025-09-29 16:13:45 handler is currently also responsible for routing!
         res = server->handler(&workshop->store, workshop->scratch, req);
       }
-      // TODO  2025-09-29 14:30:27 SSE: how not to block worker?
+      // FIXME 2025-09-29 21:12:25 what stops two workers from
+      // serialising to client->deliver simultaneously? Response needs
+      // to follow the related Request. (& further considerations if
+      // impl SSE or WS) Need to claim spot in outgoing queue before
+      // (possibly expensive) calculation of response... Does writer need to be on main thread?
       serialise_response(&workshop->store, workshop->scratch, client, res);
       workshop->store.cur = workshop->store.beg; // NB 2025-09-29 12:44:43 reset arena!
     }
