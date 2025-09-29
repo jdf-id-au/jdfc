@@ -84,36 +84,48 @@ void render_enum(arena *store, arena scratch, bufout *b, s8 id, enum_values *val
   } while ((cur = cur->next));
   S("};\n");
   
-  S("const char *spell_"); W(id); S("[] = {\n");
+  S("const s8 spell_"); W(id); S("[] = {\n");
   cur = values;
   do {
     W(ind);
     S("[");
     W(cur->val.symbol);
-    S("] = \"");
+    S("] = s8(\"");
     s8_ sanname = sanitise(store, scratch, cur->val.name);
     W(sanname.v);
-    S("\",\n");
+    S("\"),\n");
   } while ((cur = cur->next));
   S("};\n");
-  
-  S("const char *describe_"); W(id); S("[] = {\n");
+
+  b32 describe = 0;
   cur = values;
   do {
-    W(ind);
-    S("[");
-    W(cur->val.symbol);
-    S("] = \"");
-    s8_ santext = sanitise(store, scratch, cur->val.text);
-    W(santext.v);
-    S("\",\n");
+    if (cur->val.text.len) {
+      describe = 1;
+      break;
+    }
   } while ((cur = cur->next));
-  S("};\n");
+
+  if (describe) {
+    S("const s8 describe_"); W(id); S("[] = {\n");
+    cur = values;
+    do {
+      W(ind);
+      S("[");
+      W(cur->val.symbol);
+      S("] = s8(\"");
+      s8 which = cur->val.text.len ? cur->val.text : cur->val.symbol;
+      s8_ santext = sanitise(store, scratch, which);
+      W(santext.v);
+      S("\"),\n");
+    } while ((cur = cur->next));
+    S("};\n");
+  }
   
   S("enum "); W(id); S(" parse_"); W(id); S("(s8 s) {\n");
   s8printf(scratch, s8write, b,
            "  for (size i = 0; i < %ti; i++)\n", count(values));
-  S("    if(s8equal(s, s8wrap(spell_"); W(id); S("[i], 1024)))\n");
+  S("    if(s8equal(s, spell_"); W(id); S("[i]))\n");
   S("      return (enum "); W(id); S(")i;\n");
   S("  return (enum "); W(id); S(")0;\n"); // should be INVALID_<ID>
   S("}\n");

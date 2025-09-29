@@ -102,7 +102,7 @@ i32 main(i32 argc, char *argv[]) {
       } else if (json_is_string(j_value)) {
         construct.name = json_s8_value(j_value);
         construct.symbol = symbolise(store, j_value);
-        construct.text = json_s8_value(j_value);
+        construct.text = (s8){0};
         values = enum_valuesappend(store, values, construct);
       } else {
         fprintf(stderr, "Invalid enum value definition: %s\n",

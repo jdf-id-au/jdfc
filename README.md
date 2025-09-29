@@ -7,4 +7,4 @@ Experimental [Wellons-inspired](https://nullprogram.com/blog/2023/10/08/) trip b
 Includes:
 - [multithreaded http server](jdfhttp.h) using libev, pthreads and lock-free concurrent queues
 - [date arithmetic functions](jdfdate.h)
-- [enhanced enum](enum_tools.h) code generation from json using jansson
+- [enhanced enum](make_constants.c) code generation from json using jansson

@@ -15,7 +15,10 @@
 //       s8("websocket")); res.headers = s8mapassocl(store, res.headers,
 //       s8("Connection"), s8("Upgrade")); res.headers =
 //           s8mapassocl(store, res.headers, s8("Sec-WebSocket-Accept"), );
-//       // https://developer.mozilla.org/en-US/docs/Web/API/WebSockets_API/Writing_WebSocket_servers 
+//       //
+// https://developer.mozilla.org/en-US/docs/Web/API/WebSockets_API/Writing_WebSocket_servers
+// server SHOULD verify Origin
+// clients MUST choose a new masking key for each frame
 //       // TODO openssl sha1; base64
 //     } else {
 //       res.status = BAD_REQUEST;
@@ -28,8 +31,7 @@
 Response handler(arena *store, arena scratch, Request req) {
   // TODO check and deal with req.error (and use it in jdfhttp.h)
   if (!s8equal(req.uri, s8("/"))) return (Response){.status = NOT_FOUND};
-  
-  s8map *headers = s8mapassocl(store, 0, s8("Content-Type"), s8("text/html; charset=UTF-8"));
+  Response res = add_content_type(store, 0, HTML);
   s8_ body = s8sprintf(
       store,
       "<!doctype html>"
@@ -41,7 +43,7 @@ Response handler(arena *store, arena scratch, Request req) {
       "<h1>Workshops</h1>",
       used(&req.client->server->store), capacity(&req.client->server->store),
       used(&req.client->store), capacity(&req.client->store), &req.client);
-  Response res = {0};
+  
   assert(body.ok);
   res.body = s8lappend(store, res.body, body.v);
   s8l *cur = res.body;
@@ -60,10 +62,14 @@ Response handler(arena *store, arena scratch, Request req) {
     res.body = 0;
     res.status = INTERNAL_SERVER_ERROR; 
   }
-  else {
-    res.status = OK;
-    res.headers = headers;
-  }
+  else res.status = OK;
+  return res;
+}
+
+Response sse_handler(arena *store, arena scratch, Request req) {
+  if (!s8equal(req.uri, s8("/sse"))) return (Response){.status = NOT_FOUND};
+  Response res = add_content_type(store, 0, EVENT_STREAM);
+  // TODO 2025-09-29 15:13:43 how not to block worker?
   return res;
 }
 

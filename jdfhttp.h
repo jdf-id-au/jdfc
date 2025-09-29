@@ -302,12 +302,6 @@ Request parse_request(arena *store, arena scratch, s8 raw) {
   return req;
 }
 
-s8map *content_type(arena *store, s8map *head, enum content_type content_type) {
-  s8mapassoc(store, head, s8("Content-Type"),
-             (s8){.buf = (u8 *)spell_content_type[content_type]});
-  return head;
-}
-
 // printf contents of arena. Terminates string in situ!
 size s8arenaprintf(arena *a, const char *format) {
   if (a->cur < a->end) *a->cur = 0;
@@ -318,14 +312,23 @@ size s8arenaprintf(arena *a, const char *format) {
   return printf(format, a->beg);
 }
 
+Response add_header(arena *store, Response *maybe, enum header h, s8 v) {
+  Response res = maybe ? *maybe : (Response){0};
+  res.headers = s8mapassocl(store, res.headers, spell_header[h], v);
+  return res;
+}
+
+Response add_content_type(arena *store, Response *maybe, enum content_type ty) {
+  return add_header(store, maybe, CONTENT_TYPE, describe_content_type[ty]);
+}
+
 Response add_headers(arena *store, arena scratch, Response res) {
   // TODO  2025-09-29 13:40:10 Transfer-Encoding: chunked
   // https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Content-Length
   // TODO should be conditional on client's invitation
-  res.headers = s8mapassocl(store, res.headers, s8("Connection"), s8("keep-alive"));
-  s8 k = s8("Content-Length");
+  add_header(store, &res, CONNECTION, s8("keep-alive"));
   s8_ v = s8sprintf(&scratch, "%ti", res.body ? s8llen(res.body) : 0);
-  if (v.ok) res.headers = s8mapassocl(store, res.headers, k, v.v);
+  if (v.ok) add_header(store, &res, CONTENT_LENGTH, v.v);
   else fprintf(stderr, "Error setting Content-Length\n");
   //printf("✏ Expecting Content-Length: %td\n", s8llen(res.body));
   return res;
@@ -355,12 +358,11 @@ size s8writeq(void *out, s8 s) {
 */
 void serialise_response(arena *store, arena scratch, Client *client, Response res) {
   qout *out = &client->deliver; // FIXME 2025-05-25 12:08:25 vuln to UAF? Can't reproduce
-  // FIXME 2025-05-25 12:09:08 
   s8 crlf = s8("\r\n");
   res = add_headers(store, scratch, res); // reassigning to pass-by-value parameter
   s8map *header = res.headers;
   s8printf(scratch, s8writeq, out, "HTTP/1.1 %i %s\r\n",
-           res.status, spell_http_status[res.status]); // TODO adapt to make_constants stuff when ready
+           res.status, spell_http_status[res.status]);
   do { // grug approve
     s8writeq(out, header->key);
     s8writeq(out, s8(": "));
@@ -603,8 +605,9 @@ void *worker(Workshop *workshop) {
       if (req.error == SERVICE_UNAVAILABLE) {
         unavailable(client->write_io.fd, "parse request");
         cleanup_client(server->loop, &client->write_io);
-      } // TODO 2025-05-25 16:02:09 REQUEST_EMPTY, INVALID_METHOD_LINE, ...
+      }
       Response res = server->handler(&workshop->store, workshop->scratch, req);
+      // TODO  2025-09-29 14:30:27 SSE: how not to block worker?
       serialise_response(&workshop->store, workshop->scratch, client, res);
       workshop->store.cur = workshop->store.beg; // NB 2025-09-29 12:44:43 reset arena!
     }
