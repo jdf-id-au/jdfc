@@ -597,9 +597,9 @@ void write_client(EV_P_ ev_io *w, i32 events) {
   }
   if (c.finished)
     printf(
-        "✅ Done, %ti B written, %ti B client arena use for %p (%td clients)\n",
+        "✅ Done, %ti B written, %ti B client arena use for %p (%d clients)\n",
         total_bytes_written, used(&client->store), (void *)client,
-        count(client->server->clients));
+        client->server->clients);
   else if (c.len)
     printf("➡️ Chunk written, message not finished %td B\n",
            c.len); // spacing required for terminal...?
