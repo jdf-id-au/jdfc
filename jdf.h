@@ -332,6 +332,7 @@ size KiB(u32 n) { return (1<<10) * n; }
 size MiB(u32 n) { return (1<<20) * n; }
 
 // Caller to check for null pointers, which fail silently.
+// Linker error when attempted `inline`...
 size copy(u8 *restrict dst, u8 *restrict src, size len) {
   if (!(dst && src)) return 0;
   for (size i = 0; i < len; i++) dst[i] = src[i];
@@ -620,6 +621,7 @@ s8_ u8fill(arena *buf, u8 with, size count) {
 }
 
 // Does effectively allocate by moving buf.cur, so MAYBE return type.
+// Also see s8printf.
 s8_ s8sprintf(arena *buf, const char *format, ...) {
   if (!buf || !buf->cur) return (s8_){0};
   byte *start = buf->cur;
@@ -639,7 +641,6 @@ s8_ s8sprintf(arena *buf, const char *format, ...) {
 
 // ───────────────────────────────────────────────── Lock-free concurrent queues
 // https://nullprogram.com/blog/2022/05/14
-// "inline"s are just expression of intent... 
 typedef _Atomic u32 queue; // typedef _Atomic ... is ok as per stdatomic.h
 // len must be positive, <= 32768, and a power of two.
 i32 queue_capacity(i32 len) {
@@ -647,7 +648,7 @@ i32 queue_capacity(i32 len) {
   return len - 1;
 }
 // ╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴ Multiple consumer
-inline i32 queue_mpop(queue *q, i32 len, u32 *save) {
+i32 queue_mpop(queue *q, i32 len, u32 *save) {
   u32 r = *save = *q;
   i32 mask = len - 1;
   i32 head = r       & mask;
@@ -655,12 +656,12 @@ inline i32 queue_mpop(queue *q, i32 len, u32 *save) {
   return head == tail ? -1 : tail;
 }
 // NB element load must be atomic
-inline b32 queue_mpop_commit(queue *q, u32 save) {
+b32 queue_mpop_commit(queue *q, u32 save) {
   return atomic_compare_exchange_strong(q, &save, save + 0x10000);
 }
 // ╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴ Single consumer
 // Returns index for next value to be popped. -1 when empty.
-inline i32 queue_pop(queue *q, i32 len) {
+i32 queue_pop(queue *q, i32 len) {
   // printf("queue_pop %p 0x%x %i\n", q, *q, len);
   u32 r = *q; // ? memory_order_acquire from stdatomic.h
   i32 mask = len - 1;
@@ -672,7 +673,7 @@ void queue_pop_commit(queue *q) {
   *q += 0x10000; // 0x10000 == 1u << 16 i.e. increment tail ; ? memory_order_release
 }
 // Returns index for next value to be pushed. -1 when full.
-inline i32 queue_push(queue *q, i32 len) {
+i32 queue_push(queue *q, i32 len) {
   // printf("queue_push %p 0x%x %i\n", q, *q, len);
   u32 r = *q;
   i32 mask = len - 1;
@@ -685,7 +686,7 @@ inline i32 queue_push(queue *q, i32 len) {
   return next == tail ? -1 : head;
 }
 // After storing into (separately allocated) element array.
-inline void queue_push_commit(queue *q) {
+void queue_push_commit(queue *q) {
   *q += 1;
 }
 // ╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴ Concurrent output buffer
@@ -702,7 +703,7 @@ qout_ make_qout(arena *a, i32 len) {
   if (!buf) return nil;
   return (qout_) { .v = {.buf = (s8){.buf = buf, .len = len}, .q = 0 } };
 }
-inline size read_qout(qout *qo, s8 buf) {
+size read_qout(qout *qo, s8 buf) {
   i32 qi = 0;
   size bi = 0;
   while ((qi = queue_pop(&qo->q, qo->buf.len))) {
@@ -712,7 +713,7 @@ inline size read_qout(qout *qo, s8 buf) {
   }
   return bi;
 }
-inline size write_qout(qout *qo, u8 *buf, size maxlen) {
+size write_qout(qout *qo, u8 *buf, size maxlen) {
   i32 qi = 0;
   i32 bi = 0;
   while (1) {
@@ -766,6 +767,7 @@ size s8write(void *out, s8 s) {
   return total_copied;
 }
 
+// Also see s8sprintf.
 i32 s8printf(arena scratch, Writer writer, void *out, const char *format, ...) {
   if (!scratch.beg) return -1;
   assert(scratch.beg == scratch.cur);

@@ -95,10 +95,27 @@ typedef struct {
   size client_mem;
   size worker_mem;
   i32 workers;
-  size outbuf;
+  size chunk_size; // outgoing
   arena store;
   arena scratch;
 } Config; // see make_server macro for defaults
+
+enum direction {
+  WRITE, // standby for next response e.g. server sent events, transfer-encoding chunked
+  READ, // listen for next request e.g. normal request
+  BOTH // full duplex e.g. websocket (future)
+};
+
+typedef struct product Product; // forward decl
+
+typedef struct { // after jdf.h bufout
+  u8 *buf;
+  size len;
+  size cap;
+  enum direction then;
+  b32 finished; // 1 = end of current message
+  Product *dest; // for workshop.chunk's benefit
+} Chunk;
 
 typedef struct {
   Server *server;
@@ -106,11 +123,12 @@ typedef struct {
   arena scratch;
   pthread_t thread;
   ev_io write_io;
+  Chunk pending; // under construction, before copy to Product->chunks
 } Workshop; // Resources for one worker!
 
 ARRAY(Workshops, Workshop)
 
-typedef struct {
+typedef struct { // allocated in Server arena
   _Atomic Request *requests;
   // simpler than _Atomic Requests *requests from ARRAY(Requests, Request)
   // because _Atomic struct member access is UB:
@@ -135,14 +153,42 @@ typedef struct server {
   pthread_mutex_t work_waiting_lock; // just required for cond
 } Server;
 
+typedef struct product { // allocated in Client arena
+  _Atomic Chunk *chunks;
+  size len;
+  queue q;
+} Product; // Concurrent queue (single consumer)
+
+MAYBE(Product)
+
 typedef struct client {
   Server *server;
   arena store;
   arena scratch;
   ev_io read_io;
   ev_io write_io;
-  qout deliver; // FIXME 2025-09-30 08:20:29 needn't be a byte at a time...
+  Product deliver;
 } Client; // Server's resources for serving one client // TODO 2025-09-29 22:24:48 rename to Connection ?
+
+
+// Run on main thread (by Client)
+Product_ make_Product(arena *a, i32 len, size chunk_size) {
+  Product_ nil = (Product_){0};
+  i32 cap = queue_capacity(len);
+  if (!cap) return nil;
+  _Atomic Chunk *chunks = new (a, _Atomic Chunk, cap);
+  if (!chunks) return nil;
+  u8 *buf = new (a, u8, cap * chunk_size);
+  if (!buf) return nil;
+  for (size i = 0; i < cap; i++) {
+    // All at once so no UB _Atomic struct member access.
+    chunks[i] = (Chunk) {
+      .buf = &buf[i * chunk_size],
+      .cap = chunk_size
+    };
+  }
+  return (Product_) { .v = {.chunks = chunks, .len = len, .q = 0} };
+}
 
 // ────────────────────────────────────────────────────────────────────── Server
 Server make_server_fn(Handler h, Config c) {
@@ -213,7 +259,7 @@ i32 nworkers(void) {
                              .client_mem = MiB(1),    \
                              .worker_mem = MiB(1),    \
                              .workers = nworkers(),   \
-                             .outbuf = KiB(4),        \
+                             .chunk_size = KiB(4),    \
                              __VA_ARGS__})
 
 i32 set_non_blocking(int sockfd) {
@@ -353,30 +399,68 @@ Response add_headers(arena *store, arena scratch, Response res) {
   return res;
 }
 
-size s8writeq(void *out, s8 s) {
-  qout *q = (qout *)out; // see Writer
-  if (!q->buf.buf) {
-    fprintf(stderr, "💣 Tried to write to uninitialised qout\n");
+void flushc(Chunk *c) {
+  Product *p = c->dest;
+  i32 idx = 0; // impl after write_qout
+  while (1) {
+    idx = queue_push(&p->q, p->len);
+    if (idx < 0) {
+      printf("⚠ Product queue full, chunk flush failed.\n");
+      break;
+    } 
+    // shallow copy to work around Atomic struct member access UB
+    Chunk tmp = p->chunks[idx];
+    // tmp.buf is client.deliver.chunks.buf, allocated in Client arena by `make_Product`
+    // c->buf is workshop.pending.buf, allocated in Workshop arena by `launch`
+    copy(tmp.buf, c->buf, c->len);
+    tmp.len = c->len;
+    tmp.then = c->then;
+    tmp.finished = c->finished;
+    p->chunks[idx] = tmp;
+    queue_push_commit(&p->q);
+  }
+}
+
+size s8writec(void *out, s8 s) { // impl after s8write
+  Chunk *c = (Chunk *)out; // see Writer
+  // Write s to p consecutive p->chunks. Caller's responsibilty to flush at EOM (via finishc).
+  if (!c->buf) {
+    fprintf(stderr, "💣 Tried to write to uninitialised chunk\n");
     return 0;
   }
   if (!s.buf) {
-    // perror("Tried to write unitialised string to qout");
+    fprintf(stderr, "💣 Tried to write uninitialised string\n");
     return 0;
   }
-  // dumbp(s);
-  size bytes_written = write_qout(q, s.buf, s.len);
-  if (bytes_written < s.len) 
-    // NB 2025-05-25 13:30:51 doesn't seem to be happening
-    printf("⚠ only wrote %td/%td bytes\n", bytes_written, s.len);
-  return bytes_written;
+  u8 *buf = s.buf;
+  u8 *end = endof(s);
+  size total_copied = 0;
+  while (buf < end) {
+    i32 avail = c->cap - c->len;
+    i32 count = (avail < end - buf) ? avail : (i32)(end - buf);
+    copy(c->buf + c->len, buf, count);
+    buf += count;
+    c->len += count;
+    total_copied += count;
+    if (c->len == c->cap) flushc(c);
+  }
+  return total_copied;
+}
+
+void finishc(Chunk *c, enum direction then) {
+  c->finished = 1;
+  c->then = then;
+  flushc(c);
 }
 
 /*
-  Runs on worker thread. Expect to block when qout full, until client loop
-  drains it from the main thread.
+  Runs on worker thread. Expect to block when Product queue full,
+  until client loop drains it from the main thread.
 */
-void serialise_response(arena *store, arena scratch, Response res) {
-  qout *out = &res.client->deliver;
+void serialise_response(Workshop *shop, Response res) {
+  arena *store = &shop->store;
+  arena scratch = shop->scratch;
+  Chunk *out = &shop->pending;
   s8 crlf = s8("\r\n");
   // TODO 2025-09-29 18:50:35 for SSE, could branch if res.type ==
   // EVENT_STREAM... (after inital headers sent) Would adjust
@@ -389,19 +473,19 @@ void serialise_response(arena *store, arena scratch, Response res) {
   // Responses could be Res-or-Update union
   res = add_headers(store, scratch, res); // reassigning to pass-by-value parameter
   s8map *header = res.headers;
-  s8printf(scratch, s8writeq, out, "HTTP/1.1 %i %s\r\n",
+  s8printf(scratch, s8writec, out, "HTTP/1.1 %i %s\r\n",
            res.status, spell_http_status[res.status]);
   while (header) { // grug approve
-    s8writeq(out, header->key);
-    s8writeq(out, s8(": "));
-    s8writeq(out, header->val);
-    s8writeq(out, crlf);
+    s8writec(out, header->key);
+    s8writec(out, s8(": "));
+    s8writec(out, header->val);
+    s8writec(out, crlf);
     header = header->next;
   }
-  s8writeq(out, crlf);
+  s8writec(out, crlf);
   for (s8l *node = res.body; node; node = node->next)
-    s8writeq(out, node->val);
-  s8writeq(out, s8("\0")); // message finished, detected by write_client
+    s8writec(out, node->val);
+  finishc(out, READ); // FIXME 2025-09-30 11:41:06 WRITE if SSE
   printf("📣 %i\n", res.status);
 }
 
@@ -453,41 +537,34 @@ void unavailable(i32 sock, char *msg) {
  */
 void write_client(EV_P_ ev_io *w, i32 events) {
   Client *client = (Client *)w->data;
-  qout *qo = &client->deliver;
-  size outbuf_size = client->server->config.outbuf;
-  arena scratch = client->scratch; // by value
-  u8 *buf = new (&scratch, u8, outbuf_size);
+  arena scratch = client->scratch; 
+  Product *p = &client->deliver;
+
+  i32 idx = queue_pop(&p->q, p->len);
+  if (idx < 0) {
+    // printf("Queue empty\n");
+    return;
+  }
+  Chunk c = p->chunks[idx]; // c.dest is irrelevant here
+  u8 *buf = new (&scratch, u8, client->server->config.chunk_size);
   if (!buf) {
     unavailable(w->fd, "allocate out buffer");
     cleanup_client(EV_A_ w);
     return;
   }
-  size bytes_read = 0;
-  b32 complete = 0;
-  while (!complete && bytes_read < outbuf_size) {
-    // pop a byte at time from qo into local buffer
-    i32 qidx = queue_pop(&qo->q, qo->buf.len);
-    if (qidx < 0) {
-      //printf("qout empty\n"); // NB 2025-05-25 14:25:18 happens minimum once per request
-      break; // empty
-    }
-    u8 b = qo->buf.buf[qidx];
-    if (b) buf[bytes_read++] = b;
-    else complete = 1; // message finished as indicated by \0
-    queue_pop_commit(&qo->q);
-  }
-  // FIXME ?wait for queue to be readable ?why necessary
-  if (bytes_read == 0) return;
+  copy(buf, c.buf, c.len); // defensive copy, would be hard to debug if winged it
+  queue_pop_commit(&p->q);
+
   size total_bytes_written = 0;
   size bytes_written = 0;
   while (1) {
-    bytes_written = write(w->fd, buf, bytes_read);
-    if (bytes_written == 0) { // TODO check semantics, client closed connection?
+    bytes_written = write(w->fd, buf, c.len);
+    if (bytes_written == 0) {
       printf("Write client wrote nothing\n");
       //cleanup_client(EV_A_ w);
     } else if (bytes_written < 0) {
       if (errno == EAGAIN || errno == EWOULDBLOCK) {
-        // just try again? NB don't lose qo data!
+        // just try again? FIXME 2025-09-30 12:39:03 keeping track?
         printf("Should try again?\n");
       } else {
         perror("Error writing to client");
@@ -495,18 +572,29 @@ void write_client(EV_P_ ev_io *w, i32 events) {
       }
     } else {
       total_bytes_written += bytes_written;
-      // printf("Wrote %td/%td bytes\n", bytes_written, total_bytes_written); // NB 2025-05-25 14:29:12 generally in one go
     }
-    if (total_bytes_written < bytes_read) {
-      printf("Incomplete socket write (%li/%li B), trying to continue.\n", bytes_written, bytes_read);
+    if (total_bytes_written < c.len) {
+      printf("Incomplete socket write (%li/%li B), trying to continue.\n", bytes_written, c.len);
     } else break;
   }
-  if (complete) {
+  if (c.finished) {
     printf("✅ Done, %ti B written, %ti B client arena use for %p\n",
            total_bytes_written, used(&client->store), (void *)client);
-    client_set_readable(EV_A_ w, 1);
-    client_set_writable(EV_A_ w, 0); // unset writable when write actually finished
-  } else printf("➡️  Partial read %td B\n", bytes_read); // spacing required for terminal...?
+    switch (c.then) { // clang exhaustiveness checking ftw
+    case WRITE:
+      client_set_writable(EV_A_ w, 1);
+      client_set_readable(EV_A_ w, 0);
+      break;
+    case READ:
+      client_set_writable(EV_A_ w, 0);
+      client_set_readable(EV_A_ w, 1);
+      break;
+    case BOTH:
+      client_set_writable(EV_A_ w, 1);
+      client_set_readable(EV_A_ w, 1);
+      break;
+    }
+  } else printf("➡️ Chunk written, message not finished %td B\n", c.len); // spacing required for terminal...?
 }
 
 b32 enqueue_request(Request req) {
@@ -592,7 +680,10 @@ void accept_client(EV_P_ ev_io *w, i32 events) {
     
     ev_io_init(&client->read_io, read_client, new_socket, EV_READ);
     client->read_io.data = client; // I'm a woozie (see libev doc)
-    qout_ deliver = make_qout(&client->store, server->config.outbuf);
+
+    // TODO 2025-09-30 09:04:44 make len configurable
+    // enqueue up to 32 arbitrarily-sized Chunks
+    Product_ deliver = make_Product(&client->store, 32, server->config.chunk_size);
     if (deliver.ok) client->deliver = deliver.v;
     else {
       unavailable(new_socket, "allocate out queue");
@@ -669,11 +760,11 @@ void *worker(Workshop *workshop) {
         // client->deliver should buffer 32KiB.
         res = server->handler(&workshop->store, workshop->scratch, req);
       }
-
       res.client = client;
+      workshop->pending.dest = &client->deliver;
       // TODO 2025-09-29 22:21:10 some server-level notion of Client
       // for session state.
-      serialise_response(&workshop->store, workshop->scratch, res);
+      serialise_response(workshop, res);
       workshop->store.cur = workshop->store.beg; // NB 2025-09-29 12:44:43 reset arena!
     }
   }
@@ -701,7 +792,7 @@ void launch(Server *server) {
   if (!server->store.beg || !server->scratch.beg) fprintf(stderr, "💣 Failed to allocate server arenas.");
   i32 nw = server->config.workers;
   i32 rc = 0;
-  Workshop *workshops = new (&server->store, Workshop, nw); // seemingly > 8KiB ea
+  Workshop *workshops = new (&server->store, Workshop, nw);
   if (!workshops) {
     fprintf(stderr, "💣 Failed to allocate workshops\n");
     exit(1);
@@ -710,6 +801,13 @@ void launch(Server *server) {
     workshops[i].server = server;
     workshops[i].store = alloc_arena(server->config.worker_mem);
     workshops[i].scratch = alloc_arena(server->config.worker_mem);
+    workshops[i].pending = (Chunk) {
+      .buf = new(&workshops[i].store, u8, server->config.chunk_size),
+    };
+    if (!workshops[i].pending.buf) {
+      fprintf(stderr, "💣 Failed to allocate workshop %td pending buffer\n", i);
+      exit(1);
+    }
   }
   server->workshops.buf = workshops;
   size successful = 0;
@@ -717,7 +815,6 @@ void launch(Server *server) {
     if (!(rc = pthread_create(&(workshops[i].thread), 0, (Worker)worker,
                               &workshops[i]))) {
       server->workshops.len = successful++;
-      
     } else {
       fprintf(stderr, "Unable to create thread %td: %i\n", i, rc);
       if (i == 0) exit(1); // TODO could provide single threaded impl?
