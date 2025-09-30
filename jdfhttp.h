@@ -401,27 +401,35 @@ Response add_headers(arena *store, arena scratch, Response res) {
 
 void flushc(Chunk *c) {
   Product *p = c->dest;
+  if (!p) {
+    fprintf(stderr, "💣 Tried to flush to uninitialised destination\n");
+    return;
+  }
   i32 idx = 0; // impl after write_qout
   // printf("Trying to flush %td bytes", c->len);
   // s8 insp = (s8){.buf = c->buf, .len = c->len};
   // log_debug(insp);
-  while (1) {
-    idx = queue_push(&p->q, p->len);
-    if (idx < 0) {
-      //printf("⚠ Product queue full, chunk flush failed.\n");
-      break;
-    } 
-    // shallow copy to work around Atomic struct member access UB
-    Chunk tmp = p->chunks[idx];
-    // tmp.buf is client.deliver.chunks.buf, allocated in Client arena by `make_Product`
-    // c->buf is workshop.pending.buf, allocated in Workshop arena by `launch`
-    copy(tmp.buf, c->buf, c->len);
-    tmp.len = c->len;
-    tmp.then = c->then;
-    tmp.finished = c->finished;
-    p->chunks[idx] = tmp;
-    queue_push_commit(&p->q);
-  }
+  idx = queue_push(&p->q, p->len);
+  if (idx < 0) {
+    printf("⚠ Product queue full, chunk flush failed.\n");
+    return;
+  } 
+  // shallow copy to work around Atomic struct member access UB
+  Chunk tmp = p->chunks[idx];
+  // tmp.buf is client.deliver.chunks.buf, allocated in Client arena by `make_Product`
+  // c->buf is workshop.pending.buf, allocated in Workshop arena by `launch`
+  copy(tmp.buf, c->buf, c->len);
+  tmp.len = c->len;
+  tmp.then = c->then;
+  tmp.finished = c->finished;
+  p->chunks[idx] = tmp;
+  queue_push_commit(&p->q);
+
+  // Reset chunk for reuse! FIXME 2025-09-30 15:15:06 Error-prone
+  c->len = 0;
+  c->then = WRITE;
+  c->finished = 0;
+  // keep buf, cap, dest
 }
 
 size s8writec(void *out, s8 s) { // impl after s8write
@@ -447,7 +455,6 @@ size s8writec(void *out, s8 s) { // impl after s8write
     total_copied += count;
     if (c->len == c->cap) flushc(c);
   }
-  printf("s8write8  %td B ", total_copied);
   return total_copied;
 }
 
@@ -771,10 +778,11 @@ void *worker(Workshop *workshop) {
       }
       res.client = client;
       workshop->pending.dest = &client->deliver;
-      // TODO 2025-09-29 22:21:10 some server-level notion of Client
-      // for session state.
+      // TODO 2025-09-29 22:21:10 some server-level notion of Client for session state.
       serialise_response(workshop, res);
-      workshop->store.cur = workshop->store.beg; // NB 2025-09-29 12:44:43 reset arena!
+      // Reset back to just original workshop.pending.buf allocation from `launch`.
+      // FIXME 2025-09-30 15:40:08 error prone
+      workshop->store.cur = workshop->store.beg + server->config.chunk_size;
     }
   }
 }
