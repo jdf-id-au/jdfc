@@ -643,9 +643,13 @@ s8_ s8sprintf(arena *buf, const char *format, ...) {
 // https://nullprogram.com/blog/2022/05/14
 typedef _Atomic u32 queue; // typedef _Atomic ... is ok as per stdatomic.h
 // len must be positive, <= 32768, and a power of two.
-i32 queue_capacity(i32 len) {
-  if ((len <= 0) || (len > 1 << 16) || (len & (len -1))) return 0;
-  return len - 1;
+i32 queue_capacity(i32 cap) {
+  i32 len = cap + 1;
+  if ((len <= 0) || (len > 1 << 16) || (len & (len - 1))) {
+    fprintf(stderr, "Invalid queue capacity: %d", cap);
+    return 0; 
+  }
+  return cap;
 }
 // ╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴ Multiple consumer
 i32 queue_mpop(queue *q, i32 cap, u32 *save) {
@@ -695,9 +699,9 @@ typedef struct {
   queue q;
 } qout;
 MAYBE(qout)
-qout_ make_qout(arena *a, i32 len) {
+qout_ make_qout(arena *a, i32 cap) {
   qout_ nil = (qout_){0};
-  i32 cap = queue_capacity(len);
+  cap = queue_capacity(cap);
   if (!cap) return nil;
   u8 *buf = new (a, u8, cap);
   if (!buf) return nil;
@@ -836,11 +840,11 @@ void debytes(i32 fd, void *val, size len) { // too cool for stdio.h printf
   oswrite(fd, (u8 *)"\n", 1);
 }
 
-#define inspect(ptr)                                 \
+#define inspect(ptr)                                  \
   s8write_(2, s8("Contents of pointer " #ptr ":"));   \
   debytes(2, ptr, sizeof(*(ptr)))
 
-#define log_debug(s)                            \
+#define log_debug(s)                              \
   s8writefd(2, s8("Value of " #s ": "));          \
   s8log(2, s)
 
@@ -924,7 +928,7 @@ b32 free_arena(arena *a) {
   a->beg = 0;
   a->cur = 0;
   a->end = 0;
-  free(me);
+  free(me); // safe even if null
   return 1;
 }
 

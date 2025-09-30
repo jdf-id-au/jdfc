@@ -94,8 +94,10 @@ typedef struct {
   size server_mem;
   size client_mem;
   size worker_mem;
+  // size max_mem; // NB 2025-09-30 22:04:49 can't see libev and libpthread memory
   i32 workers;
   size chunk_size; // outgoing
+  // i32 chunk_queue_cap; // e.g. 31
   arena store;
   arena scratch;
 } Config; // see make_server macro for defaults
@@ -138,6 +140,11 @@ typedef struct { // allocated in Server arena
 
 MAYBE(Work)
 
+b32 client_eq(Client *a, Client *b) {
+  return a == b;
+}
+SET_LIST(Clients, Client *, client_eq)
+  
 typedef struct server {
   Config config;
   i32 socket;
@@ -151,6 +158,7 @@ typedef struct server {
   // https://randu.org/tutorials/threads/
   pthread_cond_t work_waiting;
   pthread_mutex_t work_waiting_lock; // just required for cond
+  Clients *clients;
 } Server;
 
 typedef struct product { // allocated in Client arena
@@ -172,9 +180,9 @@ typedef struct client {
 
 
 // Run on main thread (by Client)
-Product_ make_Product(arena *a, i32 len, size chunk_size) {
+Product_ make_Product(arena *a, i32 cap, size chunk_size) {
   Product_ nil = (Product_){0};
-  i32 cap = queue_capacity(len);
+  cap = queue_capacity(cap);
   if (!cap) return nil;
   _Atomic Chunk *chunks = new (a, _Atomic Chunk, cap);
   if (!chunks) return nil;
@@ -506,6 +514,8 @@ void client_cleanup_basics(arena *store, arena *scratch, i32 fd) {
 
 void cleanup_client(EV_P_ ev_io *w) {
   Client *client = (Client *)w->data;
+  Server *server = client->server;
+  server->clients = Clientsdisj(server->clients, client);
   // https://metacpan.org/dist/EV/view/libev/ev.pod#ev_TYPE_stop-(loop,-ev_TYPE-*watcher)
   ev_io_stop(EV_A_ &client->read_io);
   ev_io_stop(EV_A_ &client->write_io);
@@ -586,9 +596,11 @@ void write_client(EV_P_ ev_io *w, i32 events) {
       printf("Incomplete socket write (%li/%li B), trying to continue.\n", bytes_written, c.len);
     } else break;
   }
-  if (c.finished) 
-    printf("✅ Done, %ti B written, %ti B client arena use for %p\n",
-           total_bytes_written, used(&client->store), (void *)client);
+  if (c.finished)
+    printf(
+        "✅ Done, %ti B written, %ti B client arena use for %p (%td clients)\n",
+        total_bytes_written, used(&client->store), (void *)client,
+        count(client->server->clients));
   else if (c.len)
     printf("➡️ Chunk written, message not finished %td B\n",
            c.len); // spacing required for terminal...?
@@ -695,12 +707,17 @@ void accept_client(EV_P_ ev_io *w, i32 events) {
     ev_io_init(&client->read_io, read_client, new_socket, EV_READ);
     client->read_io.data = client; // I'm a woozie (see libev doc)
 
-    // TODO 2025-09-30 09:04:44 make len configurable
-    // enqueue up to 32 arbitrarily-sized Chunks
-    Product_ deliver = make_Product(&client->store, 32, server->config.chunk_size);
+    // TODO 2025-09-30 09:04:44 make cap configurable
+    Product_ deliver = make_Product(&client->store, 31, server->config.chunk_size);
     if (deliver.ok) client->deliver = deliver.v;
     else {
       unavailable(new_socket, "allocate out queue");
+      client_cleanup_basics(&client->store, &client->scratch, new_socket);
+      return;
+    }
+    server->clients = Clientsconj(&server->store, server->clients, client);
+    if (!server->clients) {
+      unavailable(new_socket, "allocate clients list");
       client_cleanup_basics(&client->store, &client->scratch, new_socket);
       return;
     }
@@ -763,7 +780,7 @@ void *worker(Workshop *workshop) {
 
         // https://developer.mozilla.org/en-US/docs/Web/HTTP/Guides/Connection_management_in_HTTP_1.x
         // Electing not to implement pipelining ("not activated by
-        // default in modern browsers"!) or HTTP/2 or /3. Client can
+        // default in modern browsers"!), or HTTP/2 or /3. Client can
         // open multiple connections (resulting in multiple jdfhttp
         // Clients, probably served by different workers/threads).
 
@@ -787,9 +804,9 @@ void *worker(Workshop *workshop) {
 
 typedef void *(*Worker)(void *);
 
-Work_ make_Work(arena *a, i32 len) {
+Work_ make_Work(arena *a, i32 cap) {
   Work_ nil = (Work_){0};
-  i32 cap = queue_capacity(len);
+  cap = queue_capacity(cap);
   if (!cap) return nil;
   _Atomic Request *requests = new (a, _Atomic Request, cap);
   if (!requests) return nil;
@@ -838,7 +855,7 @@ void launch(Server *server) {
       break;
     }
   printf("Set up %ti workshops\n", successful);
-  Work_ work = make_Work(&server->store, 32);
+  Work_ work = make_Work(&server->store, 31);
   if (!work.ok) {
     fprintf(stderr, "💣 Failed to make work queue\n");
     exit(1);
