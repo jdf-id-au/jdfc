@@ -143,7 +143,6 @@ MAYBE(Work)
 b32 client_eq(Client *a, Client *b) {
   return a == b;
 }
-SET_LIST(Clients, Client *, client_eq)
   
 typedef struct server {
   Config config;
@@ -158,7 +157,7 @@ typedef struct server {
   // https://randu.org/tutorials/threads/
   pthread_cond_t work_waiting;
   pthread_mutex_t work_waiting_lock; // just required for cond
-  Clients *clients;
+  i32 clients; // start with count TODO 2025-09-30 23:15:55 linked list across client arenas??
 } Server;
 
 typedef struct product { // allocated in Client arena
@@ -515,7 +514,7 @@ void client_cleanup_basics(arena *store, arena *scratch, i32 fd) {
 void cleanup_client(EV_P_ ev_io *w) {
   Client *client = (Client *)w->data;
   Server *server = client->server;
-  server->clients = Clientsdisj(server->clients, client);
+  server->clients--;
   // https://metacpan.org/dist/EV/view/libev/ev.pod#ev_TYPE_stop-(loop,-ev_TYPE-*watcher)
   ev_io_stop(EV_A_ &client->read_io);
   ev_io_stop(EV_A_ &client->write_io);
@@ -715,12 +714,7 @@ void accept_client(EV_P_ ev_io *w, i32 events) {
       client_cleanup_basics(&client->store, &client->scratch, new_socket);
       return;
     }
-    server->clients = Clientsconj(&server->store, server->clients, client);
-    if (!server->clients) {
-      unavailable(new_socket, "allocate clients list");
-      client_cleanup_basics(&client->store, &client->scratch, new_socket);
-      return;
-    }
+    server->clients++;
     client_set_readable(EV_A_ &client->read_io, 1);
       
     // This is started and stopped conditionally on whether there is data to
