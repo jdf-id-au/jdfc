@@ -94,8 +94,8 @@ typedef struct {
   size server_mem;
   size client_mem;
   size worker_mem;
-  // size max_mem; // NB 2025-09-30 22:04:49 can't see libev and libpthread memory
-  i32 workers;
+  i32 clients; // max
+  i32 workers; // exact
   size chunk_size; // outgoing
   // i32 chunk_queue_cap; // e.g. 31
   arena store;
@@ -140,9 +140,7 @@ typedef struct { // allocated in Server arena
 
 MAYBE(Work)
 
-b32 client_eq(Client *a, Client *b) {
-  return a == b;
-}
+ARRAY(Clients, Client *)
   
 typedef struct server {
   Config config;
@@ -157,7 +155,7 @@ typedef struct server {
   // https://randu.org/tutorials/threads/
   pthread_cond_t work_waiting;
   pthread_mutex_t work_waiting_lock; // just required for cond
-  i32 clients; // start with count TODO 2025-09-30 23:15:55 linked list across client arenas??
+  Clients clients;
 } Server;
 
 typedef struct product { // allocated in Client arena
@@ -176,7 +174,6 @@ typedef struct client {
   ev_io write_io;
   Product deliver;
 } Client; // Server's resources for serving one client // TODO 2025-09-29 22:24:48 rename to Connection ?
-
 
 // Run on main thread (by Client)
 Product_ make_Product(arena *a, i32 cap, size chunk_size) {
@@ -256,6 +253,7 @@ i32 nworkers(void) {
   return np==1 ? np : np-1;
 }
 
+// Slightly misleading name because launch does most of resource alloc.
 #define make_server(h, ...) /* default config */      \
   make_server_fn(h, (Config){.domain = PF_INET,       \
                              .backlog = 10,           \
@@ -265,6 +263,7 @@ i32 nworkers(void) {
                              .server_mem = MiB(1),    \
                              .client_mem = MiB(1),    \
                              .worker_mem = MiB(1),    \
+                             .clients = 1024,         \
                              .workers = nworkers(),   \
                              .chunk_size = KiB(4),    \
                              __VA_ARGS__})
@@ -505,6 +504,42 @@ void serialise_response(Workshop *shop, Response res) {
   printf("📣 %i\n", res.status);
 }
 
+// TODO 2025-10-01 07:36:32 could work up into general SET_ARRAY macro
+b32 add_client(Server *server, Client *client) {
+  Client **available = 0; // first zero value (caused by remove_client)
+  Client **end = endof(server->clients);
+  for (Client **cur = server->clients.buf; cur < end; cur++) {
+    if (*cur == client) return 0; // already there
+    else if (!*cur) available = cur; // but keep scanning
+  }
+  if (available) {
+    *available = client;
+    return 1;
+  }
+  fprintf(stderr, "Unable to track client!\n");
+  return 0;
+}
+
+b32 remove_client(Server *server, Client *client) {
+  Client **end = endof(server->clients);
+  // Always scans whole array.
+  for (Client **cur = server->clients.buf; cur < end; cur++) {
+    if (*cur != client) continue;
+    *cur = 0;
+    return 1;
+  }
+  return 0;
+}
+
+i32 count_clients(Server *server) {
+  Client **end = endof(server->clients);
+  i32 n = 0;
+  for (Client **cur = server->clients.buf; cur < end; cur++) {
+    if (*cur) n++;
+  }
+  return n;
+}
+
 void client_cleanup_basics(arena *store, arena *scratch, i32 fd) {
   close(fd);
   free_arena(scratch); // needs to be freed first because *client itself is within client->store span
@@ -514,7 +549,7 @@ void client_cleanup_basics(arena *store, arena *scratch, i32 fd) {
 void cleanup_client(EV_P_ ev_io *w) {
   Client *client = (Client *)w->data;
   Server *server = client->server;
-  server->clients--;
+  remove_client(server, client);
   // https://metacpan.org/dist/EV/view/libev/ev.pod#ev_TYPE_stop-(loop,-ev_TYPE-*watcher)
   ev_io_stop(EV_A_ &client->read_io);
   ev_io_stop(EV_A_ &client->write_io);
@@ -599,7 +634,7 @@ void write_client(EV_P_ ev_io *w, i32 events) {
     printf(
         "✅ Done, %ti B written, %ti B client arena use for %p (%d clients)\n",
         total_bytes_written, used(&client->store), (void *)client,
-        client->server->clients);
+        count_clients(client->server));
   else if (c.len)
     printf("➡️ Chunk written, message not finished %td B\n",
            c.len); // spacing required for terminal...?
@@ -714,7 +749,7 @@ void accept_client(EV_P_ ev_io *w, i32 events) {
       client_cleanup_basics(&client->store, &client->scratch, new_socket);
       return;
     }
-    server->clients++;
+    add_client(server, client);
     client_set_readable(EV_A_ &client->read_io, 1);
       
     // This is started and stopped conditionally on whether there is data to
@@ -815,12 +850,13 @@ void sigint_cb(EV_P_ ev_signal *w, i32 events) {
 void launch(Server *server) {
   server->store = alloc_arena(server->config.server_mem);
   server->scratch = alloc_arena(server->config.server_mem);
-  if (!server->store.beg || !server->scratch.beg) fprintf(stderr, "💣 Failed to allocate server arenas.");
+  if (!server->store.beg || !server->scratch.beg)
+    fprintf(stderr, "💣 Failed to allocate %td KB server arenas.", server->config.server_mem/KiB(1));
   i32 nw = server->config.workers;
   i32 rc = 0;
   Workshop *workshops = new (&server->store, Workshop, nw);
   if (!workshops) {
-    fprintf(stderr, "💣 Failed to allocate workshops\n");
+    fprintf(stderr, "💣 Failed to allocate %td workshops\n", nw);
     exit(1);
   }
   for (size i = 0; i < nw; i++) {
@@ -857,6 +893,14 @@ void launch(Server *server) {
   server->work = work.v;
   server->work_waiting = (pthread_cond_t)PTHREAD_COND_INITIALIZER;
   pthread_mutex_init(&server->work_waiting_lock, 0);
+
+  Clients_ track = make_Clients(&server->store, server->config.clients); 
+  if (!track.ok) {
+    fprintf(stderr, "💣 Failed to allocate client tracking array for %d clients\n",
+            server->config.clients);
+    exit(1);
+  }
+  server->clients = track.v;
   
   server->loop = ev_loop_new(0);
   set_non_blocking(server->socket);
