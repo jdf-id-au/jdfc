@@ -402,10 +402,13 @@ Response add_headers(arena *store, arena scratch, Response res) {
 void flushc(Chunk *c) {
   Product *p = c->dest;
   i32 idx = 0; // impl after write_qout
+  // printf("Trying to flush %td bytes", c->len);
+  // s8 insp = (s8){.buf = c->buf, .len = c->len};
+  // log_debug(insp);
   while (1) {
     idx = queue_push(&p->q, p->len);
     if (idx < 0) {
-      printf("⚠ Product queue full, chunk flush failed.\n");
+      //printf("⚠ Product queue full, chunk flush failed.\n");
       break;
     } 
     // shallow copy to work around Atomic struct member access UB
@@ -444,6 +447,7 @@ size s8writec(void *out, s8 s) { // impl after s8write
     total_copied += count;
     if (c->len == c->cap) flushc(c);
   }
+  printf("s8write8  %td B ", total_copied);
   return total_copied;
 }
 
@@ -507,8 +511,7 @@ void cleanup_client(EV_P_ ev_io *w) {
 void client_set_readable(EV_P_ ev_io *w, b32 readable) {
   Client *client = (Client *)w->data;
   ev_io *read_io = &client->read_io;
-  if (readable == ev_is_active(read_io))
-    printf("Inconsistent client %s readable call\n", readable ? "set" : "unset");
+  // if (readable == ev_is_active(read_io)) printf("Inconsistent client %s readable call\n", readable ? "set" : "unset");
   if (readable) ev_io_start(EV_A_ read_io);
   else ev_io_stop(EV_A_ read_io);
 }
@@ -516,8 +519,7 @@ void client_set_readable(EV_P_ ev_io *w, b32 readable) {
 void client_set_writable(EV_P_ ev_io *w, b32 writable) {
   Client *client = (Client *)w->data;
   ev_io *write_io = &client->write_io;
-  if (writable == ev_is_active(write_io))
-    printf("Inconsistent client %s writable call\n", writable ? "set" : "unset");
+  // if (writable == ev_is_active(write_io)) printf("Inconsistent client %s writable call\n", writable ? "set" : "unset");
   if (writable) ev_io_start(EV_A_ write_io);
   else ev_io_stop(EV_A_ write_io);
 }
@@ -558,13 +560,15 @@ void write_client(EV_P_ ev_io *w, i32 events) {
   size total_bytes_written = 0;
   size bytes_written = 0;
   while (1) {
-    bytes_written = write(w->fd, buf, c.len);
+    if (c.len == 0) break;
+    bytes_written = write(w->fd, buf + total_bytes_written,
+                          c.len - total_bytes_written);
     if (bytes_written == 0) {
       printf("Write client wrote nothing\n");
       //cleanup_client(EV_A_ w);
     } else if (bytes_written < 0) {
       if (errno == EAGAIN || errno == EWOULDBLOCK) {
-        // just try again? FIXME 2025-09-30 12:39:03 keeping track?
+        // just try again?
         printf("Should try again?\n");
       } else {
         perror("Error writing to client");
@@ -577,24 +581,29 @@ void write_client(EV_P_ ev_io *w, i32 events) {
       printf("Incomplete socket write (%li/%li B), trying to continue.\n", bytes_written, c.len);
     } else break;
   }
-  if (c.finished) {
+  if (c.finished) 
     printf("✅ Done, %ti B written, %ti B client arena use for %p\n",
            total_bytes_written, used(&client->store), (void *)client);
-    switch (c.then) { // clang exhaustiveness checking ftw
-    case WRITE:
-      client_set_writable(EV_A_ w, 1);
-      client_set_readable(EV_A_ w, 0);
-      break;
-    case READ:
-      client_set_writable(EV_A_ w, 0);
-      client_set_readable(EV_A_ w, 1);
-      break;
-    case BOTH:
-      client_set_writable(EV_A_ w, 1);
-      client_set_readable(EV_A_ w, 1);
-      break;
-    }
-  } else printf("➡️ Chunk written, message not finished %td B\n", c.len); // spacing required for terminal...?
+  else if (c.len)
+    printf("➡️ Chunk written, message not finished %td B\n",
+           c.len); // spacing required for terminal...?
+  // Only legitimate empty is when finished, to set direction.
+  else fprintf(stderr, "Erroneously wrote no data to client.\n");
+  
+  switch (c.then) { // clang exhaustiveness checking ftw
+  case WRITE:
+    client_set_writable(EV_A_ w, 1);
+    client_set_readable(EV_A_ w, 0);
+    break;
+  case READ:
+    client_set_writable(EV_A_ w, 0);
+    client_set_readable(EV_A_ w, 1);
+    break;
+  case BOTH:
+    client_set_writable(EV_A_ w, 1);
+    client_set_readable(EV_A_ w, 1);
+    break;
+  }
 }
 
 b32 enqueue_request(Request req) {
@@ -801,13 +810,15 @@ void launch(Server *server) {
     workshops[i].server = server;
     workshops[i].store = alloc_arena(server->config.worker_mem);
     workshops[i].scratch = alloc_arena(server->config.worker_mem);
-    workshops[i].pending = (Chunk) {
-      .buf = new(&workshops[i].store, u8, server->config.chunk_size),
-    };
-    if (!workshops[i].pending.buf) {
+    u8 *buf = new (&workshops[i].store, u8, server->config.chunk_size);
+    if (!buf) {
       fprintf(stderr, "💣 Failed to allocate workshop %td pending buffer\n", i);
       exit(1);
     }
+    workshops[i].pending = (Chunk) {
+      .buf = buf,
+      .cap = server->config.chunk_size
+    };
   }
   server->workshops.buf = workshops;
   size successful = 0;
