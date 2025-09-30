@@ -648,9 +648,9 @@ i32 queue_capacity(i32 len) {
   return len - 1;
 }
 // ╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴ Multiple consumer
-i32 queue_mpop(queue *q, i32 len, u32 *save) {
+i32 queue_mpop(queue *q, i32 cap, u32 *save) {
   u32 r = *save = *q;
-  i32 mask = len - 1;
+  i32 mask = cap;
   i32 head = r       & mask;
   i32 tail = r >> 16 & mask;
   return head == tail ? -1 : tail;
@@ -661,10 +661,10 @@ b32 queue_mpop_commit(queue *q, u32 save) {
 }
 // ╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴ Single consumer
 // Returns index for next value to be popped. -1 when empty.
-i32 queue_pop(queue *q, i32 len) {
+i32 queue_pop(queue *q, i32 cap) {
   // printf("queue_pop %p 0x%x %i\n", q, *q, len);
   u32 r = *q; // ? memory_order_acquire from stdatomic.h
-  i32 mask = len - 1;
+  i32 mask = cap;
   i32 head = r       & mask;
   i32 tail = r >> 16 & mask;
   return head == tail ? -1 : tail;
@@ -673,10 +673,10 @@ void queue_pop_commit(queue *q) {
   *q += 0x10000; // 0x10000 == 1u << 16 i.e. increment tail ; ? memory_order_release
 }
 // Returns index for next value to be pushed. -1 when full.
-i32 queue_push(queue *q, i32 len) {
+i32 queue_push(queue *q, i32 cap) {
   // printf("queue_push %p 0x%x %i\n", q, *q, len);
   u32 r = *q;
-  i32 mask = len - 1;
+  i32 mask = cap;
   i32 head = r       & mask;
   i32 tail = r >> 16 & mask;
   i32 next = (head + 1u) & mask;
@@ -701,12 +701,12 @@ qout_ make_qout(arena *a, i32 len) {
   if (!cap) return nil;
   u8 *buf = new (a, u8, cap);
   if (!buf) return nil;
-  return (qout_) { .v = {.buf = (s8){.buf = buf, .len = len}, .q = 0 } };
+  return (qout_) { .v = {.buf = (s8){.buf = buf, .len = cap}, .q = 0 } };
 }
 size read_qout(qout *qo, s8 buf) {
   i32 qi = 0;
   size bi = 0;
-  while ((qi = queue_pop(&qo->q, qo->buf.len))) {
+  while ((qi = queue_pop(&qo->q, qo->buf.len))) { // where .len is queue capacity
     if (qi < 0) break; // empty
     buf.buf[bi++] = qo->buf.buf[qi];
     queue_pop_commit(&qo->q);
@@ -717,7 +717,7 @@ size write_qout(qout *qo, u8 *buf, size maxlen) {
   i32 qi = 0;
   i32 bi = 0;
   while (1) {
-    qi = queue_push(&qo->q, qo->buf.len);
+    qi = queue_push(&qo->q, qo->buf.len); // where .len is queue capacity
     if (qi < 0 || bi >= maxlen) break;
     // printf("pushing %c to queue position %i\n", buf[bi], qi);
     // printf("%c", buf[bi]);

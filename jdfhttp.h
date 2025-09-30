@@ -108,7 +108,7 @@ enum direction {
 
 typedef struct product Product; // forward decl
 
-typedef struct { // after jdf.h bufout
+typedef struct { // impl after jdf.h bufout
   u8 *buf;
   size len;
   size cap;
@@ -132,7 +132,7 @@ typedef struct { // allocated in Server arena
   _Atomic Request *requests;
   // simpler than _Atomic Requests *requests from ARRAY(Requests, Request)
   // because _Atomic struct member access is UB:
-  size len; // this is 1 more than the number of requests!!
+  size cap;
   queue q;
 } Work; // Concurrent queue (multiple consumer)
 
@@ -155,7 +155,7 @@ typedef struct server {
 
 typedef struct product { // allocated in Client arena
   _Atomic Chunk *chunks;
-  size len;
+  size cap;
   queue q;
 } Product; // Concurrent queue (single consumer)
 
@@ -187,7 +187,7 @@ Product_ make_Product(arena *a, i32 len, size chunk_size) {
       .cap = chunk_size
     };
   }
-  return (Product_) { .v = {.chunks = chunks, .len = len, .q = 0} };
+  return (Product_) { .v = {.chunks = chunks, .cap = cap, .q = 0} };
 }
 
 // ────────────────────────────────────────────────────────────────────── Server
@@ -274,8 +274,7 @@ i32 set_non_blocking(int sockfd) {
 // https://stackoverflow.com/a/16213822/780743
 i32 set_nodelay(int sockfd) {
   i32 yes = 1;
-  if (setsockopt(sockfd, IPPROTO_TCP, TCP_NODELAY, (byte *)&yes, sizeof(i32)) <
-      0) {
+  if (setsockopt(sockfd, IPPROTO_TCP, TCP_NODELAY, (byte *)&yes, sizeof(i32)) < 0) {
     perror("Failed to set nodelay");
     exit(1);
   }
@@ -409,7 +408,7 @@ void flushc(Chunk *c) {
   // printf("Trying to flush %td bytes", c->len);
   // s8 insp = (s8){.buf = c->buf, .len = c->len};
   // log_debug(insp);
-  idx = queue_push(&p->q, p->len);
+  idx = queue_push(&p->q, p->cap);
   if (idx < 0) {
     printf("⚠ Product queue full, chunk flush failed.\n");
     return;
@@ -473,15 +472,14 @@ void serialise_response(Workshop *shop, Response res) {
   arena scratch = shop->scratch;
   Chunk *out = &shop->pending;
   s8 crlf = s8("\r\n");
-  // TODO 2025-09-29 18:50:35 for SSE, could branch if res.type ==
-  // EVENT_STREAM... (after inital headers sent) Would adjust
-  // write_client to detect \n\n and not unset writable. Would need to
-  // decide where to track work generator. How would
-  // subsequent Fetch requests ([necessarily?] new Client connections) cause
-  // feedback on an established SSE channel?
-  // Track qout pointers in Server ?
-  // server->work.requests could be Req-or-Update union, the latter with qout ref ?
-  // Responses could be Res-or-Update union
+  // TODO 2025-09-30 15:43:44 SSE: finishc with `WRITE`
+   
+  // Would need to decide where to track work generator. How would
+  // subsequent Fetch requests ([necessarily?] new Client connections)
+  // cause feedback on an established SSE channel? Track Product
+  // pointers in Server? server->work.requests could be Req-or-Update
+  // union, the latter with Product ref? Responses could be
+  // Res-or-Update union.
   res = add_headers(store, scratch, res); // reassigning to pass-by-value parameter
   s8map *header = res.headers;
   s8printf(scratch, s8writec, out, "HTTP/1.1 %i %s\r\n",
@@ -496,7 +494,7 @@ void serialise_response(Workshop *shop, Response res) {
   s8writec(out, crlf);
   for (s8l *node = res.body; node; node = node->next)
     s8writec(out, node->val);
-  finishc(out, READ); // FIXME 2025-09-30 11:41:06 WRITE if SSE
+  finishc(out, READ); // FIXME 2025-09-30 11:41:06 WRITE if SSE (BOTH if websocket...)
   printf("📣 %i\n", res.status);
 }
 
@@ -549,7 +547,7 @@ void write_client(EV_P_ ev_io *w, i32 events) {
   arena scratch = client->scratch; 
   Product *p = &client->deliver;
 
-  i32 idx = queue_pop(&p->q, p->len);
+  i32 idx = queue_pop(&p->q, p->cap);
   if (idx < 0) {
     // printf("Queue empty\n");
     return;
@@ -615,7 +613,7 @@ void write_client(EV_P_ ev_io *w, i32 events) {
 
 b32 enqueue_request(Request req) {
   Server *server = req.client->server;
-  i32 idx = queue_push(&server->work.q, server->work.len);
+  i32 idx = queue_push(&server->work.q, server->work.cap);
   //printf("queue_push position %i\n", idx);
   if (idx < 0) return 0; // queue full
   server->work.requests[idx] = req;
@@ -680,7 +678,7 @@ void accept_client(EV_P_ ev_io *w, i32 events) {
     set_nodelay(new_socket);
     set_timeout(new_socket, SO_RCVTIMEO, server->config.rcvtimeo);
     set_timeout(new_socket, SO_SNDTIMEO, server->config.sndtimeo);
-    // Allocate arenas TODO monitor usage, tune
+    // Allocate arenas TODO 2025-09-30 15:56:50 monitor usage, tune, limit
     arena client_store = alloc_arena(server->config.client_mem);
     arena client_scratch = alloc_arena(server->config.client_mem);
     // https://metacpan.org/dist/EV/view/libev/ev.pod#ASSOCIATING-CUSTOM-DATA-WITH-A-WATCHER
@@ -743,7 +741,7 @@ void *worker(Workshop *workshop) {
   // ╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴ as follows
   while (1) {
     pthread_mutex_lock(&server->work_waiting_lock);
-    while ((qi = queue_mpop(&server->work.q, server->work.len, &save)) < 0)
+    while ((qi = queue_mpop(&server->work.q, server->work.cap, &save)) < 0)
       // loop to cover suprious wakeup
       pthread_cond_wait(&server->work_waiting, &server->work_waiting_lock);
     pthread_mutex_unlock(&server->work_waiting_lock);
@@ -795,7 +793,7 @@ Work_ make_Work(arena *a, i32 len) {
   if (!cap) return nil;
   _Atomic Request *requests = new (a, _Atomic Request, cap);
   if (!requests) return nil;
-  return (Work_) { .v = {.requests = requests, .len = len, .q = 0} };
+  return (Work_) { .v = {.requests = requests, .cap = cap, .q = 0} };
 }
 
 void sigint_cb(EV_P_ ev_signal *w, i32 events) {
@@ -833,7 +831,7 @@ void launch(Server *server) {
   for (size i = 0; i < nw; i++)
     if (!(rc = pthread_create(&(workshops[i].thread), 0, (Worker)worker,
                               &workshops[i]))) {
-      server->workshops.len = successful++;
+      server->workshops.len = ++successful;
     } else {
       fprintf(stderr, "Unable to create thread %td: %i\n", i, rc);
       if (i == 0) exit(1); // TODO could provide single threaded impl?
