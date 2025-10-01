@@ -643,6 +643,7 @@ s8_ s8sprintf(arena *buf, const char *format, ...) {
 // https://nullprogram.com/blog/2022/05/14
 typedef _Atomic u32 queue; // typedef _Atomic ... is ok as per stdatomic.h
 // len must be positive, <= 32768, and a power of two.
+// NB Actual storage must be size cap + 1! ▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚
 i32 queue_capacity(i32 cap) {
   i32 len = cap + 1;
   if ((len <= 0) || (len > 1 << 16) || (len & (len - 1))) {
@@ -695,7 +696,7 @@ void queue_push_commit(queue *q) {
 }
 // ╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴ Concurrent output buffer
 typedef struct {
-  s8 buf; // correct capacity in .len when make_qout
+  s8 buf;
   queue q;
 } qout;
 MAYBE(qout)
@@ -703,9 +704,9 @@ qout_ make_qout(arena *a, i32 cap) {
   qout_ nil = (qout_){0};
   cap = queue_capacity(cap);
   if (!cap) return nil;
-  u8 *buf = new (a, u8, cap);
+  u8 *buf = new (a, u8, cap + 1);
   if (!buf) return nil;
-  return (qout_) { .v = {.buf = (s8){.buf = buf, .len = cap}, .q = 0 } };
+  return (qout_) { .v = {.buf = (s8){.buf = buf, .len = cap + 1}, .q = 0 } };
 }
 size read_qout(qout *qo, s8 buf) {
   i32 qi = 0;

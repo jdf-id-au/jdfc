@@ -66,7 +66,7 @@ Response handler(arena *store, arena scratch, Request req) {
 
 Response sse_handler(arena *store, arena scratch, Request req) {
   Response res = (Response){.type = EVENT_STREAM};
-  // TODO 2025-09-29 15:13:43 how not to block worker?
+  res.client->mode = SERVER_SENT_EVENTS;
   return res;
 }
 

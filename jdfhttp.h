@@ -63,6 +63,7 @@ typedef struct client Client; // forward decl for Request
 
 typedef struct {
   Client *client;
+  b32 is_update;
   union {
     s8 update; // e.g. message for SSE to send through, next transfer chunk to send through, websocket input (eventually)
     struct {
@@ -81,6 +82,7 @@ typedef struct {
 
 typedef struct {
   Client *client;
+  b32 is_update;
   union {
     s8 update; // e.g. message for SSE to send, next transfer chunk, websocket output (eventually)
     struct {
@@ -207,6 +209,13 @@ typedef struct product { // allocated in Client arena
 
 MAYBE(Product)
 
+enum mode {
+  REQUEST_RESPONSE,
+  SERVER_SENT_EVENTS,
+  // TRANSFER_ENCODING_CHUNKED, // then back to NORMAL when finished?
+  //  WEBSOCKET
+};
+  
 typedef struct client {
   Server *server;
   arena store;
@@ -214,6 +223,7 @@ typedef struct client {
   ev_io read_io;
   ev_io write_io;
   Product deliver;
+  enum mode mode;
 } Client; // Server's resources for serving one client // TODO 2025-09-29 22:24:48 rename to Connection ?
 
 // Run on main thread (by Client)
@@ -221,11 +231,12 @@ Product_ make_Product(arena *a, i32 cap, size chunk_size) {
   Product_ nil = (Product_){0};
   cap = queue_capacity(cap);
   if (!cap) return nil;
-  _Atomic Chunk *chunks = new (a, _Atomic Chunk, cap);
+  i32 len = cap + 1;
+  _Atomic Chunk *chunks = new (a, _Atomic Chunk, len);
   if (!chunks) return nil;
-  u8 *buf = new (a, u8, cap * chunk_size);
+  u8 *buf = new (a, u8, len * chunk_size);
   if (!buf) return nil;
-  for (size i = 0; i < cap; i++) {
+  for (size i = 0; i < len; i++) {
     // All at once so no UB _Atomic struct member access.
     chunks[i] = (Chunk) {
       .buf = &buf[i * chunk_size],
@@ -443,21 +454,25 @@ void flushc(Chunk *c) {
   // printf("Trying to flush %td bytes", c->len);
   // s8 insp = (s8){.buf = c->buf, .len = c->len};
   // log_debug(insp);
-  idx = queue_push(&p->q, p->cap);
+  idx = queue_push(&p->q, p->cap); // ╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴ Queue access
   if (idx < 0) {
     printf("⚠ Product queue full, chunk flush failed.\n");
     return;
   } 
   // shallow copy to work around Atomic struct member access UB
   Chunk tmp = p->chunks[idx];
-  // tmp.buf is client.deliver.chunks.buf, allocated in Client arena by `make_Product`
-  // c->buf is workshop.pending.buf, allocated in Workshop arena by `launch`
+  // tmp.buf is client.deliver.chunks.buf, preallocated in Client arena by
+  // `make_Product` c->buf is workshop.pending.buf, preallocated in Workshop
+  // arena by `launch`
+  // printf("\n🔍 %td/%td\n", c->len, c->cap);
+  // FIXME  2025-10-01 12:08:07 eventually fails with read deref high value
+  // address which I think is actually "read" of dest?!
   copy(tmp.buf, c->buf, c->len);
   tmp.len = c->len;
   tmp.then = c->then;
   tmp.finished = c->finished;
   p->chunks[idx] = tmp;
-  queue_push_commit(&p->q);
+  queue_push_commit(&p->q); // ╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴
 
   // Reset chunk for reuse! FIXME 2025-09-30 15:15:06 Error-prone
   c->len = 0;
@@ -506,31 +521,35 @@ void serialise_response(Workshop *shop, Response res) {
   arena *store = &shop->store;
   arena scratch = shop->scratch;
   Chunk *out = &shop->pending;
-  s8 crlf = s8("\r\n");
-  // TODO 2025-09-30 15:43:44 SSE: finishc with `WRITE`
-   
-  // Would need to decide where to track work generator. How would
-  // subsequent Fetch requests ([necessarily?] new Client connections)
-  // cause feedback on an established SSE channel? Track Product
-  // pointers in Server? server->work.requests could be Req-or-Update
-  // union, the latter with Product ref? Responses could be
-  // Res-or-Update union.
-  res = add_headers(store, scratch, res); // reassigning to pass-by-value parameter
-  s8map *header = res.headers;
-  s8printf(scratch, s8writec, out, "HTTP/1.1 %i %s\r\n",
-           res.status, spell_http_status[res.status]);
-  while (header) { // grug approve
-    s8writec(out, header->key);
-    s8writec(out, s8(": "));
-    s8writec(out, header->val);
+  if (res.is_update) {
+    s8writec(out, res.update);
+    finishc(out, WRITE); // TODO 2025-09-30 11:41:06 BOTH if websocket...
+  } else {
+    s8 crlf = s8("\r\n");
+    // TODO 2025-09-30 15:43:44 SSE: finishc with `WRITE`
+    // Would need to decide where to track work generator. How would
+    // subsequent Fetch requests ([necessarily?] new Client connections)
+    // cause feedback on an established SSE channel? Tracking server->clients.
+    res = add_headers(store, scratch, res); // reassigning to pass-by-value parameter
+    s8map *header = res.headers;
+    s8printf(scratch, s8writec, out, "HTTP/1.1 %i %s\r\n",
+             res.status, spell_http_status[res.status]);
+    while (header) { // grug approve
+      s8writec(out, header->key);
+      s8writec(out, s8(": "));
+      s8writec(out, header->val);
+      s8writec(out, crlf);
+      header = header->next;
+    }
     s8writec(out, crlf);
-    header = header->next;
+    for (s8l *node = res.body; node; node = node->next)
+      s8writec(out, node->val);
+    printf("Finishing %td/%td \n", out->len, out->cap);
+    finishc(out, READ);
+    printf("📣 %i\n", res.status);
   }
-  s8writec(out, crlf);
-  for (s8l *node = res.body; node; node = node->next)
-    s8writec(out, node->val);
-  finishc(out, READ); // FIXME 2025-09-30 11:41:06 WRITE if SSE (BOTH if websocket...)
-  printf("📣 %i\n", res.status);
+  // Reset! FIXME 2025-10-01 12:04:13 error prone and wrong
+  //res.client->store.cur = res.client->store.beg + sizeof(Client); 
 }
 
 // TODO 2025-10-01 07:36:32 could work up into general SET_ARRAY macro
@@ -865,7 +884,8 @@ Work_ make_Work(arena *a, i32 cap) {
   Work_ nil = (Work_){0};
   cap = queue_capacity(cap);
   if (!cap) return nil;
-  _Atomic Request *requests = new (a, _Atomic Request, cap);
+  i32 len = cap + 1; 
+  _Atomic Request *requests = new (a, _Atomic Request, len);
   if (!requests) return nil;
   return (Work_) { .v = {.requests = requests, .cap = cap, .q = 0} };
 }
