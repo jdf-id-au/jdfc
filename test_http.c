@@ -65,18 +65,62 @@ Response handler(arena *store, arena scratch, Request req) {
 }
 
 Response sse_handler(arena *store, arena scratch, Request req) {
-  Response res = (Response){.type = EVENT_STREAM};
   req.client->mode = SERVER_SENT_EVENTS;
+  Response res = (Response){.status = OK, .type = EVENT_STREAM};
+  add_header(store, &res, CACHE_CONTROL, s8("no-cache"));
+  // NB 2025-10-01 17:56:45 nginx special
+  // add_header(store, &res, X_ACCEL_BUFFERING, s8("no"));
   return res;
-  // TODO 2025-10-01 12:48:59 simple chat server
+}
+
+Response send_handler(arena *store, arena scratch, Request req) {
+  for (size i = 0; i < req.client->server->clients.len; i++) {
+    Client *c = req.client->server->clients.buf[i];
+    // FIXME 2025-10-01 16:51:53 not sending to all connected sse clients?
+    if (c && c->mode == SERVER_SENT_EVENTS) {
+      b32 stat =
+          enqueue_request((Request){.client = c,
+                                    .is_update = 1,
+                                    // TOOD 2025-10-01 15:58:18 lifetime if
+                                    // dynamic? which arena to alloc on?
+                                    .update = s8("data: hello\n\n")});
+      printf("%s sending from %p to %p\n",
+             stat ? "🟢" : "🔴",
+             (void *)req.client, (void *)c);
+    }
+  }
+  return (Response) {.status = OK};
+}
+
+s8 view_sse = s8("<!doctype html>\n"
+                 "<html><head><title>SSE listener</title></head>\n"
+                 "<body>"
+                 "<script type=\"module\">\n"
+                 "const esrc = new EventSource(\"//localhost:8080/sse\");\n"
+                 "esrc.onmessage = (event) => console.log(event);\n"
+                 "console.log(\"Awaiting server-sent events...\");\n"
+                 "</script>\n"
+                 "</body></html>\n"
+    ); 
+
+Response receive_handler(arena *store, arena scratch, Request req) {
+  return (Response) {
+    .status = OK, .type = HTML,
+    .body = s8lappend(store, 0, view_sse) 
+  };
 }
 
 const Route routes[] = {
-  {.uri = s8("/"), .handler = handler},
-  {.uri = s8("/sse"), .handler = sse_handler},
+    {.uri = s8("/"), .handler = handler},
+    {.uri = s8("/sse"), .handler = sse_handler},
+    {.uri = s8("/send"), .handler = send_handler},
+    {.uri = s8("/receive"), .handler = receive_handler}
 };
 
 Response router(arena *store, arena scratch, Request req) {
+  if (req.is_update) return (Response){.client  = req.client,
+                                       .is_update = 1, 
+                                       .update = req.update};
   for (size i = 0; i < countof(routes); i++) {
     Handler h = routes[i].handler;
     if (routes[i].uri.len) {

@@ -23,39 +23,12 @@
 
 MAP_LIST(s8map, s8, s8, s8equal)
 
-// Electing not to introduce MAYBEness to MAP_LIST get for the moment.
-s8_ s8mapget_(s8map *head, s8 key) {
-  s8map *kv = s8mapget(head, key);
-  if (!kv) return (s8_){0};
-  return (s8_){.v = kv->val };
-}
-
-b32 s8mapcontains(s8map *head, s8 key, s8 val) {
-  s8_ v = s8mapget_(head, key);
-  if (!v.ok) return 0;
-  return s8equal(v.v, val);
-}
-
 // Dump s8 in desperation (debugging)
 void dumbp(s8 s) {
   printf("%*ti B ✏ ", 5, s.len);
   for (size i = 0; i < s.len; i++) printf("%c", s.buf[i]);
   printf("\n");
   fflush(0); // flush all open output streams
-}
-
-// Associate cloned k & v. May fail (and just return previous head).
-s8map *s8mapassocl(arena *store, s8map *head, s8 k, s8 v) {
-  s8_ kc = s8clone(store, k);
-  s8_ vc = s8clone(store, v);
-  if (kc.ok && vc.ok) {
-    s8map *ret = s8mapassoc(store, head, kc.v, vc.v);
-    if (ret) return ret;
-  }
-  fprintf(stderr, "Store usage %td/%td\n", used(store), available(store));
-  fprintf(stderr, "Problem setting kv\n");
-  dumbp(k); dumbp(v);
-  return head;
 }
 
 typedef struct server Server; // forward decl for Request and Workshop
@@ -411,39 +384,59 @@ size s8arenaprintf(arena *a, const char *format) {
   return printf(format, a->beg);
 }
 
-Response add_header(arena *store, Response *maybe, enum header h, s8 v) {
-  Response res = maybe ? *maybe : (Response){0};
-  res.headers = s8mapassocl(store, res.headers, spell_header[h], v);
-  return res;
+// FIXME 2025-10-01 18:01:41 pointless cloning of static keys?
+s8map *s8mapassoc_cloned(arena *store, s8map *head, s8 k, s8 v) {
+  s8map *already = s8mapget(head, k);
+  if (already && s8equal(already->val, v)) return head;
+  s8_ kc = s8clone(store, k);
+  s8_ vc = s8clone(store, v);
+  if (kc.ok && vc.ok) {
+    s8map *ret = s8mapassoc(store, head, kc.v, vc.v);
+    if (ret) return ret;
+  }
+  fprintf(stderr, "Store usage %td/%td\n", used(store), available(store));
+  fprintf(stderr, "Problem setting kv\n");
+  dumbp(k); dumbp(v);
+  return head;
 }
 
-Response add_headers(arena *store, arena scratch, Response res) {
+// TODO 2025-10-01 17:49:58 optimal return type?
+void add_header(arena *store, Response *res, enum header h, s8 v) {
+  if (!res) {
+    fprintf(stderr, "Tried to add_header to null Response.\n");
+    return;
+  }
+  res->headers = s8mapassoc_cloned(store, res->headers, spell_header[h], v);
+}
+
+// TODO 2025-10-01 17:49:58 optimal return type?
+// Generally headers should be set in handlers.
+void add_headers(arena *store, arena scratch, Response *res) {
+  if (!res) {
+    fprintf(stderr, "Tried to add_headers to null Response.\n");
+    return;
+  }
   // TODO  2025-09-29 13:40:10 Transfer-Encoding: chunked
   // https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Content-Length
   // TODO should be conditional on client's invitation
-  switch (res.status) {
+  switch (res->status) {
   case INVALID_HTTP_STATUS:
-    res.status = INTERNAL_SERVER_ERROR;
-    return res;
+    res->status = INTERNAL_SERVER_ERROR;
+    return;
   case NO_CONTENT:
-    return res;
+    return;
   default:
     break;
   }
-  res = add_header(store, &res, CONNECTION, s8("keep-alive"));
-  switch (res.type) {
-  case EVENT_STREAM:
-    return res;
-  case INVALID_CONTENT_TYPE:
-    break;
-  default:
-    res = add_header(store, &res, CONTENT_TYPE, describe_content_type[res.type]);
-    break;
-  }
-  s8_ v = s8sprintf(&scratch, "%ti", res.body ? s8llen(res.body) : 0);
-  if (v.ok) res = add_header(store, &res, CONTENT_LENGTH, v.v);
+  
+  add_header(store, res, CONNECTION, s8("keep-alive"));
+  if (res->type != INVALID_CONTENT_TYPE)
+    add_header(store, res, CONTENT_TYPE, describe_content_type[res->type]);
+  if (res->type == EVENT_STREAM) return;
+
+  s8_ v = s8sprintf(&scratch, "%ti", res->body ? s8llen(res->body) : 0);
+  if (v.ok) add_header(store, res, CONTENT_LENGTH, v.v);
   else fprintf(stderr, "Error setting Content-Length\n");
-  return res;
 }
 
 void flushc(Chunk *c) {
@@ -463,12 +456,8 @@ void flushc(Chunk *c) {
   } 
   // shallow copy to work around Atomic struct member access UB
   Chunk tmp = p->chunks[idx];
-  // tmp.buf is client.deliver.chunks.buf, preallocated in Client arena by
-  // `make_Product` c->buf is workshop.pending.buf, preallocated in Workshop
-  // arena by `launch`
-  // printf("\n🔍 %td/%td\n", c->len, c->cap);
-  // FIXME  2025-10-01 12:08:07 eventually fails with read deref high value
-  // address which I think is actually "read" of dest?!
+  // tmp.buf is client.deliver.chunks.buf, preallocated in Client arena by `make_Product`
+  // c->buf is workshop.pending.buf, preallocated in Workshop arena by `launch`
   copy(tmp.buf, c->buf, c->len);
   tmp.len = c->len;
   tmp.then = c->then;
@@ -526,13 +515,14 @@ void serialise_response(Workshop *shop, Response res) {
   if (res.is_update) {
     s8writec(out, res.update);
     finishc(out, WRITE); // TODO 2025-09-30 11:41:06 BOTH if websocket...
+    printf("🛰️  %td B to %p\n", res.update.len, (void *)res.client);
   } else {
     s8 crlf = s8("\r\n");
     // TODO 2025-09-30 15:43:44 SSE: finishc with `WRITE`
     // Would need to decide where to track work generator. How would
     // subsequent Fetch requests ([necessarily?] new Client connections)
     // cause feedback on an established SSE channel? Tracking server->clients.
-    res = add_headers(store, scratch, res); // reassigning to pass-by-value parameter
+    add_headers(store, scratch, &res); // reassigning to pass-by-value parameter
     s8map *header = res.headers;
     s8printf(scratch, s8writec, out, "HTTP/1.1 %i %s\r\n",
              res.status, spell_http_status[res.status]);
@@ -546,7 +536,6 @@ void serialise_response(Workshop *shop, Response res) {
     s8writec(out, crlf);
     for (s8l *node = res.body; node; node = node->next)
       s8writec(out, node->val);
-    printf("Finishing %td/%td \n", out->len, out->cap);
     finishc(out, READ);
     printf("📣 %i\n", res.status);
   }
@@ -869,7 +858,7 @@ void *worker(Workshop *workshop) {
         // client->deliver should buffer 32KiB.
         res = server->handler(&workshop->store, workshop->scratch, req);
       }
-      res.client = client;
+      if (!res.client) res.client = client;
       workshop->pending.dest = &client->deliver;
       // TODO 2025-09-29 22:21:10 some server-level notion of Client for session state.
       serialise_response(workshop, res);
@@ -904,7 +893,7 @@ void launch(Server *server) {
   i32 rc = 0;
   Workshop *workshops = new (&server->store, Workshop, nw);
   if (!workshops) {
-    fprintf(stderr, "💣 Failed to allocate %td workshops\n", nw);
+    fprintf(stderr, "💣 Failed to allocate %d workshops\n", nw);
     exit(1);
   }
   for (size i = 0; i < nw; i++) {

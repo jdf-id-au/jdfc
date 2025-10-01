@@ -355,6 +355,7 @@
              "Content-Length",
              "Transfer-Encoding",
              "Cache-Control",
+             "X-Accel-Buffering",
              "Connection",
              "Upgrade"],
  "content_type": [["html", "text/html; charset=UTF-8"],

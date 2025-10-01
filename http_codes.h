@@ -316,6 +316,7 @@ enum header {
   CONTENT_LENGTH,
   TRANSFER_ENCODING,
   CACHE_CONTROL,
+  X_ACCEL_BUFFERING,
   CONNECTION,
   UPGRADE,
 };
@@ -324,11 +325,12 @@ const s8 spell_header[] = {
   [CONTENT_LENGTH] = s8("Content-Length"),
   [TRANSFER_ENCODING] = s8("Transfer-Encoding"),
   [CACHE_CONTROL] = s8("Cache-Control"),
+  [X_ACCEL_BUFFERING] = s8("X-Accel-Buffering"),
   [CONNECTION] = s8("Connection"),
   [UPGRADE] = s8("Upgrade"),
 };
 enum header parse_header(s8 s) {
-  for (size i = 0; i < 6; i++)
+  for (size i = 0; i < 7; i++)
     if(s8equal(s, spell_header[i]))
       return (enum header)i;
   return (enum header)0;
