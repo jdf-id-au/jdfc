@@ -62,25 +62,35 @@ typedef struct server Server; // forward decl for Request and Workshop
 typedef struct client Client; // forward decl for Request
 
 typedef struct {
-  s8 raw;
-  enum http_status error; // in anticipation...
-  enum http_method method;
-  s8 uri;
-  s8 protocol;
-  void *params; // optional pointer-to-struct of parsed params
-  s8map *headers;
-  s8map *cookies;
-  s8 body;
   Client *client;
+  union {
+    s8 update; // e.g. message for SSE to send through, next transfer chunk to send through, websocket input (eventually)
+    struct {
+      s8 raw;
+      enum http_status error; // in anticipation...
+      enum http_method method;
+      s8 uri;
+      s8 protocol;
+      void *params; // optional pointer-to-struct of parsed params
+      s8map *headers;
+      s8map *cookies;
+      s8 body;
+    };
+  };
 } Request;
 
 typedef struct {
-  enum http_status status;
-  enum content_type type;
-  s8map *headers; // does not accommodate repeat keys, which are permitted by http spec https://stackoverflow.com/a/4371395/780743
-  s8map *cookies;
-  s8l *body;
   Client *client;
+  union {
+    s8 update; // e.g. message for SSE to send, next transfer chunk, websocket output (eventually)
+    struct {
+      enum http_status status;
+      enum content_type type;
+      s8map *headers; // does not accommodate repeat keys, which are permitted by http spec https://stackoverflow.com/a/4371395/780743
+      s8map *cookies;
+      s8l *body;
+    };
+  };
 } Response;
 
 // Runs within worker thread with its store and scratch arenas.
@@ -88,7 +98,7 @@ typedef Response (*Handler)(arena *store, arena scratch, Request req);
 //                 ^^^^^^^
 
 // Returns pointer to appropriate struct of parsed parameters, or 0 if no match.
-typedef void *(*UriParser)(s8 uri);
+typedef void *(*UriParser)(arena *store, arena scratch, s8 uri);
 //              ^^^^^^^^^
 
 typedef struct {

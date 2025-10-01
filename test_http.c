@@ -80,7 +80,7 @@ Response router(arena *store, arena scratch, Request req) {
     Handler h = routes[i].handler;
     if (routes[i].uri.len) {
       if (routes[i].parser) {
-        void *params = routes[i].parser(req.uri);
+        void *params = routes[i].parser(store, scratch, req.uri);
         if (!params) continue;
         req.params = params;
         return h(store, scratch, req);
