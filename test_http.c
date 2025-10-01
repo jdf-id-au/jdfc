@@ -73,16 +73,19 @@ Response sse_handler(arena *store, arena scratch, Request req) {
 }
 
 Response send_handler(arena *store, arena scratch, Request req) {
+  // FIXME 2025-10-01 22:43:07 not sending to everyone
   for (size i = 0; i < req.client->server->clients.len; i++) {
     Client *c = req.client->server->clients.buf[i];
-    // FIXME 2025-10-01 16:51:53 not sending to all connected sse clients?
     if (c && c->mode == SERVER_SENT_EVENTS) {
-      b32 stat = enqueue_request((Request){
-          .client = c,
-          .is_update = 1,
-          // TOOD 2025-10-01 15:58:18 lifetime if dynamic? which arena to alloc on?
-          .update = s8("event: message\ndata: hello\n\n")});
-      //printf("%s sending from %p to %p\n", stat ? "🟢" : "🔴", (void *)req.client, (void *)c);
+      // TOOD 2025-10-01 15:58:18 lifetime if dynamic? which arena to alloc on?
+      // ...need to wait until all sent? ...Request could have its own arena or malloc?
+      b32 stat = enqueue_request(
+                                 (Request){.client = c, // meaning destination in this case, rather than source+dest
+                    .is_update = 1,
+                    .update = s8("event: message\ndata: hello\n\n")});
+      ipstr(src_, req.client->address);
+      ipstr(dst_, c->address);
+      printf("%s %s:%d → %s:%d\n", stat ? "🟢" : "🔴", src_ip, src_port, dst_ip, dst_port);
     }
   }
   return (Response) {.status = OK};
@@ -90,10 +93,12 @@ Response send_handler(arena *store, arena scratch, Request req) {
 
 s8 view_sse = s8("<!doctype html>\n"
                  "<html><head><title>SSE listener</title></head>\n"
-                 "<body>"
+                 "<body><div id=\"output\"></div>"
                  "<script type=\"module\">\n"
                  "const esrc = new EventSource(\"//localhost:8080/sse\");\n"
-                 "esrc.onmessage = (event) => console.log(event);\n"
+                 "esrc.onmessage = (event) => { console.log(event); "
+                 "output.innerHTML += `${event.data}<br/>`; }\n"
+                 "output.innerHTML += `Awaiting server-sent events...<br/>`;\n"
                  "console.log(\"Awaiting server-sent events...\");\n"
                  "</script>\n"
                  "</body></html>\n"
@@ -114,9 +119,11 @@ const Route routes[] = {
 };
 
 Response router(arena *store, arena scratch, Request req) {
-  if (req.is_update) return (Response){.client  = req.client,
-                                       .is_update = 1, 
-                                       .update = req.update};
+  // Updates bypass routing:
+  if (req.is_update)
+    return (Response){
+        .client = req.client, .is_update = 1, .update = req.update};
+  // Other requests:
   for (size i = 0; i < countof(routes); i++) {
     Handler h = routes[i].handler;
     if (routes[i].uri.len) {

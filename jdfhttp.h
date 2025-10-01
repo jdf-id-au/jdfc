@@ -196,7 +196,7 @@ typedef struct client {
   arena store;
   arena scratch;
   byte *store_reset; // after initialisation, before work; only slightly breaks arena concept
-  struct in_addr ip;
+  struct sockaddr_in address;
   ev_io read_io;
   ev_io write_io;
   Product deliver;
@@ -204,9 +204,10 @@ typedef struct client {
 } Client; // Server's resources for serving one client // TODO 2025-09-29 22:24:48 rename to Connection ?
 
 // ────────────────────────────────────────────────────────────────────── Server
-#define ipstr(cstr, addr)                            \
-  char cstr[INET_ADDRSTRLEN];                        \
-  inet_ntop(PF_INET, &addr, cstr, INET_ADDRSTRLEN)
+#define ipstr(stem, addr)                                               \
+  char stem##ip[INET_ADDRSTRLEN];                                       \
+  int stem##port = ntohs(addr.sin_port);                                \
+  inet_ntop(PF_INET, &addr.sin_addr, stem##ip, INET_ADDRSTRLEN)
 
 Server make_server_fn(Handler h, Config c) {
   Server server = {
@@ -525,8 +526,8 @@ void serialise_response(Workshop *shop, Response res) {
     s8writec(out, res.update);
     finishc(out, WRITE); // TODO 2025-09-30 11:41:06 BOTH if websocket...
 #ifndef QUIET
-    ipstr(ip_string, res.client->ip);
-    printf("📡  %td B to %s\n", res.update.len, ip_string);
+    ipstr(cli_, res.client->address);
+    printf("📡 %td B to %s:%d\n", res.update.len, cli_ip, cli_port);
 #endif
   } else {
     s8 crlf = s8("\r\n");
@@ -686,18 +687,18 @@ void write_client(EV_P_ ev_io *w, i32 events) {
   }
   if (c.finished) {
 #ifndef QUIET
-    printf("✅ %ti B written by %p (%d clients)\n", total_bytes_written,
-           (void *)client, count_clients(client->server));
+    ipstr(cli_, client->address);
+    printf("✅ %ti B written to %s:%d\n", total_bytes_written, cli_ip, cli_port);
 #endif
   } else if (c.len) {
 #ifndef QUIET
-    printf("➡️ Chunk written, message not finished %td B\n", c.len);
+    ipstr(cli_, client->address);
+    printf("➡️ Chunk of %td B written, message not finished to %s:%d\n",
+           c.len, cli_ip, cli_port);
 #endif
-    //  Only legitimate empty is when finished, to set direction.
-    
-  } else {
-    ipstr(ip_string, client->ip);
-    fprintf(stderr, "Erroneously wrote no data to %s.\n", ip_string);
+  } else { //  Only legitimate empty is when finished, to set direction.
+    ipstr(cli_, client->address);
+    fprintf(stderr, "Erroneously wrote no data to %s:%d.\n", cli_ip, cli_port);
   }
   
   switch (c.then) { // clang exhaustiveness checking ftw
@@ -757,8 +758,9 @@ void read_client(EV_P_ ev_io *w, i32 events) {
     // s8arenaprintf(&client->scratch, "🔔 %s\n");
     client->scratch.cur = client->scratch.beg; // Reset!
     Request req = parse_request(&client->store, client->scratch, raw.v);
-    s8writefd(1, s8("🔔 "));
-    s8log(1, req.uri);
+    char *uri = s8unwrap(&client->scratch, req.uri);
+    ipstr(cli_, client->address);
+    if (uri) printf("🔔 %s from %s:%d\n", uri, cli_ip, cli_port);
     req.client = client;
     if (!enqueue_request(req)) {
       unavailable(w->fd, "enqueue job");
@@ -781,15 +783,15 @@ void accept_client(EV_P_ ev_io *w, i32 events) {
   else {
 
     // NB server->address seemingly changed from server to client between `bind` and `accept`
-    ipstr(ip_string, server->address.sin_addr);
+    ipstr(client_, server->address);
 
     if (server->nclients > server->config.clients) {
-      printf("⛔ Rejected connection from %s\n", ip_string);
+      printf("⛔ Rejected connection from %s:%d\n", client_ip, client_port);
       write(new_socket, UNAVAILABLE.buf, UNAVAILABLE.len);
       close(new_socket);
       return;
     }
-    printf("☎️  %s\n", ip_string);
+    printf("☎️  %s:%d\n", client_ip, client_port);
     set_non_blocking(new_socket);
     set_nodelay(new_socket);
     set_timeout(new_socket, SO_RCVTIMEO, server->config.rcvtimeo);
@@ -807,7 +809,7 @@ void accept_client(EV_P_ ev_io *w, i32 events) {
     client->server = server;
     client->store = client_store; // for passing by reference
     client->scratch = client_scratch; // for passing by value
-    client->ip = server->address.sin_addr;
+    client->address = server->address; // because struct apparently reused
       
     ev_io_init(&client->read_io, read_client, new_socket, EV_READ);
     client->read_io.data = client; // I'm a woozie (see libev doc)
@@ -978,10 +980,9 @@ void launch(Server *server) {
   }
   server->clients = track.v;
 
-  ipstr(ip_string, server->address.sin_addr);
-  int port = ntohs(server->address.sin_port);
+  ipstr(srv_, server->address);
   printf("👂 Listening on %s:%d using %td threads for up to %d clients.\n",
-         ip_string, port, workers, server->config.clients);
+         srv_ip, srv_port, workers, server->config.clients);
   printf("🧠 Internal memory usage will be %td-%td MiB.\n", // excludes libraries
          (server->config.server_mem * 2
           + server->config.client_mem * 2 * 0
