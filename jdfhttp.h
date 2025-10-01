@@ -173,6 +173,7 @@ typedef struct server {
   pthread_cond_t work_waiting;
   pthread_mutex_t work_waiting_lock; // just required for cond
   Clients clients;
+  size nclients; // should always match `clients` occpancy
 } Server;
 
 typedef struct product { // allocated in Client arena
@@ -195,33 +196,18 @@ typedef struct client {
   arena store;
   arena scratch;
   byte *store_reset; // after initialisation, before work; only slightly breaks arena concept
+  struct in_addr ip;
   ev_io read_io;
   ev_io write_io;
   Product deliver;
   enum mode mode;
 } Client; // Server's resources for serving one client // TODO 2025-09-29 22:24:48 rename to Connection ?
 
-// Run on main thread (by Client)
-Product_ make_Product(arena *a, i32 cap, size chunk_size) {
-  Product_ nil = (Product_){0};
-  cap = queue_capacity(cap);
-  if (!cap) return nil;
-  i32 len = cap + 1;
-  _Atomic Chunk *chunks = new (a, _Atomic Chunk, len);
-  if (!chunks) return nil;
-  u8 *buf = new (a, u8, len * chunk_size);
-  if (!buf) return nil;
-  for (size i = 0; i < len; i++) {
-    // All at once so no UB _Atomic struct member access.
-    chunks[i] = (Chunk) {
-      .buf = &buf[i * chunk_size],
-      .cap = chunk_size
-    };
-  }
-  return (Product_) { .v = {.chunks = chunks, .cap = cap, .q = 0} };
-}
-
 // ────────────────────────────────────────────────────────────────────── Server
+#define ipstr(cstr, addr)                            \
+  char cstr[INET_ADDRSTRLEN];                        \
+  inet_ntop(PF_INET, &addr, cstr, INET_ADDRSTRLEN)
+
 Server make_server_fn(Handler h, Config c) {
   Server server = {
     .config = c,
@@ -374,6 +360,26 @@ Request parse_request(arena *store, arena scratch, s8 raw) {
   return req;
 }
 
+// Run on main thread (by Client)
+Product_ make_product(arena *a, i32 cap, size chunk_size) {
+  Product_ nil = (Product_){0};
+  cap = queue_capacity(cap);
+  if (!cap) return nil;
+  i32 len = cap + 1;
+  _Atomic Chunk *chunks = new (a, _Atomic Chunk, len);
+  if (!chunks) return nil;
+  u8 *buf = new (a, u8, len * chunk_size);
+  if (!buf) return nil;
+  for (size i = 0; i < len; i++) {
+    // All at once so no UB _Atomic struct member access.
+    chunks[i] = (Chunk) {
+      .buf = &buf[i * chunk_size],
+      .cap = chunk_size
+    };
+  }
+  return (Product_) { .v = {.chunks = chunks, .cap = cap, .q = 0} };
+}
+
 // printf contents of arena. Terminates string in situ!
 size s8arenaprintf(arena *a, const char *format) {
   if (a->cur < a->end) *a->cur = 0;
@@ -451,12 +457,12 @@ void flushc(Chunk *c) {
   // log_debug(insp);
   idx = queue_push(&p->q, p->cap); // ╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴ Queue access
   if (idx < 0) {
-    printf("⚠ Product queue full, chunk flush failed.\n");
+    fprintf(stderr, "⚠ Product queue full, chunk flush failed.\n");
     return;
   } 
   // shallow copy to work around Atomic struct member access UB
   Chunk tmp = p->chunks[idx];
-  // tmp.buf is client.deliver.chunks.buf, preallocated in Client arena by `make_Product`
+  // tmp.buf is client.deliver.chunks.buf, preallocated in Client arena by `make_product`
   // c->buf is workshop.pending.buf, preallocated in Workshop arena by `launch`
   copy(tmp.buf, c->buf, c->len);
   // FIXME 2025-10-01 18:25:23 data is not even appearing on telnet 8080 !
@@ -518,14 +524,12 @@ void serialise_response(Workshop *shop, Response res) {
   if (res.is_update) {
     s8writec(out, res.update);
     finishc(out, WRITE); // TODO 2025-09-30 11:41:06 BOTH if websocket...
-    // FIXME 2025-10-01 18:36:05 not reaching write_client!
-    printf("🛰️  %td B to %p\n", res.update.len, (void *)res.client);
+#ifndef QUIET
+    ipstr(ip_string, res.client->ip);
+    printf("📡  %td B to %s\n", res.update.len, ip_string);
+#endif
   } else {
     s8 crlf = s8("\r\n");
-    // TODO 2025-09-30 15:43:44 SSE: finishc with `WRITE`
-    // Would need to decide where to track work generator. How would
-    // subsequent Fetch requests ([necessarily?] new Client connections)
-    // cause feedback on an established SSE channel? Tracking server->clients.
     add_headers(store, scratch, &res); // reassigning to pass-by-value parameter
     s8map *header = res.headers;
     s8printf(scratch, s8writec, out, "HTTP/1.1 %i %s\r\n",
@@ -554,6 +558,7 @@ void serialise_response(Workshop *shop, Response res) {
 
 // TODO 2025-10-01 07:36:32 could work up into general SET_ARRAY macro
 b32 add_client(Server *server, Client *client) {
+  server->nclients++;
   Client **available = 0; // first zero value (caused by remove_client)
   Client **end = endof(server->clients);
   for (Client **cur = server->clients.buf; cur < end; cur++) {
@@ -569,6 +574,7 @@ b32 add_client(Server *server, Client *client) {
 }
 
 b32 remove_client(Server *server, Client *client) {
+  server->nclients--;
   Client **end = endof(server->clients);
   // Always scans whole array.
   for (Client **cur = server->clients.buf; cur < end; cur++) {
@@ -620,14 +626,14 @@ void client_set_writable(EV_P_ ev_io *w, b32 writable) {
   else ev_io_stop(EV_A_ write_io);
 }
 
-const static s8 HTTP_OOM = s8("HTTP/1.1 503 Service Unavailable\r\n");
+const static s8 UNAVAILABLE = s8("HTTP/1.1 503 Service Unavailable\r\n");
 
 // FIXME 2025-05-25 15:28:50 need to close client gracefully when arena
 // available below a threshold, or timeout since last read... 
 // TODO 2025-05-25 15:31:23 rate limitation, or leave it to nginx?
 void unavailable(i32 sock, char *msg) {
   fprintf(stderr, "💣 Failed to %s\n", msg);
-  write(sock, HTTP_OOM.buf, HTTP_OOM.len);
+  write(sock, UNAVAILABLE.buf, UNAVAILABLE.len);
 }
 
 /*
@@ -653,7 +659,6 @@ void write_client(EV_P_ ev_io *w, i32 events) {
   copy(buf, c.buf, c.len); // defensive copy, would be hard to debug if winged it
   queue_pop_commit(&p->q); // ╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴
 
-  if (c.then == WRITE) printf("got a .then=WRITE chunk\n");
   size total_bytes_written = 0;
   size bytes_written = 0;
   while (1) {
@@ -670,6 +675,7 @@ void write_client(EV_P_ ev_io *w, i32 events) {
       } else {
         perror("Error writing to client");
         cleanup_client(EV_A_ w);
+        return;
       }
     } else {
       total_bytes_written += bytes_written;
@@ -678,16 +684,21 @@ void write_client(EV_P_ ev_io *w, i32 events) {
       printf("Incomplete socket write (%li/%li B), trying to continue.\n", bytes_written, c.len);
     } else break;
   }
-  if (c.finished)
-    printf(
-        "✅ Done, %ti B written, %ti KiB client arena use for %p (%d clients)\n",
-        total_bytes_written, used(&client->store)/KiB(1), (void *)client,
-        count_clients(client->server));
-  else if (c.len)
-    printf("➡️ Chunk written, message not finished %td B\n",
-           c.len); // spacing required for terminal...?
-  // Only legitimate empty is when finished, to set direction.
-  else fprintf(stderr, "Erroneously wrote no data to client.\n");
+  if (c.finished) {
+#ifndef QUIET
+    printf("✅ %ti B written by %p (%d clients)\n", total_bytes_written,
+           (void *)client, count_clients(client->server));
+#endif
+  } else if (c.len) {
+#ifndef QUIET
+    printf("➡️ Chunk written, message not finished %td B\n", c.len);
+#endif
+    //  Only legitimate empty is when finished, to set direction.
+    
+  } else {
+    ipstr(ip_string, client->ip);
+    fprintf(stderr, "Erroneously wrote no data to %s.\n", ip_string);
+  }
   
   switch (c.then) { // clang exhaustiveness checking ftw
   case WRITE:
@@ -768,6 +779,17 @@ void accept_client(EV_P_ ev_io *w, i32 events) {
                           (socklen_t *)&addrlen);
   if (new_socket < 0) perror("Socket connection failed");
   else {
+
+    // NB server->address seemingly changed from server to client between `bind` and `accept`
+    ipstr(ip_string, server->address.sin_addr);
+
+    if (server->nclients > server->config.clients) {
+      printf("⛔ Rejected connection from %s\n", ip_string);
+      write(new_socket, UNAVAILABLE.buf, UNAVAILABLE.len);
+      close(new_socket);
+      return;
+    }
+    printf("☎️  %s\n", ip_string);
     set_non_blocking(new_socket);
     set_nodelay(new_socket);
     set_timeout(new_socket, SO_RCVTIMEO, server->config.rcvtimeo);
@@ -785,12 +807,13 @@ void accept_client(EV_P_ ev_io *w, i32 events) {
     client->server = server;
     client->store = client_store; // for passing by reference
     client->scratch = client_scratch; // for passing by value
-    
+    client->ip = server->address.sin_addr;
+      
     ev_io_init(&client->read_io, read_client, new_socket, EV_READ);
     client->read_io.data = client; // I'm a woozie (see libev doc)
 
     // TODO 2025-09-30 09:04:44 make cap configurable
-    Product_ deliver = make_Product(&client->store, 31, server->config.chunk_size);
+    Product_ deliver = make_product(&client->store, 31, server->config.chunk_size);
     if (deliver.ok) client->deliver = deliver.v;
     else {
       unavailable(new_socket, "allocate out queue");
@@ -880,7 +903,7 @@ void *worker(Workshop *workshop) {
 
 typedef void *(*Worker)(void *);
 
-Work_ make_Work(arena *a, i32 cap) {
+Work_ make_work(arena *a, i32 cap) {
   Work_ nil = (Work_){0};
   cap = queue_capacity(cap);
   if (!cap) return nil;
@@ -893,6 +916,11 @@ Work_ make_Work(arena *a, i32 cap) {
 void sigint_cb(EV_P_ ev_signal *w, i32 events) {
   fprintf(stderr, "SIGINT\n");
   ev_break (EV_A_ EVBREAK_ALL);
+}
+
+void sigpipe_cb(EV_P_ ev_signal *w, i32 events) {
+  fprintf(stderr, "SIGPIPE\n");
+  // TODO 2025-10-01 22:08:19 handle?
 }
 
 void launch(Server *server) {
@@ -923,18 +951,17 @@ void launch(Server *server) {
     workshops[i].store_reset = workshops[i].store.cur;
   }
   server->workshops.buf = workshops;
-  size successful = 0;
+  size workers = 0;
   for (size i = 0; i < nw; i++)
     if (!(rc = pthread_create(&(workshops[i].thread), 0, (Worker)worker,
                               &workshops[i]))) {
-      server->workshops.len = ++successful;
+      server->workshops.len = ++workers;
     } else {
       fprintf(stderr, "Unable to create thread %td: %i\n", i, rc);
-      if (i == 0) exit(1); // TODO could provide single threaded impl?
+      if (i == 0) exit(1);
       break;
     }
-  printf("Set up %ti workshops\n", successful);
-  Work_ work = make_Work(&server->store, 31);
+  Work_ work = make_work(&server->store, 31);
   if (!work.ok) {
     fprintf(stderr, "💣 Failed to make work queue\n");
     exit(1);
@@ -950,7 +977,12 @@ void launch(Server *server) {
     exit(1);
   }
   server->clients = track.v;
-  printf("Internal memory usage will be %td-%td MiB\n", // excludes libraries
+
+  ipstr(ip_string, server->address.sin_addr);
+  int port = ntohs(server->address.sin_port);
+  printf("👂 Listening on %s:%d using %td threads for up to %d clients.\n",
+         ip_string, port, workers, server->config.clients);
+  printf("🧠 Internal memory usage will be %td-%td MiB.\n", // excludes libraries
          (server->config.server_mem * 2
           + server->config.client_mem * 2 * 0
           + server->config.worker_mem * 2 * server->config.workers) / MiB(1),
@@ -966,10 +998,15 @@ void launch(Server *server) {
   accept_watcher.data = server; // allows access within callbacks
   ev_io_start(server->loop, &accept_watcher);
 
-  ev_signal signal_watcher;
-  ev_signal_init(&signal_watcher, sigint_cb, SIGINT);
-  signal_watcher.data = server;
-  ev_signal_start(server->loop, &signal_watcher);
+  ev_signal sigint_watcher;
+  ev_signal_init(&sigint_watcher, sigint_cb, SIGINT);
+  sigint_watcher.data = server;
+  ev_signal_start(server->loop, &sigint_watcher);
+
+  ev_signal sigpipe_watcher;
+  ev_signal_init(&sigpipe_watcher, sigpipe_cb, SIGPIPE);
+  sigpipe_watcher.data = server;
+  ev_signal_start(server->loop, &sigpipe_watcher);
 
   ev_run(server->loop, 0);
   ev_loop_destroy(server->loop);

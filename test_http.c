@@ -82,9 +82,7 @@ Response send_handler(arena *store, arena scratch, Request req) {
           .is_update = 1,
           // TOOD 2025-10-01 15:58:18 lifetime if dynamic? which arena to alloc on?
           .update = s8("event: message\ndata: hello\n\n")});
-      printf("%s sending from %p to %p\n",
-             stat ? "🟢" : "🔴",
-             (void *)req.client, (void *)c);
+      //printf("%s sending from %p to %p\n", stat ? "🟢" : "🔴", (void *)req.client, (void *)c);
     }
   }
   return (Response) {.status = OK};
