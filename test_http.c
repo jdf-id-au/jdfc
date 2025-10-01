@@ -29,7 +29,6 @@
 // }
 
 Response handler(arena *store, arena scratch, Request req) {
-  if (!s8equal(req.uri, s8("/"))) return (Response){.status = NOT_FOUND};
   Response res = (Response){.type = HTML};
   s8_ body = s8sprintf(
       store,
@@ -66,14 +65,40 @@ Response handler(arena *store, arena scratch, Request req) {
 }
 
 Response sse_handler(arena *store, arena scratch, Request req) {
-  if (!s8equal(req.uri, s8("/sse"))) return (Response){.status = NOT_FOUND};
   Response res = (Response){.type = EVENT_STREAM};
   // TODO 2025-09-29 15:13:43 how not to block worker?
   return res;
 }
 
+const Route routes[] = {
+  {.uri = s8("/"), .handler = handler},
+  {.uri = s8("/sse"), .handler = sse_handler},
+};
+
+Response router(arena *store, arena scratch, Request req) {
+  for (size i = 0; i < countof(routes); i++) {
+    Handler h = routes[i].handler;
+    if (routes[i].uri.len) {
+      if (routes[i].parser) {
+        void *params = routes[i].parser(req.uri);
+        if (!params) continue;
+        req.params = params;
+        return h(store, scratch, req);
+      } else if (s8equal(req.uri, routes[i].uri))
+        return h(store, scratch, req);
+    } else { // default route
+      if (h) return h(store, scratch, req);
+      else {
+        fprintf(stderr, "No handler for default route");
+        return (Response){.status = NOT_FOUND};
+      }
+    }
+  }
+  return (Response){.status = NOT_FOUND};
+}
+
 i32 main(void) {
-  Server server = make_server(handler, .port = 8080);
+  Server server = make_server(router, .port = 8080);
   launch(&server);
   return 0;
 }

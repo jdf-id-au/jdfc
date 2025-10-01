@@ -52,7 +52,9 @@ s8map *s8mapassocl(arena *store, s8map *head, s8 k, s8 v) {
     s8map *ret = s8mapassoc(store, head, kc.v, vc.v);
     if (ret) return ret;
   }
-  fprintf(stderr, "Problem setting "); dumbp(k);
+  fprintf(stderr, "Store usage %td/%td\n", used(store), available(store));
+  fprintf(stderr, "Problem setting kv\n");
+  dumbp(k); dumbp(v);
   return head;
 }
 
@@ -65,12 +67,13 @@ typedef struct {
   enum http_method method;
   s8 uri;
   s8 protocol;
+  void *params; // optional pointer-to-struct of parsed params
   s8map *headers;
   s8map *cookies;
   s8 body;
   Client *client;
 } Request;
-  
+
 typedef struct {
   enum http_status status;
   enum content_type type;
@@ -83,6 +86,16 @@ typedef struct {
 // Runs within worker thread with its store and scratch arenas.
 typedef Response (*Handler)(arena *store, arena scratch, Request req);
 //                 ^^^^^^^
+
+// Returns pointer to appropriate struct of parsed parameters, or 0 if no match.
+typedef void *(*UriParser)(s8 uri);
+//              ^^^^^^^^^
+
+typedef struct {
+  s8 uri; // blank for default handler
+  UriParser parser; // 0 for exact match
+  Handler handler; // TODO 2025-10-01 08:57:59 maybe http method as part of route?
+} Route;
 
 typedef struct {
   i32 domain; // PF_INET or PF_UNIX protocol families ~aka address families
@@ -100,7 +113,25 @@ typedef struct {
   // i32 chunk_queue_cap; // e.g. 31
   arena store;
   arena scratch;
-} Config; // see make_server macro for defaults
+} Config;
+
+i32 nworkers(void);
+
+// TODO 2025-10-01 08:28:50 could (statically) analyse client_mem
+// usage and minimise it (store and scratch) because it multiplies
+// with connections, unlike server or worker arenas.
+
+#define DEFAULT_CONFIG .domain = PF_INET,       \
+    .backlog = 10,                              \
+    .interface = INADDR_ANY,                    \
+    .rcvtimeo = 5,                              \
+    .sndtimeo = 5,                              \
+    .server_mem = MiB(1),                       \
+    .client_mem = KiB(256),                     \
+    .worker_mem = MiB(1),                       \
+    .clients = 1024,                            \
+    .workers = nworkers(),                      \
+    .chunk_size = KiB(4)
 
 enum direction {
   WRITE, // standby for next response e.g. server sent events, transfer-encoding chunked
@@ -254,19 +285,7 @@ i32 nworkers(void) {
 }
 
 // Slightly misleading name because launch does most of resource alloc.
-#define make_server(h, ...) /* default config */      \
-  make_server_fn(h, (Config){.domain = PF_INET,       \
-                             .backlog = 10,           \
-                             .interface = INADDR_ANY, \
-                             .rcvtimeo = 5,           \
-                             .sndtimeo = 5,           \
-                             .server_mem = MiB(1),    \
-                             .client_mem = MiB(1),    \
-                             .worker_mem = MiB(1),    \
-                             .clients = 1024,         \
-                             .workers = nworkers(),   \
-                             .chunk_size = KiB(4),    \
-                             __VA_ARGS__})
+#define make_server(h, ...) make_server_fn(h, (Config){DEFAULT_CONFIG, __VA_ARGS__})
 
 i32 set_non_blocking(int sockfd) {
   i32 flags = fcntl(sockfd, F_GETFL, 0);
@@ -390,17 +409,17 @@ Response add_headers(arena *store, arena scratch, Response res) {
   }
   res = add_header(store, &res, CONNECTION, s8("keep-alive"));
   switch (res.type) {
-  case INVALID_CONTENT_TYPE: // fall through
   case EVENT_STREAM:
     return res;
+  case INVALID_CONTENT_TYPE:
+    break;
   default:
+    res = add_header(store, &res, CONTENT_TYPE, describe_content_type[res.type]);
     break;
   }
-  res = add_header(store, &res, CONTENT_TYPE, describe_content_type[res.type]);
   s8_ v = s8sprintf(&scratch, "%ti", res.body ? s8llen(res.body) : 0);
   if (v.ok) res = add_header(store, &res, CONTENT_LENGTH, v.v);
   else fprintf(stderr, "Error setting Content-Length\n");
-
   return res;
 }
 
@@ -534,9 +553,8 @@ b32 remove_client(Server *server, Client *client) {
 i32 count_clients(Server *server) {
   Client **end = endof(server->clients);
   i32 n = 0;
-  for (Client **cur = server->clients.buf; cur < end; cur++) {
+  for (Client **cur = server->clients.buf; cur < end; cur++) 
     if (*cur) n++;
-  }
   return n;
 }
 
@@ -593,7 +611,7 @@ void write_client(EV_P_ ev_io *w, i32 events) {
 
   i32 idx = queue_pop(&p->q, p->cap);
   if (idx < 0) {
-    // printf("Queue empty\n");
+    // printf("Queue empty\n"); // e.g. 20x... TODO 2025-10-01 08:36:33 is this wasteful?
     return;
   }
   Chunk c = p->chunks[idx]; // c.dest is irrelevant here
@@ -632,8 +650,8 @@ void write_client(EV_P_ ev_io *w, i32 events) {
   }
   if (c.finished)
     printf(
-        "✅ Done, %ti B written, %ti B client arena use for %p (%d clients)\n",
-        total_bytes_written, used(&client->store), (void *)client,
+        "✅ Done, %ti B written, %ti KiB client arena use for %p (%d clients)\n",
+        total_bytes_written, used(&client->store)/KiB(1), (void *)client,
         count_clients(client->server));
   else if (c.len)
     printf("➡️ Chunk written, message not finished %td B\n",
@@ -901,6 +919,13 @@ void launch(Server *server) {
     exit(1);
   }
   server->clients = track.v;
+  printf("Internal memory usage will be %td-%td MiB\n", // excludes libraries
+         (server->config.server_mem * 2
+          + server->config.client_mem * 2 * 0
+          + server->config.worker_mem * 2 * server->config.workers) / MiB(1),
+         (server->config.server_mem * 2
+          + server->config.client_mem * 2 * server->config.clients
+          + server->config.worker_mem * 2 * server->config.workers) / MiB(1));
   
   server->loop = ev_loop_new(0);
   set_non_blocking(server->socket);
