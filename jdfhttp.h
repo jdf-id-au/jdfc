@@ -166,6 +166,7 @@ typedef struct {
   Server *server;
   arena store;
   arena scratch;
+  byte *store_reset; // after initialisation, before work; only slightly breaks arena concept
   pthread_t thread;
   ev_io write_io;
   Chunk pending; // under construction, before copy to Product->chunks
@@ -220,6 +221,7 @@ typedef struct client {
   Server *server;
   arena store;
   arena scratch;
+  byte *store_reset; // after initialisation, before work; only slightly breaks arena concept
   ev_io read_io;
   ev_io write_io;
   Product deliver;
@@ -548,8 +550,7 @@ void serialise_response(Workshop *shop, Response res) {
     finishc(out, READ);
     printf("📣 %i\n", res.status);
   }
-  // Reset! FIXME 2025-10-01 12:04:13 error prone and wrong
-  //res.client->store.cur = res.client->store.beg + sizeof(Client); 
+  res.client->store.cur = res.client->store_reset;
 }
 
 // TODO 2025-10-01 07:36:32 could work up into general SET_ARRAY macro
@@ -796,6 +797,7 @@ void accept_client(EV_P_ ev_io *w, i32 events) {
       client_cleanup_basics(&client->store, &client->scratch, new_socket);
       return;
     }
+    client->store_reset = client->store.cur;
     add_client(server, client);
     client_set_readable(EV_A_ &client->read_io, 1);
       
@@ -871,9 +873,7 @@ void *worker(Workshop *workshop) {
       workshop->pending.dest = &client->deliver;
       // TODO 2025-09-29 22:21:10 some server-level notion of Client for session state.
       serialise_response(workshop, res);
-      // Reset back to just original workshop.pending.buf allocation from `launch`.
-      // FIXME 2025-09-30 15:40:08 error prone
-      workshop->store.cur = workshop->store.beg + server->config.chunk_size;
+      workshop->store.cur = workshop->store_reset;
     }
   }
 }
@@ -920,6 +920,7 @@ void launch(Server *server) {
       .buf = buf,
       .cap = server->config.chunk_size
     };
+    workshops[i].store_reset = workshops[i].store.cur;
   }
   server->workshops.buf = workshops;
   size successful = 0;

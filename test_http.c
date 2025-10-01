@@ -66,8 +66,9 @@ Response handler(arena *store, arena scratch, Request req) {
 
 Response sse_handler(arena *store, arena scratch, Request req) {
   Response res = (Response){.type = EVENT_STREAM};
-  res.client->mode = SERVER_SENT_EVENTS;
+  req.client->mode = SERVER_SENT_EVENTS;
   return res;
+  // TODO 2025-10-01 12:48:59 simple chat server
 }
 
 const Route routes[] = {
