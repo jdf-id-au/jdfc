@@ -73,18 +73,43 @@ Response sse_handler(arena *store, arena scratch, Request req) {
 }
 
 Response send_handler(arena *store, arena scratch, Request req) {
+  Server *server = req.client->server; 
   // FIXME 2025-10-01 22:43:07 not sending to everyone
-  for (size i = 0; i < req.client->server->clients.len; i++) {
-    Client *c = req.client->server->clients.buf[i];
+  for (size i = 0; i < server->clients.len; i++) {
+    Client *c = server->clients.buf[i];
     if (c && c->mode == SERVER_SENT_EVENTS) {
-      b32 stat = enqueue_request((Request){
-           // meaning destination in this case, rather than source+dest
-          .client = c,
-          .from = req.client,
-          .is_update = 1,
-          .update = s8("event: message\ndata: hello\n\n")});
       ipstr(src_, req.client->address);
       ipstr(dst_, c->address);
+      s8_ msg = s8sprintf(&scratch,
+                          "event: message\ndata: hello from %s:%d to %s:%d\n\n",
+                          src_ip, src_port, dst_ip, dst_port);
+      if (!msg.ok) return (Response){.status = SERVICE_UNAVAILABLE};
+      i32 qi = 0;
+      // omg multiproducer multiconsumer (if it weren't for lock,
+      // which itself risks deadlock if few workers?)... would garbage
+      // collection or even naive mallocs be better?
+
+      // NB 2025-10-02 04:10:25 Probably still necessary for
+      // same-client if using enqueue_request because can't guarantee
+      // our lifetime will last the distance
+      pthread_mutex_lock(&server->handover_waiting_lock); // ╴╴╴╴╴╴╴╴╴╴╴╴╴╴ lock
+      while ((qi = queue_push(&server->handover.q,
+                              server->handover.strings.len)) < 0) 
+        pthread_cond_wait(&server->handover_waiting, &server->handover_waiting_lock);
+      s8_ str = rralloc(&server->robin, msg.v.len);
+      if (!str.ok) {
+        fprintf(stderr, "Round robin storage full\n");
+        return (Response){.status = SERVICE_UNAVAILABLE};
+      }
+      printf("%d \n", qi);
+      server->handover.strings.buf[qi] = str.v;
+      queue_push_commit(&server->handover.q);
+      pthread_mutex_unlock(&server->handover_waiting_lock);// ╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴
+      b32 stat = enqueue_request((Request){
+          .client = c, // destination
+          .from = req.client,
+          .is_update = 1,
+          .update = server->handover.strings.buf[qi]});
       printf("%s %s:%d → %s:%d\n", stat ? "🟢" : "🔴", src_ip, src_port, dst_ip, dst_port);
     }
   }
@@ -119,10 +144,9 @@ const Route routes[] = {
 };
 
 Response router(arena *store, arena scratch, Request req) {
-  // Updates bypass routing:
+  // Updates bypass routing but should be in handler for app logic
   if (req.is_update)
-    return (Response){
-        .client = req.client, .is_update = 1, .update = req.update};
+    return (Response){.client = req.client, .is_update = 1, .update = req.update};
   // Other requests:
   for (size i = 0; i < countof(routes); i++) {
     Handler h = routes[i].handler;

@@ -210,6 +210,10 @@ s8_ rralloc(roundrobin *a, size len) {
   }
 }
 
+b32 rrwithin(roundrobin a, s8 s) {
+  return s.buf >= (u8 *)a.beg && endof(s) <= (u8 *)a.end; 
+}
+
 roundrobin alloc_roundrobin(size cap) {
   byte *beg = malloc(cap);
   byte *end = beg ? beg + cap : 0;
@@ -240,6 +244,8 @@ typedef struct server {
   arena scratch;
   roundrobin robin;
   Handler handler;
+  pthread_cond_t handover_waiting;
+  pthread_mutex_t handover_waiting_lock;
   Workshops workshops;
   Work work;
   // https://randu.org/tutorials/threads/
@@ -918,7 +924,7 @@ void *worker(Workshop *workshop) { // ──────────────
 
   while (1) {
     // Make "this" thread the only one waiting for work:
-    pthread_mutex_lock(&server->work_waiting_lock); // ╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴ lock
+    pthread_mutex_lock(&server->work_waiting_lock); // ╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴ lock work
     // Loop to cover suprious wakeup.
     while ((qi = queue_pop(&server->work.q, server->work.requests.len)) < 0)
       // Block thread instead of busy-waiting.
@@ -927,12 +933,28 @@ void *worker(Workshop *workshop) { // ──────────────
     queue_pop_commit(&server->work.q);
     pthread_mutex_unlock(&server->work_waiting_lock); // ╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴
     Client *client = req.client;
+    if (req.is_update && rrwithin(server->robin, req.update)) {
+      s8_ update = s8clone(&workshop->store, req.update);
+      if (!update.ok) {
+        unavailable(client->write_io.fd, "copy handover");
+        cleanup_client(server->loop, &client->write_io);
+        goto reset_store;
+      }
+      req.update = update.v;
+      pthread_mutex_lock(&server->handover_waiting_lock); // ╴╴╴╴╴ lock handover
+      i32 qi = queue_pop(&server->handover.q, server->handover.strings.len);
+      if (server->handover.strings.buf[qi].buf == req.update.buf) {
+        queue_pop_commit(&server->handover.q);
+        pthread_cond_signal(&server->handover_waiting); // unblock waiting enqueuement
+      } else fprintf(stderr, "Handover queue out of sync\n");
+      pthread_mutex_unlock(&server->handover_waiting_lock); // ╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴
+    }
     Response res = {0};
     switch (req.error) {
     case SERVICE_UNAVAILABLE: // mainly being some disaster allocating memory
       unavailable(client->write_io.fd, "parse request");
       cleanup_client(server->loop, &client->write_io);
-      break;
+      goto reset_store;
     case BAD_REQUEST: // TODO 2025-09-29 16:12:55 fall throughs relating only to request parsing
       res = (Response){.status = req.error};
       break;
@@ -955,8 +977,8 @@ void *worker(Workshop *workshop) { // ──────────────
     }
     if (!res.client) res.client = client;
     workshop->pending.dest = &client->deliver;
-    // TODO 2025-09-29 22:21:10 some server-level notion of Client for session state.
     serialise_response(workshop, res);
+  reset_store:
     workshop->store.cur = workshop->store_reset;
   }
 }
@@ -1046,6 +1068,13 @@ void launch(Server *server) {
   }
   // TODO 2025-10-02 02:33:37 make configurable
   Handover_ handover = make_handover(&server->store, 16);
+  if (!handover.ok) {
+    fprintf(stderr, "💣 Failed to allocate handover queue\n");
+      exit(1);
+  }
+  server->handover = handover.v;
+  server->handover_waiting = (pthread_cond_t)PTHREAD_COND_INITIALIZER;
+  pthread_mutex_init(&server->handover_waiting_lock, 0);
   // ──────────────────────────────────────────────────────────────────── Launch
   ipstr(srv_, server->address);
   printf("👂 Listening on %s:%d using %td threads for up to %d clients.\n",

@@ -676,9 +676,25 @@ i32 queue_pop(queue *q, i32 len) {
 void queue_pop_commit(queue *q) {
   *q += 0x10000; // 0x10000 == 1u << 16 i.e. increment tail ; ? memory_order_release
 }
+// ╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴ Multiple producer
+// TODO 2025-10-02 03:08:56 test, analyse
+i32 queue_mpush(queue *q, i32 len, u32 *save) {
+  u32 r = *save = *q;
+  i32 mask = len - 1;
+  i32 head = r       & mask;
+  i32 tail = r >> 16 & mask;
+  i32 next = (head + 1u) & mask;
+  if (r & 0x8000) *q &= ~0x8000;
+  return next == tail ? -1 : head;
+}
+// Presumably element store must be atomic
+b32 queue_mpush_commit(queue *q, u32 save) {
+  return atomic_compare_exchange_strong(q, &save, save + 1);
+} 
+// ╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴  Single producer
 // Returns index for next value to be pushed. -1 when full.
 i32 queue_push(queue *q, i32 len) {
-  printf("queue_push %p 0x%x %i\n", (void *)q, *q, len);
+  //printf("queue_push %p 0x%x %i\n", (void *)q, *q, len);
   u32 r = *q;
   i32 mask = len - 1;
   i32 head = r       & mask;
