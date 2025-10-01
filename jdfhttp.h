@@ -522,7 +522,6 @@ void serialise_response(Workshop *shop, Response res) {
   if (res.is_update) {
     s8writec(out, res.update);
     finishc(out, WRITE); // TODO 2025-09-30 11:41:06 BOTH if websocket...
-    free(res.update.buf);
 #ifndef QUIET
     ipstr(cli_, res.client->address);
     printf("📡 %td B to %s:%d\n", res.update.len, cli_ip, cli_port);
@@ -562,7 +561,7 @@ b32 add_client(Server *server, Client *client) {
   Client **end = endof(server->clients);
   for (Client **cur = server->clients.buf; cur < end; cur++) {
     if (*cur == client) return 0; // already there
-    else if (!*cur) available = cur; // but keep scanning
+    else if (!*cur && !available) available = cur; // but keep scanning
   }
   if (available) {
     *available = client;
@@ -685,8 +684,8 @@ void write_client(EV_P_ ev_io *w, i32 events) {
   }
   if (c.finished) {
 #ifndef QUIET
-    ipstr(cli_, client->address);
-    printf("✅ %ti B written to %s:%d\n", total_bytes_written, cli_ip, cli_port);
+    //ipstr(cli_, client->address);
+    //printf("✅ %ti B written to %s:%d\n", total_bytes_written, cli_ip, cli_port);
 #endif
   } else if (c.len) {
 #ifndef QUIET
@@ -854,31 +853,32 @@ void *worker(Workshop *workshop) { // ──────────────
     pthread_mutex_unlock(&server->work_waiting_lock); // ╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴
     Client *client = req.client;
     Response res = {0};
-    switch (req.error) {
-    case SERVICE_UNAVAILABLE: // mainly being some disaster allocating memory
-      unavailable(client->write_io.fd, "parse request");
-      cleanup_client(server->loop, &client->write_io);
-      goto reset_store;
-    case BAD_REQUEST: // TODO 2025-09-29 16:12:55 fall throughs relating only to request parsing
-      res = (Response){.status = req.error};
-      break;
-    default:
-      if (req.error) printf("Disregarding Request.error status %d.\n", req.error);
-      // NB 2025-09-29 16:13:45 handler is currently also responsible for routing!
-
-      // https://developer.mozilla.org/en-US/docs/Web/HTTP/Guides/Connection_management_in_HTTP_1.x
-      // Electing not to implement pipelining ("not activated by
-      // default in modern browsers"!), or HTTP/2 or /3. Client can
-      // open multiple connections (resulting in multiple jdfhttp
-      // Clients, probably served by different workers/threads).
-
-      // Multiple workers would therefore not serialise to the same
-      // client->deliver queue simultaneously. Pipelining is
-      // prevented by half-duplex using client_set_readable. Writer
-      // is on main thread so libev can deal with delays writing.
-      // client->deliver should buffer 32KiB.
-      res = server->handler(&workshop->store, workshop->scratch, req);
+    if (!req.is_update) {
+      switch (req.error) {
+      case SERVICE_UNAVAILABLE: // mainly being some disaster allocating memory
+        unavailable(client->write_io.fd, "parse request");
+        cleanup_client(server->loop, &client->write_io);
+        goto reset_store;
+      case BAD_REQUEST: // TODO 2025-09-29 16:12:55 fall throughs relating only to request parsing
+        res = (Response){.status = req.error};
+        break;
+      default:
+        if (req.error) printf("Disregarding Request.error status %d.\n", req.error);
+      }
     }
+    // NB 2025-09-29 16:13:45 handler is currently also responsible for routing!
+     
+    // https://developer.mozilla.org/en-US/docs/Web/HTTP/Guides/Connection_management_in_HTTP_1.x
+    // Electing not to implement pipelining ("not activated by
+    // default in modern browsers"!), or HTTP/2 or /3. Client can
+    // open multiple connections (resulting in multiple jdfhttp
+    // Clients, probably served by different workers/threads).
+
+    // Multiple workers would therefore not serialise to the same
+    // client->deliver queue simultaneously. Pipelining is
+    // prevented by half-duplex using client_set_readable. Writer
+    // is on main thread so libev can deal with delays writing.
+    res = server->handler(&workshop->store, workshop->scratch, req);
     if (!res.client) res.client = client;
     workshop->pending.dest = &client->deliver;
     serialise_response(workshop, res);

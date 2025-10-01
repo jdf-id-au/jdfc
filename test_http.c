@@ -77,22 +77,21 @@ Response send_handler(arena *store, arena scratch, Request req) {
   // FIXME 2025-10-01 22:43:07 not sending to everyone
   for (size i = 0; i < server->clients.len; i++) {
     Client *c = server->clients.buf[i];
+    if (!c) continue;
+    ipstr(src_, req.client->address);
+    ipstr(dst_, c->address);
+    printf("%d %s %s:%d\n", i, c->mode==SERVER_SENT_EVENTS ? "📡" : "📣", dst_ip, dst_port);
     if (c && c->mode == SERVER_SENT_EVENTS) {
-      ipstr(src_, req.client->address);
-      ipstr(dst_, c->address);
-      s8_ msg = s8sprintf(&scratch,
+      s8_ msg = s8sprintf(&c->store, // recipient's arena!
                           "event: message\ndata: hello from %s:%d to %s:%d\n\n",
                           src_ip, src_port, dst_ip, dst_port);
       if (!msg.ok) return (Response){.status = SERVICE_UNAVAILABLE};
-      u8 *buf = malloc(msg.v.len); // freed by worker after consumption in serialise_response
-      if (!buf) return (Response){.status = SERVICE_UNAVAILABLE};
-      copy(buf, msg.v.buf, msg.v.len);
       b32 stat = enqueue_request((Request){
           .client = c,
           .is_update = 1, // destination
-          .update = {buf, msg.v.len},
+          .update = msg.v,
           .from = req.client});
-      printf("%s %s:%d → %s:%d\n", stat ? "🟢" : "🔴", src_ip, src_port, dst_ip, dst_port);
+      //printf("%s %s:%d → %s:%d\n", stat ? "🟢" : "🔴", src_ip, src_port, dst_ip, dst_port);
     }
   }
   return (Response) {.status = OK};
