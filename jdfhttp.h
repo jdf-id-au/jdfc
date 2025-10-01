@@ -503,6 +503,7 @@ size s8writec(void *out, s8 s) { // impl after s8write
 void finishc(Chunk *c, enum direction then) {
   c->finished = 1;
   c->then = then;
+  //printf("flushed with %d\n", then);
   flushc(c);
 }
 
@@ -517,6 +518,7 @@ void serialise_response(Workshop *shop, Response res) {
   if (res.is_update) {
     s8writec(out, res.update);
     finishc(out, WRITE); // TODO 2025-09-30 11:41:06 BOTH if websocket...
+    // FIXME 2025-10-01 18:36:05 not reaching write_client!
     printf("🛰️  %td B to %p\n", res.update.len, (void *)res.client);
   } else {
     s8 crlf = s8("\r\n");
@@ -538,7 +540,13 @@ void serialise_response(Workshop *shop, Response res) {
     s8writec(out, crlf);
     for (s8l *node = res.body; node; node = node->next)
       s8writec(out, node->val);
-    finishc(out, READ);
+
+    // TODO 2025-10-01 18:50:58 BOTH at appropriate point in websocket handshake
+    if (res.type == EVENT_STREAM) {
+      finishc(out, WRITE);
+      res.client->mode = SERVER_SENT_EVENTS;
+    }
+    else finishc(out, READ);
     printf("📣 %i\n", res.status);
   }
   res.client->store.cur = res.client->store_reset;
@@ -630,7 +638,7 @@ void write_client(EV_P_ ev_io *w, i32 events) {
   arena scratch = client->scratch; 
   Product *p = &client->deliver;
 
-  i32 idx = queue_pop(&p->q, p->cap);
+  i32 idx = queue_pop(&p->q, p->cap); // ╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴ Queue access
   if (idx < 0) {
     // printf("Queue empty\n"); // e.g. 20x... TODO 2025-10-01 08:36:33 is this wasteful?
     return;
@@ -643,8 +651,9 @@ void write_client(EV_P_ ev_io *w, i32 events) {
     return;
   }
   copy(buf, c.buf, c.len); // defensive copy, would be hard to debug if winged it
-  queue_pop_commit(&p->q);
+  queue_pop_commit(&p->q); // ╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴
 
+  if (c.then == WRITE) printf("got a .then=WRITE chunk\n");
   size total_bytes_written = 0;
   size bytes_written = 0;
   while (1) {

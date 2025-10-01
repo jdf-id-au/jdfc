@@ -65,7 +65,6 @@ Response handler(arena *store, arena scratch, Request req) {
 }
 
 Response sse_handler(arena *store, arena scratch, Request req) {
-  req.client->mode = SERVER_SENT_EVENTS;
   Response res = (Response){.status = OK, .type = EVENT_STREAM};
   add_header(store, &res, CACHE_CONTROL, s8("no-cache"));
   // NB 2025-10-01 17:56:45 nginx special
