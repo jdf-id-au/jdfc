@@ -69,7 +69,7 @@ Response sse_handler(arena *store, arena scratch, Request req) {
   Response res = (Response){.status = OK, .type = EVENT_STREAM};
   add_header(store, &res, CACHE_CONTROL, s8("no-cache"));
   // NB 2025-10-01 17:56:45 nginx special
-  // add_header(store, &res, X_ACCEL_BUFFERING, s8("no"));
+  add_header(store, &res, X_ACCEL_BUFFERING, s8("no"));
   return res;
 }
 
@@ -78,12 +78,11 @@ Response send_handler(arena *store, arena scratch, Request req) {
     Client *c = req.client->server->clients.buf[i];
     // FIXME 2025-10-01 16:51:53 not sending to all connected sse clients?
     if (c && c->mode == SERVER_SENT_EVENTS) {
-      b32 stat =
-          enqueue_request((Request){.client = c,
-                                    .is_update = 1,
-                                    // TOOD 2025-10-01 15:58:18 lifetime if
-                                    // dynamic? which arena to alloc on?
-                                    .update = s8("data: hello\n\n")});
+      b32 stat = enqueue_request((Request){
+          .client = c,
+          .is_update = 1,
+          // TOOD 2025-10-01 15:58:18 lifetime if dynamic? which arena to alloc on?
+          .update = s8("event: message\ndata: hello\n\n")});
       printf("%s sending from %p to %p\n",
              stat ? "🟢" : "🔴",
              (void *)req.client, (void *)c);

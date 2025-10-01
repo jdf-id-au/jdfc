@@ -459,6 +459,8 @@ void flushc(Chunk *c) {
   // tmp.buf is client.deliver.chunks.buf, preallocated in Client arena by `make_Product`
   // c->buf is workshop.pending.buf, preallocated in Workshop arena by `launch`
   copy(tmp.buf, c->buf, c->len);
+  // FIXME 2025-10-01 18:25:23 data is not even appearing on telnet 8080 !
+  // s8 help = (s8){c->buf, c->len}; log_debug(help);
   tmp.len = c->len;
   tmp.then = c->then;
   tmp.finished = c->finished;
