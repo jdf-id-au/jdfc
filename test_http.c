@@ -77,12 +77,12 @@ Response send_handler(arena *store, arena scratch, Request req) {
   for (size i = 0; i < req.client->server->clients.len; i++) {
     Client *c = req.client->server->clients.buf[i];
     if (c && c->mode == SERVER_SENT_EVENTS) {
-      // TOOD 2025-10-01 15:58:18 lifetime if dynamic? which arena to alloc on?
-      // ...need to wait until all sent? ...Request could have its own arena or malloc?
-      b32 stat = enqueue_request(
-                                 (Request){.client = c, // meaning destination in this case, rather than source+dest
-                    .is_update = 1,
-                    .update = s8("event: message\ndata: hello\n\n")});
+      b32 stat = enqueue_request((Request){
+           // meaning destination in this case, rather than source+dest
+          .client = c,
+          .from = req.client,
+          .is_update = 1,
+          .update = s8("event: message\ndata: hello\n\n")});
       ipstr(src_, req.client->address);
       ipstr(dst_, c->address);
       printf("%s %s:%d → %s:%d\n", stat ? "🟢" : "🔴", src_ip, src_port, dst_ip, dst_port);
