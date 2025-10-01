@@ -145,19 +145,15 @@ typedef struct {
   Chunk pending; // under construction, before copy to Product->chunks
 } Workshop; // Resources for one worker!
 
+ARRAY(Chunks, Chunk)
 ARRAY(Workshops, Workshop)
-
+ARRAY(Requests, Request)
+ARRAY(Clientptrs, Client *)
+  
 typedef struct { // allocated in Server arena
-  _Atomic Request *requests;
-  // simpler than _Atomic Requests *requests from ARRAY(Requests, Request)
-  // because _Atomic struct member access is UB:
-  size cap;
+  Requests requests;
   queue q;
-} Work; // Concurrent queue (multiple consumer)
-
-MAYBE(Work)
-
-ARRAY(Clients, Client *)
+} Work; // Concurrent queue (single consumer because mutex)
   
 typedef struct server {
   Config config;
@@ -172,16 +168,16 @@ typedef struct server {
   // https://randu.org/tutorials/threads/
   pthread_cond_t work_waiting;
   pthread_mutex_t work_waiting_lock; // just required for cond
-  Clients clients;
+  Clientptrs clients;
   size nclients; // should always match `clients` occpancy
 } Server;
 
 typedef struct product { // allocated in Client arena
-  _Atomic Chunk *chunks;
-  size cap;
+  Chunks chunks;
   queue q;
 } Product; // Concurrent queue (single consumer)
 
+MAYBE(Work)
 MAYBE(Product)
 
 enum mode {
@@ -362,27 +358,25 @@ Request parse_request(arena *store, arena scratch, s8 raw) {
 }
 
 // Run on main thread (by Client)
-Product_ make_product(arena *a, i32 cap, size chunk_size) {
+Product_ make_product(arena *a, i32 len, size chunk_size) {
   Product_ nil = (Product_){0};
-  cap = queue_capacity(cap);
+  i32 cap = queue_capacity(len);
   if (!cap) return nil;
-  i32 len = cap + 1;
-  _Atomic Chunk *chunks = new (a, _Atomic Chunk, len);
-  if (!chunks) return nil;
+  Chunks_ chunks = make_Chunks(a, len);
+  if (!chunks.ok) return nil;
   u8 *buf = new (a, u8, len * chunk_size);
   if (!buf) return nil;
   for (size i = 0; i < len; i++) {
-    // All at once so no UB _Atomic struct member access.
-    chunks[i] = (Chunk) {
+    chunks.v.buf[i] = (Chunk) {
       .buf = &buf[i * chunk_size],
       .cap = chunk_size
     };
   }
-  return (Product_) { .v = {.chunks = chunks, .cap = cap, .q = 0} };
+  return (Product_) { .v = {.chunks = chunks.v, .q = 0} };
 }
 
 // printf contents of arena. Terminates string in situ!
-size s8arenaprintf(arena *a, const char *format) {
+size arena_printf(arena *a, const char *format) {
   if (a->cur < a->end) *a->cur = 0;
   else {
     const char *warning = "❗️(too long for buffer)";
@@ -456,13 +450,13 @@ void flushc(Chunk *c) {
   // printf("Trying to flush %td bytes", c->len);
   // s8 insp = (s8){.buf = c->buf, .len = c->len};
   // log_debug(insp);
-  idx = queue_push(&p->q, p->cap); // ╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴ Queue access
+  idx = queue_push(&p->q, p->chunks.len); // ╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴ Queue access
   if (idx < 0) {
     fprintf(stderr, "⚠ Product queue full, chunk flush failed.\n");
     return;
   } 
   // shallow copy to work around Atomic struct member access UB
-  Chunk tmp = p->chunks[idx];
+  Chunk tmp = p->chunks.buf[idx];
   // tmp.buf is client.deliver.chunks.buf, preallocated in Client arena by `make_product`
   // c->buf is workshop.pending.buf, preallocated in Workshop arena by `launch`
   copy(tmp.buf, c->buf, c->len);
@@ -471,7 +465,7 @@ void flushc(Chunk *c) {
   tmp.len = c->len;
   tmp.then = c->then;
   tmp.finished = c->finished;
-  p->chunks[idx] = tmp;
+  p->chunks.buf[idx] = tmp;
   queue_push_commit(&p->q); // ╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴
 
   // Reset chunk for reuse! FIXME 2025-09-30 15:15:06 Error-prone
@@ -645,12 +639,12 @@ void write_client(EV_P_ ev_io *w, i32 events) {
   arena scratch = client->scratch; 
   Product *p = &client->deliver;
 
-  i32 idx = queue_pop(&p->q, p->cap); // ╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴ Queue access
+  i32 idx = queue_pop(&p->q, p->chunks.len); // ╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴ Queue access
   if (idx < 0) {
     // printf("Queue empty\n"); // e.g. 20x... TODO 2025-10-01 08:36:33 is this wasteful?
     return;
   }
-  Chunk c = p->chunks[idx]; // c.dest is irrelevant here
+  Chunk c = p->chunks.buf[idx]; // c.dest is irrelevant here
   u8 *buf = new (&scratch, u8, client->server->config.chunk_size);
   if (!buf) {
     unavailable(w->fd, "allocate out buffer");
@@ -719,10 +713,10 @@ void write_client(EV_P_ ev_io *w, i32 events) {
 
 b32 enqueue_request(Request req) {
   Server *server = req.client->server;
-  i32 idx = queue_push(&server->work.q, server->work.cap);
+  i32 idx = queue_push(&server->work.q, server->work.requests.len);
   //printf("queue_push position %i\n", idx);
   if (idx < 0) return 0; // queue full
-  server->work.requests[idx] = req;
+  server->work.requests.buf[idx] = req;
   queue_push_commit(&server->work.q);
   pthread_mutex_lock(&server->work_waiting_lock);
   pthread_cond_signal(&server->work_waiting); // worker can just sleep again if queue already emptied
@@ -763,7 +757,7 @@ void read_client(EV_P_ ev_io *w, i32 events) {
     if (uri) printf("🔔 %s from %s:%d\n", uri, cli_ip, cli_port);
     req.client = client;
     if (!enqueue_request(req)) {
-      unavailable(w->fd, "enqueue job");
+      unavailable(w->fd, "enqueue job"); // effectively backpressure
       cleanup_client(EV_A_ w);
       return;
     }
@@ -815,7 +809,7 @@ void accept_client(EV_P_ ev_io *w, i32 events) {
     client->read_io.data = client; // I'm a woozie (see libev doc)
 
     // TODO 2025-09-30 09:04:44 make cap configurable
-    Product_ deliver = make_product(&client->store, 31, server->config.chunk_size);
+    Product_ deliver = make_product(&client->store, 32, server->config.chunk_size);
     if (deliver.ok) client->deliver = deliver.v;
     else {
       unavailable(new_socket, "allocate out queue");
@@ -835,71 +829,57 @@ void accept_client(EV_P_ ev_io *w, i32 events) {
   }
 }
 
-void *worker(Workshop *workshop) {
+void *worker(Workshop *workshop) { // ─────────────────────────────────── Worker
   Server *server = workshop->server;
-  
   i32 qi = 0;
-  u32 save = 0;
   Request req = {0};
 
-  /*
-  // ─────────────────────────────────────────────────────── concurrent de-queue
-  // ╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴ unify this
-  do {
-    do {
-      qi = queue_mpop(&server->work.q, server->work.len, &save);
-    } while (qi < 0); // FIXME busy wait should sleep instead
-    job = server->work.jobs[qi];
-  } while (!queue_mpop_commit(&server->work.q, save));
-  // ╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴ with this
-  pthread_mutex_lock(&server->work_waiting_lock); // this thread will be the only one waiting for work
-  while ((qi = queue_mpop(&server->work.q, server->work.len, &save)) < 0)
-    // loop to cover suprious wakeup
-    pthread_cond_wait(&server->work_waiting, &server->work_waiting_lock); // blocks thread instead of busy-waiting
-  pthread_mutex_unlock(&server->work_waiting_lock);
-  */
-  // ╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴ as follows
+  //  Use mutex and single-consumer queue for work allocation rather
+  //  than multiple-consumer queue, which needed mutex to handle
+  //  waiting anyway in this project.
+
   while (1) {
-    pthread_mutex_lock(&server->work_waiting_lock);
-    while ((qi = queue_mpop(&server->work.q, server->work.cap, &save)) < 0)
-      // loop to cover suprious wakeup
+    // Make "this" thread the only one waiting for work:
+    pthread_mutex_lock(&server->work_waiting_lock); // ╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴ lock
+    // Loop to cover suprious wakeup.
+    while ((qi = queue_pop(&server->work.q, server->work.requests.len)) < 0)
+      // Block thread instead of busy-waiting.
       pthread_cond_wait(&server->work_waiting, &server->work_waiting_lock);
-    pthread_mutex_unlock(&server->work_waiting_lock);
-    req = server->work.requests[qi];
-    if (queue_mpop_commit(&server->work.q, save)) {
-      Client *client = req.client;
-      Response res = {0};
-      switch (req.error) {
-      case SERVICE_UNAVAILABLE: // mainly being some disaster allocating memory
-        unavailable(client->write_io.fd, "parse request");
-        cleanup_client(server->loop, &client->write_io);
-        break;
-      case BAD_REQUEST: // TODO 2025-09-29 16:12:55 fall throughs relating only to request parsing
-        res = (Response){.status = req.error};
-        break;
-      default:
-        if (req.error) printf("Disregarding Request.error status %d.\n", req.error);
-        // NB 2025-09-29 16:13:45 handler is currently also responsible for routing!
+    req = server->work.requests.buf[qi];
+    queue_pop_commit(&server->work.q);
+    pthread_mutex_unlock(&server->work_waiting_lock); // ╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴
+    Client *client = req.client;
+    Response res = {0};
+    switch (req.error) {
+    case SERVICE_UNAVAILABLE: // mainly being some disaster allocating memory
+      unavailable(client->write_io.fd, "parse request");
+      cleanup_client(server->loop, &client->write_io);
+      break;
+    case BAD_REQUEST: // TODO 2025-09-29 16:12:55 fall throughs relating only to request parsing
+      res = (Response){.status = req.error};
+      break;
+    default:
+      if (req.error) printf("Disregarding Request.error status %d.\n", req.error);
+      // NB 2025-09-29 16:13:45 handler is currently also responsible for routing!
 
-        // https://developer.mozilla.org/en-US/docs/Web/HTTP/Guides/Connection_management_in_HTTP_1.x
-        // Electing not to implement pipelining ("not activated by
-        // default in modern browsers"!), or HTTP/2 or /3. Client can
-        // open multiple connections (resulting in multiple jdfhttp
-        // Clients, probably served by different workers/threads).
+      // https://developer.mozilla.org/en-US/docs/Web/HTTP/Guides/Connection_management_in_HTTP_1.x
+      // Electing not to implement pipelining ("not activated by
+      // default in modern browsers"!), or HTTP/2 or /3. Client can
+      // open multiple connections (resulting in multiple jdfhttp
+      // Clients, probably served by different workers/threads).
 
-        // Multiple workers would therefore not serialise to the same
-        // client->deliver queue simultaneously. Pipelining is
-        // prevented by half-duplex using client_set_readable. Writer
-        // is on main thread so libev can deal with delays writing.
-        // client->deliver should buffer 32KiB.
-        res = server->handler(&workshop->store, workshop->scratch, req);
-      }
-      if (!res.client) res.client = client;
-      workshop->pending.dest = &client->deliver;
-      // TODO 2025-09-29 22:21:10 some server-level notion of Client for session state.
-      serialise_response(workshop, res);
-      workshop->store.cur = workshop->store_reset;
+      // Multiple workers would therefore not serialise to the same
+      // client->deliver queue simultaneously. Pipelining is
+      // prevented by half-duplex using client_set_readable. Writer
+      // is on main thread so libev can deal with delays writing.
+      // client->deliver should buffer 32KiB.
+      res = server->handler(&workshop->store, workshop->scratch, req);
     }
+    if (!res.client) res.client = client;
+    workshop->pending.dest = &client->deliver;
+    // TODO 2025-09-29 22:21:10 some server-level notion of Client for session state.
+    serialise_response(workshop, res);
+    workshop->store.cur = workshop->store_reset;
   }
 }
 
@@ -909,10 +889,10 @@ Work_ make_work(arena *a, i32 cap) {
   Work_ nil = (Work_){0};
   cap = queue_capacity(cap);
   if (!cap) return nil;
-  i32 len = cap + 1; 
-  _Atomic Request *requests = new (a, _Atomic Request, len);
-  if (!requests) return nil;
-  return (Work_) { .v = {.requests = requests, .cap = cap, .q = 0} };
+  i32 len = cap + 1;
+  Requests_ requests = make_Requests(a, len);
+  if (!requests.ok) return nil;
+  return (Work_) {.v = { .requests = requests.v, .q = 0} };
 }
 
 void sigint_cb(EV_P_ ev_signal *w, i32 events) {
@@ -963,7 +943,7 @@ void launch(Server *server) {
       if (i == 0) exit(1);
       break;
     }
-  Work_ work = make_work(&server->store, 31);
+  Work_ work = make_work(&server->store, 32);
   if (!work.ok) {
     fprintf(stderr, "💣 Failed to make work queue\n");
     exit(1);
@@ -972,7 +952,7 @@ void launch(Server *server) {
   server->work_waiting = (pthread_cond_t)PTHREAD_COND_INITIALIZER;
   pthread_mutex_init(&server->work_waiting_lock, 0);
 
-  Clients_ track = make_Clients(&server->store, server->config.clients); 
+  Clientptrs_ track = make_Clientptrs(&server->store, server->config.clients); 
   if (!track.ok) {
     fprintf(stderr, "💣 Failed to allocate client tracking array for %d clients\n",
             server->config.clients);

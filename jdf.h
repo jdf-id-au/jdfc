@@ -644,18 +644,17 @@ s8_ s8sprintf(arena *buf, const char *format, ...) {
 typedef _Atomic u32 queue; // typedef _Atomic ... is ok as per stdatomic.h
 // len must be positive, <= 32768, and a power of two.
 // NB Actual storage must be size cap + 1! ▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚▚
-i32 queue_capacity(i32 cap) {
-  i32 len = cap + 1;
+i32 queue_capacity(i32 len) {
   if ((len <= 0) || (len > 1 << 16) || (len & (len - 1))) {
-    fprintf(stderr, "Invalid queue capacity: %d", cap);
+    fprintf(stderr, "Invalid queue storage length: %d", len);
     return 0; 
   }
-  return cap;
+  return len - 1;
 }
 // ╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴ Multiple consumer
-i32 queue_mpop(queue *q, i32 cap, u32 *save) {
+i32 queue_mpop(queue *q, i32 len, u32 *save) {
   u32 r = *save = *q;
-  i32 mask = cap;
+  i32 mask = len - 1;
   i32 head = r       & mask;
   i32 tail = r >> 16 & mask;
   return head == tail ? -1 : tail;
@@ -666,10 +665,10 @@ b32 queue_mpop_commit(queue *q, u32 save) {
 }
 // ╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴ Single consumer
 // Returns index for next value to be popped. -1 when empty.
-i32 queue_pop(queue *q, i32 cap) {
+i32 queue_pop(queue *q, i32 len) {
   // printf("queue_pop %p 0x%x %i\n", q, *q, len);
   u32 r = *q; // ? memory_order_acquire from stdatomic.h
-  i32 mask = cap;
+  i32 mask = len - 1;
   i32 head = r       & mask;
   i32 tail = r >> 16 & mask;
   return head == tail ? -1 : tail;
@@ -678,10 +677,10 @@ void queue_pop_commit(queue *q) {
   *q += 0x10000; // 0x10000 == 1u << 16 i.e. increment tail ; ? memory_order_release
 }
 // Returns index for next value to be pushed. -1 when full.
-i32 queue_push(queue *q, i32 cap) {
-  // printf("queue_push %p 0x%x %i\n", q, *q, len);
+i32 queue_push(queue *q, i32 len) {
+  printf("queue_push %p 0x%x %i\n", (void *)q, *q, len);
   u32 r = *q;
-  i32 mask = cap;
+  i32 mask = len - 1;
   i32 head = r       & mask;
   i32 tail = r >> 16 & mask;
   i32 next = (head + 1u) & mask;
@@ -700,13 +699,13 @@ typedef struct {
   queue q;
 } qout;
 MAYBE(qout)
-qout_ make_qout(arena *a, i32 cap) {
+qout_ make_qout(arena *a, i32 len) {
   qout_ nil = (qout_){0};
-  cap = queue_capacity(cap);
+  i32 cap = queue_capacity(len);
   if (!cap) return nil;
-  u8 *buf = new (a, u8, cap + 1);
+  u8 *buf = new (a, u8, len);
   if (!buf) return nil;
-  return (qout_) { .v = {.buf = (s8){.buf = buf, .len = cap + 1}, .q = 0 } };
+  return (qout_) { .v = {.buf = (s8){.buf = buf, .len = len}, .q = 0 } };
 }
 size read_qout(qout *qo, s8 buf) {
   i32 qi = 0;
