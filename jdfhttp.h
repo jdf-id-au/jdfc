@@ -543,8 +543,8 @@ void serialise_response(Workshop *shop, Response res) {
 
     // TODO 2025-10-01 18:50:58 BOTH at appropriate point in websocket handshake
     if (res.type == EVENT_STREAM) {
-      finishc(out, WRITE);
       res.client->mode = SERVER_SENT_EVENTS;
+      finishc(out, WRITE);
     }
     else finishc(out, READ);
     printf("📣 %i\n", res.status);
