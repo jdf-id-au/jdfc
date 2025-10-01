@@ -158,83 +158,6 @@ typedef struct { // allocated in Server arena
   queue q;
 } Work; // Concurrent queue (single consumer because mutex)
 
-// ╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴ Roundrobin arena
-
-typedef struct {
-  byte *beg;
-  byte *tail; // first used byte, advanced when alloc popped from queue (FIFO)
-  byte *cur; // next free byte, loops to beg requested > available 
-  byte *end;
-} roundrobin;
-
-// Allow handlers themselves to enqueue Requests containing strings of
-// appropriate lifetime. "Handover" from one Request to another.
-typedef struct {
-  s8a strings; // allocated in Server's roundrobin arena
-  queue q;
-} Handover; // Concurrent queue (single consumer)
-
-MAYBE(Handover)
-
-Handover_ make_handover(arena *a, i32 len) {
-  Handover_ nil = (Handover_){0};
-  i32 cap = queue_capacity(len);
-  if (!cap) return nil;
-  s8a_ strings = make_s8a(a, len); // .bufs to be within a roundrobin
-  if (!strings.ok) return nil;
-  return (Handover_){.v = {.strings = strings.v, .q = 0}};
-}
-     
-// Just bytes, no alignment.
-s8_ rralloc(roundrobin *a, size len) {
-  if (a->tail > a->cur) {
-    if (a->tail - a->cur > len) {
-      u8 *buf = (u8 *)a->cur;
-      a->cur += len;
-      return (s8_){.v = {.buf = buf, .len = len}};
-    } else {
-      fprintf(stderr, "Insufficient space in middle of roundrobin.\n");
-      return (s8_){0};
-    }
-  } else if (a->end - a->cur > len) {
-    u8 *buf = (u8 *)a->cur;
-    a->cur += len;
-    return (s8_) {.v = {.buf = buf, .len = len}};
-  } else if (a->tail - a->beg > len) {
-    u8 *buf = (u8 *)a->beg;
-    a->cur = a->beg + len;
-    return (s8_){.v = {.buf = buf, .len = len}};
-  } else {
-    fprintf(stderr, "Insufficient space at start of roundrobin.\n");
-    return (s8_){0};
-  }
-}
-
-b32 rrwithin(roundrobin a, s8 s) {
-  return s.buf >= (u8 *)a.beg && endof(s) <= (u8 *)a.end; 
-}
-
-roundrobin alloc_roundrobin(size cap) {
-  byte *beg = malloc(cap);
-  byte *end = beg ? beg + cap : 0;
-  byte *tail = end + 1; // 💀
-  if (beg) return (roundrobin){.beg = beg, .cur = beg, .tail = tail, .end = end};
-  else return (roundrobin){0};
-}
-
-b32 free_roundrobin(roundrobin *a) {
-  if (!a) return 0;
-  byte *me = a->beg;
-  a->beg = 0;
-  a->tail = 0;
-  a->cur = 0;
-  a->end = 0;
-  free(me); // safe even if null
-  return 1;
-}
-
-//  ╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴
-
 typedef struct server {
   Config config;
   i32 socket;
@@ -242,10 +165,7 @@ typedef struct server {
   struct ev_loop *loop;
   arena store;
   arena scratch;
-  roundrobin robin;
   Handler handler;
-  pthread_cond_t handover_waiting;
-  pthread_mutex_t handover_waiting_lock;
   Workshops workshops;
   Work work;
   // https://randu.org/tutorials/threads/
@@ -253,7 +173,6 @@ typedef struct server {
   pthread_mutex_t work_waiting_lock; // just required for cond
   Clientptrs clients;
   size nclients; // should always match `clients` occpancy
-  Handover handover;
 } Server;
 
 typedef struct product { // allocated in Client arena
@@ -603,6 +522,7 @@ void serialise_response(Workshop *shop, Response res) {
   if (res.is_update) {
     s8writec(out, res.update);
     finishc(out, WRITE); // TODO 2025-09-30 11:41:06 BOTH if websocket...
+    free(res.update.buf);
 #ifndef QUIET
     ipstr(cli_, res.client->address);
     printf("📡 %td B to %s:%d\n", res.update.len, cli_ip, cli_port);
@@ -933,22 +853,6 @@ void *worker(Workshop *workshop) { // ──────────────
     queue_pop_commit(&server->work.q);
     pthread_mutex_unlock(&server->work_waiting_lock); // ╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴
     Client *client = req.client;
-    if (req.is_update && rrwithin(server->robin, req.update)) {
-      s8_ update = s8clone(&workshop->store, req.update);
-      if (!update.ok) {
-        unavailable(client->write_io.fd, "copy handover");
-        cleanup_client(server->loop, &client->write_io);
-        goto reset_store;
-      }
-      req.update = update.v;
-      pthread_mutex_lock(&server->handover_waiting_lock); // ╴╴╴╴╴ lock handover
-      i32 qi = queue_pop(&server->handover.q, server->handover.strings.len);
-      if (server->handover.strings.buf[qi].buf == req.update.buf) {
-        queue_pop_commit(&server->handover.q);
-        pthread_cond_signal(&server->handover_waiting); // unblock waiting enqueuement
-      } else fprintf(stderr, "Handover queue out of sync\n");
-      pthread_mutex_unlock(&server->handover_waiting_lock); // ╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴
-    }
     Response res = {0};
     switch (req.error) {
     case SERVICE_UNAVAILABLE: // mainly being some disaster allocating memory
@@ -1060,29 +964,14 @@ void launch(Server *server) {
     exit(1);
   }
   server->clients = track.v;
-  // ╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴ Handover
-  server->robin = alloc_roundrobin(server->config.server_mem);
-  if (!server->robin.beg) {
-      fprintf(stderr, "💣 Failed to allocate handover roundrobin arena\n");
-      exit(1);
-  }
-  // TODO 2025-10-02 02:33:37 make configurable
-  Handover_ handover = make_handover(&server->store, 16);
-  if (!handover.ok) {
-    fprintf(stderr, "💣 Failed to allocate handover queue\n");
-      exit(1);
-  }
-  server->handover = handover.v;
-  server->handover_waiting = (pthread_cond_t)PTHREAD_COND_INITIALIZER;
-  pthread_mutex_init(&server->handover_waiting_lock, 0);
   // ──────────────────────────────────────────────────────────────────── Launch
   ipstr(srv_, server->address);
   printf("👂 Listening on %s:%d using %td threads for up to %d clients.\n",
          srv_ip, srv_port, workers, server->config.clients);
   printf(
-      "🧠 Internal memory usage will be %td-%td MiB.\n", // excludes libraries' allocs
+      "🧠 Internal memory usage will be %td-%td MiB.\n", // excludes libraries' allocs AND malloc messages
       // TODO 2025-10-02 01:47:17 could configure individually... after profiling
-      (server->config.server_mem * 3 // store, scratch, handover
+      (server->config.server_mem * 2 // store, scratch
           + server->config.client_mem * 2 * 0
           + server->config.worker_mem * 2 * server->config.workers) / MiB(1),
          (server->config.server_mem * 3
@@ -1110,7 +999,6 @@ void launch(Server *server) {
   ev_run(server->loop, 0);
   ev_loop_destroy(server->loop);
 
-  free_roundrobin(&server->robin); // no real point at end of program?
   // TODO is it necessary to join/kill workers? do they need enclosing while(running) loop?
 }
 
