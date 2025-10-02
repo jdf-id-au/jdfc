@@ -609,7 +609,7 @@ enum direction client_set_direction(EV_P_ ev_io *w, enum direction next, char *n
   enum direction previous;
   if (ev_is_active(read_io)) previous = ev_is_active(write_io) ? READWRITE : READ;
   else previous = ev_is_active(write_io) ? WRITE : NEITHER;
-  printf("direction %d", previous);
+  //printf("direction %d", previous);
   if (next!=previous) {
     switch (previous) {
     case NEITHER:
@@ -651,9 +651,9 @@ enum direction client_set_direction(EV_P_ ev_io *w, enum direction next, char *n
         break;
       }
     }
-    printf(" → %d", next);
+    //printf(" → %d", next);
   }
-  printf(" %s\n", note ? note : "");
+  //printf(" %s\n", note ? note : "");
   return previous;
 }
 

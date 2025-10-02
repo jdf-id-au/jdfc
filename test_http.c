@@ -74,19 +74,12 @@ Response sse_handler(arena *store, arena scratch, Request req) {
 
 Response send_handler(arena *store, arena scratch, Request req) {
   Server *server = req.client->server;
-  // FIXME 2025-10-01 22:43:07
-  // ...failing clients getting connection refused when trying to get /sse from
-  // /receive
-  // ...e.g. laptop/phone can usu connect to /sse but it fails within /receive
-  // always works on localhost
-  // reconnection isn't seen at all by accept_client on newly run server...
-  // external problem?!?!? -> omg yes, confirmed with python/fastapi/uvicorn
   for (size i = 0; i < server->clients.len; i++) {
     Client *c = server->clients.buf[i];
     if (!c) continue;
     ipstr(src_, req.client->address);
     ipstr(dst_, c->address);
-    printf("%td %s %s:%d\n", i, c->mode==SERVER_SENT_EVENTS ? "📡" : "📣", dst_ip, dst_port);
+    //printf("%td %s %s:%d\n", i, c->mode==SERVER_SENT_EVENTS ? "📡" : "📣", dst_ip, dst_port);
     if (c && c->mode == SERVER_SENT_EVENTS) {
       s8_ msg = s8sprintf(&c->store, // recipient's arena!
                           "event: message\ndata: hello from %s:%d to %s:%d\n\n",
@@ -107,7 +100,7 @@ s8 view_sse = s8("<!doctype html>\n"
                  "<html><head><title>SSE listener</title></head>\n"
                  "<body><div id=\"output\"></div>"
                  "<script type=\"module\">\n"
-                 "const esrc = new EventSource(\"//localhost:8080/sse\");\n"
+                 "const esrc = new EventSource(\"/sse\");\n"
                  "esrc.onmessage = (event) => { console.log(event); "
                  "output.innerHTML += `${event.data}<br/>`; }\n"
                  "output.innerHTML += `Awaiting server-sent events...<br/>`;\n"
