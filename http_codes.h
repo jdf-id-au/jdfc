@@ -354,4 +354,28 @@ enum content_type parse_content_type(s8 s) {
       return (enum content_type)i;
   return (enum content_type)0;
 }
+enum direction {
+  NEITHER = 0,
+  READ,
+  WRITE,
+  READWRITE,
+};
+const s8 spell_direction[] = {
+  [NEITHER] = s8("NEITHER"),
+  [READ] = s8("READ"),
+  [WRITE] = s8("WRITE"),
+  [READWRITE] = s8("READWRITE"),
+};
+const s8 describe_direction[] = {
+  [NEITHER] = s8("NEITHER"),
+  [READ] = s8("listen for next request/part"),
+  [WRITE] = s8("standby for next response/part"),
+  [READWRITE] = s8("full duplex"),
+};
+enum direction parse_direction(s8 s) {
+  for (size i = 0; i < 4; i++)
+    if(s8equal(s, spell_direction[i]))
+      return (enum direction)i;
+  return (enum direction)0;
+}
 #endif // HTTP_CODES_JSON

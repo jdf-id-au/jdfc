@@ -359,5 +359,9 @@
              "Connection",
              "Upgrade"],
  "content_type": [["html", "text/html; charset=UTF-8"],
-                  ["event-stream", "text/event-stream"]]
+                  ["event-stream", "text/event-stream"]],
+ "direction": [[0, "NEITHER"],
+               ["READ", "listen for next request/part"],
+               ["WRITE", "standby for next response/part"],
+               ["READWRITE", "full duplex"]]
 }

@@ -18,7 +18,7 @@ test_rel: test_rel.c relptr.h
 	$(PREAMBLE) ./$@
 
 test_http: test_http.c jdfhttp.h http_codes.h
-	time cc $(CFLAGS) -lev -lpthread $< -o $@
+	time cc $(CFLAGS) -Wno-unused-parameter -Wno-switch -lev -lpthread $< -o $@
 	du -sh $@
 	$(PREAMBLE) ./$@
 

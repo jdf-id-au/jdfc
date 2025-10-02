@@ -121,12 +121,6 @@ i32 nworkers(void);
     .workers = nworkers(),                      \
     .chunk_size = KiB(4)
 
-enum direction {
-  WRITE, // standby for next response e.g. server sent events, transfer-encoding chunked
-  READ, // listen for next request e.g. normal request
-  BOTH // full duplex e.g. websocket (future)
-};
-
 typedef struct product Product; // forward decl
 
 typedef struct { // impl after jdf.h bufout
@@ -607,21 +601,60 @@ void cleanup_client(EV_P_ ev_io *w) {
   client_cleanup_basics(&client->store, &client->scratch, w->fd);
 }
 
-// signature cosplay for consistency
-void client_set_readable(EV_P_ ev_io *w, b32 readable) {
+// returns previous state; not enjoyable to implement
+enum direction client_set_direction(EV_P_ ev_io *w, enum direction next) {
   Client *client = (Client *)w->data;
   ev_io *read_io = &client->read_io;
-  // if (readable == ev_is_active(read_io)) printf("Inconsistent client %s readable call\n", readable ? "set" : "unset");
-  if (readable) ev_io_start(EV_A_ read_io);
-  else ev_io_stop(EV_A_ read_io);
-}
-
-void client_set_writable(EV_P_ ev_io *w, b32 writable) {
-  Client *client = (Client *)w->data;
   ev_io *write_io = &client->write_io;
-  // if (writable == ev_is_active(write_io)) printf("Inconsistent client %s writable call\n", writable ? "set" : "unset");
-  if (writable) ev_io_start(EV_A_ write_io);
-  else ev_io_stop(EV_A_ write_io);
+  enum direction previous;
+  if (ev_is_active(read_io)) previous = ev_is_active(write_io) ? READWRITE : READ;
+  else previous = ev_is_active(write_io) ? WRITE : NEITHER;
+  printf("direction %d", previous);
+  if (next!=previous) {
+    switch (previous) {
+    case NEITHER:
+      switch (next) {
+      case READ:
+        ev_io_start(EV_A_ read_io);
+        break;
+      case WRITE:
+        ev_io_start(EV_A_ write_io);
+        break;
+      case READWRITE:
+        ev_io_start(EV_A_ read_io);
+        ev_io_start(EV_A_ write_io);
+        break;
+      }
+    case READ:
+      switch (next) {
+      case WRITE:
+        ev_io_stop(EV_A_ read_io); // fallthrough
+      case READWRITE:
+        ev_io_start(EV_A_ write_io);
+        break;
+      }
+    case WRITE:
+      switch (next) {
+      case READ:
+        ev_io_stop(EV_A_ write_io); // fallthrough
+      case READWRITE:
+        ev_io_start(EV_A_ read_io);
+        break;
+      }
+    case READWRITE:
+      switch (next) {
+      case READ:
+        ev_io_stop(EV_A_ write_io);
+        break;
+      case WRITE:
+        ev_io_stop(EV_A_ read_io);
+        break;
+      }
+    }
+    printf(" → %d\n", next);
+  }
+  printf("\n");
+  return previous;
 }
 
 const static s8 UNAVAILABLE = s8("HTTP/1.1 503 Service Unavailable\r\n");
@@ -697,20 +730,12 @@ void write_client(EV_P_ ev_io *w, i32 events) {
     ipstr(cli_, client->address);
     fprintf(stderr, "Erroneously wrote no data to %s:%d.\n", cli_ip, cli_port);
   }
-  
-  switch (c.then) { // clang exhaustiveness checking ftw
-  case WRITE:
-    client_set_writable(EV_A_ w, 1);
-    client_set_readable(EV_A_ w, 0);
-    break;
-  case READ:
-    client_set_writable(EV_A_ w, 0);
-    client_set_readable(EV_A_ w, 1);
-    break;
-  case BOTH:
-    client_set_writable(EV_A_ w, 1);
-    client_set_readable(EV_A_ w, 1);
-    break;
+
+  enum direction prev = client_set_direction(EV_A_ w, c.then);
+  if (prev != c.then) {
+    ipstr(cli_, client->address);
+    printf("for %s:%d %s\n", cli_ip, cli_port,
+           client->mode==SERVER_SENT_EVENTS ? "📡" : "📣");
   }
 }
 
@@ -764,8 +789,7 @@ void read_client(EV_P_ ev_io *w, i32 events) {
       cleanup_client(EV_A_ w);
       return;
     }
-    client_set_readable(EV_A_ w, 0); // enforce half-duplex! see worker fn
-    client_set_writable(EV_A_ w, 1); // unset in write_client when actually finished
+    client_set_direction(EV_A_ w, WRITE);
     // not closing socket
   }
 }
@@ -811,7 +835,16 @@ void accept_client(EV_P_ ev_io *w, i32 events) {
     ev_io_init(&client->read_io, read_client, new_socket, EV_READ);
     client->read_io.data = client; // I'm a woozie (see libev doc)
 
-    // TODO 2025-09-30 09:04:44 make cap configurable
+    // This is started and stopped conditionally on whether there is data to
+    // write, to prevent excessive activation...
+    // https://buildmage.com/blog/libev-tutorial-and-wrapper
+    ev_io_init(&client->write_io, write_client, new_socket, EV_WRITE);
+    client->write_io.data = client;
+    // ...so deliberately not starting here.
+
+    client_set_direction(EV_A_ &client->read_io, READ);
+
+    // TODO 2025-09-30 09:04:44 make len configurable
     Product_ deliver = make_product(&client->store, 32, server->config.chunk_size);
     if (deliver.ok) client->deliver = deliver.v;
     else {
@@ -821,14 +854,6 @@ void accept_client(EV_P_ ev_io *w, i32 events) {
     }
     client->store_reset = client->store.cur;
     add_client(server, client);
-    client_set_readable(EV_A_ &client->read_io, 1);
-      
-    // This is started and stopped conditionally on whether there is data to
-    // write, to prevent excessive activation...
-    // https://buildmage.com/blog/libev-tutorial-and-wrapper
-    ev_io_init(&client->write_io, write_client, new_socket, EV_WRITE);
-    client->write_io.data = client;
-    // ...so deliberately not starting here.
   }
 }
 
@@ -968,8 +993,7 @@ void launch(Server *server) {
   ipstr(srv_, server->address);
   printf("👂 Listening on %s:%d using %td threads for up to %d clients.\n",
          srv_ip, srv_port, workers, server->config.clients);
-  printf(
-      "🧠 Internal memory usage will be %td-%td MiB.\n", // excludes libraries' allocs AND malloc messages
+  printf("🧠 Internal memory usage will be %td-%td MiB.\n", // excludes libraries' allocs
       // TODO 2025-10-02 01:47:17 could configure individually... after profiling
       (server->config.server_mem * 2 // store, scratch
           + server->config.client_mem * 2 * 0
