@@ -386,8 +386,8 @@ size arena_printf(arena *a, const char *format) {
 s8map *s8mapassoc_cloned(arena *store, s8map *head, s8 k, s8 v) {
   s8map *already = s8mapget(head, k);
   if (already && s8equal(already->val, v)) return head;
-  s8_ kc = s8clone(store, k);
-  s8_ vc = s8clone(store, v);
+  s8_ kc = s8clone(store, k, 0);
+  s8_ vc = s8clone(store, v, 0);
   if (kc.ok && vc.ok) {
     s8map *ret = s8mapassoc(store, head, kc.v, vc.v);
     if (ret) return ret;
@@ -770,7 +770,7 @@ void read_client(EV_P_ ev_io *w, i32 events) {
   } else {
     // TODO handle large read, e.g. stream to arena until finished or excessive,
     // then handle? For now, store (copy) request in client store arena.
-    s8_ raw = s8clone(&client->store, s8bytespan(client->scratch.beg, client->scratch.cur));
+    s8_ raw = s8clone(&client->store, s8bytespan(client->scratch.beg, client->scratch.cur), 0);
     if (!raw.ok) {
       unavailable(w->fd, "store raw request");
       cleanup_client(EV_A_ w);
