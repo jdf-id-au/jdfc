@@ -37,10 +37,10 @@ Response handler(arena *store, arena scratch, Request req) {
       "<head>"
       "<title>Hello from C</title>"
       "</head>"
-      "<body>Using %ti/%ti B for server, %ti/%ti B for this client %p"
+      "<body>Using %ti/%ti B for server, %ti/%ti B for this client %s:%d"
       "<h1>Workshops</h1>",
       used(&req.client->server->store), capacity(&req.client->server->store),
-      used(&req.client->store), capacity(&req.client->store), &req.client);
+      used(&req.client->store), capacity(&req.client->store), req.client->ip, req.client->port);
   
   assert(body.ok);
   res.body = s8lappend(store, res.body, body.v);
@@ -73,17 +73,16 @@ Response sse_handler(arena *store, arena scratch, Request req) {
 }
 
 Response send_handler(arena *store, arena scratch, Request req) {
+  Client *client = req.client;
   Server *server = req.client->server;
   for (size i = 0; i < server->clients.len; i++) {
     Client *c = server->clients.buf[i];
     if (!c) continue;
-    ipstr(src_, req.client->address);
-    ipstr(dst_, c->address);
     //printf("%td %s %s:%d\n", i, c->mode==SERVER_SENT_EVENTS ? "📡" : "📣", dst_ip, dst_port);
     if (c && c->mode == SERVER_SENT_EVENTS) {
       s8_ msg = s8sprintf(&c->store, // recipient's arena!
                           "event: message\ndata: hello from %s:%d to %s:%d\n\n",
-                          src_ip, src_port, dst_ip, dst_port);
+                          client->ip, client->port, c->ip, c->port);
       if (!msg.ok) return (Response){.status = SERVICE_UNAVAILABLE};
       b32 stat = enqueue_request((Request){
           .client = c,

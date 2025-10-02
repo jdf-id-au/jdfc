@@ -1,10 +1,7 @@
-// No, don't! Use mongoose instead!
-// Starting at
 // https://medium.com/@justup1080/tutorial-creating-a-minimalist-http-server-in-c-2303d140c725
 // https://hoad.io/libev-is-neat/
 
-#include "jdf.h" // TODO remove if want flexibility of choosing relptr.h; may not be worth matching APIs though
-// #include "relptr.h"
+#include "jdf.h"
 #include "http_codes.h"
 
 #ifndef jdfhttp_h
@@ -156,6 +153,8 @@ typedef struct server {
   Config config;
   i32 socket;
   struct sockaddr_in address;
+  char ip[INET_ADDRSTRLEN];
+  i32 port;
   struct ev_loop *loop;
   arena store;
   arena scratch;
@@ -190,6 +189,8 @@ typedef struct client {
   arena scratch;
   byte *store_reset; // after initialisation, before work; only slightly breaks arena concept
   struct sockaddr_in address;
+  char ip[INET_ADDRSTRLEN];
+  i32 port;
   ev_io read_io;
   ev_io write_io;
   Product deliver;
@@ -517,8 +518,7 @@ void serialise_response(Workshop *shop, Response res) {
     s8writec(out, res.update);
     finishc(out, WRITE); // TODO 2025-09-30 11:41:06 READWRITE if websocket...
 #ifndef QUIET
-    ipstr(cli_, res.client->address);
-    printf("📡 %td B to %s:%d\n", res.update.len, cli_ip, cli_port);
+    printf("📡 %td B to %s:%d\n", res.update.len, res.client->ip, res.client->port);
 #endif
   } else {
     s8 crlf = s8("\r\n");
@@ -660,7 +660,7 @@ enum direction client_set_direction(EV_P_ ev_io *w, enum direction next, char *n
 const static s8 UNAVAILABLE = s8("HTTP/1.1 503 Service Unavailable\r\n");
 
 // FIXME 2025-05-25 15:28:50 need to close client gracefully when arena
-// available below a threshold, or timeout since last read... 
+// available below a threshold, or timeout since last read...
 // TODO 2025-05-25 15:31:23 rate limitation, or leave it to nginx?
 void unavailable(i32 sock, char *msg) {
   fprintf(stderr, "💣 Failed to %s\n", msg);
@@ -705,7 +705,7 @@ void write_client(EV_P_ ev_io *w, i32 events) {
         printf("Should try again?\n");
       } else {
         perror("Error writing to client");
-        cleanup_client(EV_A_ w);
+        cleanup_client(EV_A_ w); // TODO 2025-10-03 08:51:04 confirm this fires on send timeout
         return;
       }
     } else {
@@ -717,23 +717,19 @@ void write_client(EV_P_ ev_io *w, i32 events) {
   }
   if (c.finished) {
 #ifndef QUIET
-    //ipstr(cli_, client->address);
-    //printf("✅ %ti B written to %s:%d\n", total_bytes_written, cli_ip, cli_port);
+    //printf("✅ %ti B written to %s:%d\n", total_bytes_written, client->ip, client->port);
 #endif
   } else if (c.len) {
 #ifndef QUIET
-    ipstr(cli_, client->address);
     printf("➡️ Chunk of %td B written, message not finished to %s:%d\n",
-           c.len, cli_ip, cli_port);
+           c.len, client->ip, client->port);
 #endif
   } else { //  Only legitimate empty is when finished, to set direction.
-    ipstr(cli_, client->address);
-    fprintf(stderr, "Erroneously wrote no data to %s:%d.\n", cli_ip, cli_port);
+    fprintf(stderr, "Erroneously wrote no data to %s:%d.\n", client->ip, client->port);
   }
 
-  ipstr(cli_, client->address);
   char note[128];
-  snprintf(note, sizeof note, "write_client %s:%d %s", cli_ip, cli_port,            
+  snprintf(note, sizeof note, "write_client %s:%d %s", client->ip, client->port,
            client->mode==SERVER_SENT_EVENTS ? "📡" : "📣");
   client_set_direction(EV_A_ w, c.then, note);
 }
@@ -758,14 +754,14 @@ void read_client(EV_P_ ev_io *w, i32 events) {
   ssize_t bytes_read = read(w->fd, client->scratch.beg, available(&client->scratch));
   client->scratch.cur = client->scratch.beg + bytes_read;
   if (bytes_read == 0) { // client closed connection
-    // printf("read client closed cleanup\n");
+    printf("Zero bytes read from %s:%d, cleaning up\n", client->ip, client->port);
     cleanup_client(EV_A_ w);
   } else if (bytes_read < 0) {
     if (errno == EAGAIN || errno == EWOULDBLOCK) {
       // nothing to read yet
     } else {
       perror("Error reading client");
-      cleanup_client(EV_A_ w);
+      cleanup_client(EV_A_ w); // TODO 2025-10-03 08:52:01 confirm this fires on read timeout
     }
   } else {
     // TODO handle large read, e.g. stream to arena until finished or excessive,
@@ -780,8 +776,7 @@ void read_client(EV_P_ ev_io *w, i32 events) {
     client->scratch.cur = client->scratch.beg; // Reset!
     Request req = parse_request(&client->store, client->scratch, raw.v);
     char *uri = s8unwrap(&client->scratch, req.uri);
-    ipstr(cli_, client->address);
-    if (uri) printf("🔔 %s from %s:%d\n", uri, cli_ip, cli_port);
+    if (uri) printf("🔔 %s from %s:%d\n", uri, client->ip, client->port);
     req.client = client;
     if (!enqueue_request(req)) {
       unavailable(w->fd, "enqueue job"); // effectively backpressure
@@ -789,8 +784,8 @@ void read_client(EV_P_ ev_io *w, i32 events) {
       return;
     }
     char note[128];
-    snprintf(note, sizeof note, "read_client %s:%d %s", cli_ip, cli_port,            
-           client->mode==SERVER_SENT_EVENTS ? "📡" : "📣");
+    snprintf(note, sizeof note, "read_client %s:%d %s", client->ip, client->port,
+             client->mode==SERVER_SENT_EVENTS ? "📡" : "📣");
     client_set_direction(EV_A_ w, WRITE, note);
     // not closing socket
   }
@@ -833,7 +828,9 @@ void accept_client(EV_P_ ev_io *w, i32 events) {
     client->store = client_store; // for passing by reference
     client->scratch = client_scratch; // for passing by value
     client->address = server->address; // because struct apparently reused
-      
+    copy((u8 *)client->ip, (u8 *)client_ip, sizeof client_ip); // conveniences
+    client->port = client_port;
+    
     ev_io_init(&client->read_io, read_client, new_socket, EV_READ);
     client->read_io.data = client; // I'm a woozie (see libev doc)
 
@@ -844,9 +841,8 @@ void accept_client(EV_P_ ev_io *w, i32 events) {
     client->write_io.data = client;
     // ...so deliberately not starting here.
 
-    ipstr(cli_, client->address);
     char note[128];
-    snprintf(note, sizeof note, "accept_client %s:%d %s", cli_ip, cli_port,            
+    snprintf(note, sizeof note, "accept_client %s:%d %s", client->ip, client->port,
              client->mode==SERVER_SENT_EVENTS ? "📡" : "📣");
     client_set_direction(EV_A_ &client->read_io, READ, note);
 
@@ -907,8 +903,8 @@ void *worker(Workshop *workshop) { // ──────────────
 
     // Multiple workers would therefore not serialise to the same
     // client->deliver queue simultaneously. Pipelining is prevented
-    // by half-duplex. Writer is on main thread so libev can deal with
-    // delays writing.
+    // by half-duplex `client_set_direction`. Writer is on main thread
+    // so libev can deal with delays writing.
     res = server->handler(&workshop->store, workshop->scratch, req);
     if (!res.client) res.client = client;
     workshop->pending.dest = &client->deliver;
@@ -996,9 +992,11 @@ void launch(Server *server) {
   }
   server->clients = track.v;
   // ──────────────────────────────────────────────────────────────────── Launch
-  ipstr(srv_, server->address);
+  ipstr(server_, server->address);
+  copy((u8 *)server->ip, (u8 *)server_ip, sizeof server_ip); // convenience
+  server->port = server_port;
   printf("👂 Listening on %s:%d using %td threads for up to %d clients.\n",
-         srv_ip, srv_port, workers, server->config.clients);
+         server->ip, server->port, workers, server->config.clients);
   printf("🧠 Internal memory usage will be %td-%td MiB.\n", // excludes libraries' allocs
       // TODO 2025-10-02 01:47:17 could configure individually... after profiling
       (server->config.server_mem * 2 // store, scratch

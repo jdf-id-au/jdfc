@@ -53,7 +53,7 @@ i32 main(i32 argc, char *argv[]) {
     where code is integer and symbol and expansion are strings.
     Codes are passed to enum definition without validation.
     C will require "globally" unique enum symbols...
-    Enums get INVALID_thing as first value, in enum_tools.h.
+    Enums get INVALID_thing as first value unless 0 is specified, in enum_tools.h.
     Underlying enum type is the default; no attempt to narrow.
    */
 

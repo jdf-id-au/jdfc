@@ -14,7 +14,7 @@ enum http_method {
   TRACE,
   PATCH,
 };
-const s8 spell_http_method[] = {
+static const s8 spell_http_method[] = {
   [GET] = s8("GET"),
   [HEAD] = s8("HEAD"),
   [POST] = s8("POST"),
@@ -25,7 +25,7 @@ const s8 spell_http_method[] = {
   [TRACE] = s8("TRACE"),
   [PATCH] = s8("PATCH"),
 };
-const s8 describe_http_method[] = {
+static const s8 describe_http_method[] = {
   [GET] = s8("The GET method requests a representation of the specified resource. Requests using GET should only retrieve data and should not contain a request content."),
   [HEAD] = s8("The HEAD method asks for a response identical to a GET request, but without a response body."),
   [POST] = s8("The POST method submits an entity to the specified resource, often causing a change in state or side effects on the server."),
@@ -130,7 +130,7 @@ enum http_status {
   ORIGIN_DNS_ERROR = 530,
   NETWORK_READ_TIMEOUT_ERROR = 598,
 };
-const s8 spell_http_status[] = {
+static const s8 spell_http_status[] = {
   [CONTINUE] = s8("Continue"),
   [SWITCHING_PROTOCOLS] = s8("Switching Protocols"),
   [PROCESSING] = s8("Processing"),
@@ -217,7 +217,7 @@ const s8 spell_http_status[] = {
   [ORIGIN_DNS_ERROR] = s8("Origin DNS Error"),
   [NETWORK_READ_TIMEOUT_ERROR] = s8("Network Read Timeout Error"),
 };
-const s8 describe_http_status[] = {
+static const s8 describe_http_status[] = {
   [CONTINUE] = s8("The server has received the request headers, and the client should proceed to send the request body."),
   [SWITCHING_PROTOCOLS] = s8("The requester has asked the server to switch protocols."),
   [PROCESSING] = s8("This code indicates that the server has received and is processing the request, but no response is available yet. This prevents the client from timing out and assuming the request was lost."),
@@ -320,7 +320,7 @@ enum header {
   CONNECTION,
   UPGRADE,
 };
-const s8 spell_header[] = {
+static const s8 spell_header[] = {
   [CONTENT_TYPE] = s8("Content-Type"),
   [CONTENT_LENGTH] = s8("Content-Length"),
   [TRANSFER_ENCODING] = s8("Transfer-Encoding"),
@@ -340,11 +340,11 @@ enum content_type {
   HTML,
   EVENT_STREAM,
 };
-const s8 spell_content_type[] = {
+static const s8 spell_content_type[] = {
   [HTML] = s8("html"),
   [EVENT_STREAM] = s8("event-stream"),
 };
-const s8 describe_content_type[] = {
+static const s8 describe_content_type[] = {
   [HTML] = s8("text/html; charset=UTF-8"),
   [EVENT_STREAM] = s8("text/event-stream"),
 };
@@ -360,13 +360,13 @@ enum direction {
   WRITE,
   READWRITE,
 };
-const s8 spell_direction[] = {
+static const s8 spell_direction[] = {
   [NEITHER] = s8("NEITHER"),
   [READ] = s8("READ"),
   [WRITE] = s8("WRITE"),
   [READWRITE] = s8("READWRITE"),
 };
-const s8 describe_direction[] = {
+static const s8 describe_direction[] = {
   [NEITHER] = s8("NEITHER"),
   [READ] = s8("listen for next request/part"),
   [WRITE] = s8("standby for next response/part"),

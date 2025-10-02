@@ -83,8 +83,8 @@ void render_enum(arena *store, arena scratch, bufout *b, s8 id, enum_values *val
     else S(",\n");
   } while ((cur = cur->next));
   S("};\n");
-  
-  S("const s8 spell_"); W(id); S("[] = {\n");
+
+  S("static const s8 spell_"); W(id); S("[] = {\n");
   cur = values;
   do {
     W(ind);
@@ -107,7 +107,7 @@ void render_enum(arena *store, arena scratch, bufout *b, s8 id, enum_values *val
   } while ((cur = cur->next));
 
   if (describe) {
-    S("const s8 describe_"); W(id); S("[] = {\n");
+    S("static const s8 describe_"); W(id); S("[] = {\n");
     cur = values;
     do {
       W(ind);
