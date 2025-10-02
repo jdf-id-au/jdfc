@@ -467,7 +467,7 @@ void flushc(Chunk *c) {
 
   // Reset chunk for reuse! FIXME 2025-09-30 15:15:06 Error-prone
   c->len = 0;
-  c->then = WRITE;
+  c->then = NEITHER;
   c->finished = 0;
   // keep buf, cap, dest
 }
@@ -515,7 +515,7 @@ void serialise_response(Workshop *shop, Response res) {
   Chunk *out = &shop->pending;
   if (res.is_update) {
     s8writec(out, res.update);
-    finishc(out, WRITE); // TODO 2025-09-30 11:41:06 BOTH if websocket...
+    finishc(out, WRITE); // TODO 2025-09-30 11:41:06 READWRITE if websocket...
 #ifndef QUIET
     ipstr(cli_, res.client->address);
     printf("📡 %td B to %s:%d\n", res.update.len, cli_ip, cli_port);
@@ -602,7 +602,7 @@ void cleanup_client(EV_P_ ev_io *w) {
 }
 
 // returns previous state; not enjoyable to implement
-enum direction client_set_direction(EV_P_ ev_io *w, enum direction next) {
+enum direction client_set_direction(EV_P_ ev_io *w, enum direction next, char *note) {
   Client *client = (Client *)w->data;
   ev_io *read_io = &client->read_io;
   ev_io *write_io = &client->write_io;
@@ -651,9 +651,9 @@ enum direction client_set_direction(EV_P_ ev_io *w, enum direction next) {
         break;
       }
     }
-    printf(" → %d\n", next);
+    printf(" → %d", next);
   }
-  printf("\n");
+  printf(" %s\n", note ? note : "");
   return previous;
 }
 
@@ -731,12 +731,11 @@ void write_client(EV_P_ ev_io *w, i32 events) {
     fprintf(stderr, "Erroneously wrote no data to %s:%d.\n", cli_ip, cli_port);
   }
 
-  enum direction prev = client_set_direction(EV_A_ w, c.then);
-  if (prev != c.then) {
-    ipstr(cli_, client->address);
-    printf("for %s:%d %s\n", cli_ip, cli_port,
+  ipstr(cli_, client->address);
+  char note[128];
+  snprintf(note, sizeof note, "write_client %s:%d %s", cli_ip, cli_port,            
            client->mode==SERVER_SENT_EVENTS ? "📡" : "📣");
-  }
+  client_set_direction(EV_A_ w, c.then, note);
 }
 
 b32 enqueue_request(Request req) {
@@ -789,7 +788,10 @@ void read_client(EV_P_ ev_io *w, i32 events) {
       cleanup_client(EV_A_ w);
       return;
     }
-    client_set_direction(EV_A_ w, WRITE);
+    char note[128];
+    snprintf(note, sizeof note, "read_client %s:%d %s", cli_ip, cli_port,            
+           client->mode==SERVER_SENT_EVENTS ? "📡" : "📣");
+    client_set_direction(EV_A_ w, WRITE, note);
     // not closing socket
   }
 }
@@ -842,7 +844,11 @@ void accept_client(EV_P_ ev_io *w, i32 events) {
     client->write_io.data = client;
     // ...so deliberately not starting here.
 
-    client_set_direction(EV_A_ &client->read_io, READ);
+    ipstr(cli_, client->address);
+    char note[128];
+    snprintf(note, sizeof note, "accept_client %s:%d %s", cli_ip, cli_port,            
+             client->mode==SERVER_SENT_EVENTS ? "📡" : "📣");
+    client_set_direction(EV_A_ &client->read_io, READ, note);
 
     // TODO 2025-09-30 09:04:44 make len configurable
     Product_ deliver = make_product(&client->store, 32, server->config.chunk_size);
@@ -900,9 +906,9 @@ void *worker(Workshop *workshop) { // ──────────────
     // Clients, probably served by different workers/threads).
 
     // Multiple workers would therefore not serialise to the same
-    // client->deliver queue simultaneously. Pipelining is
-    // prevented by half-duplex using client_set_readable. Writer
-    // is on main thread so libev can deal with delays writing.
+    // client->deliver queue simultaneously. Pipelining is prevented
+    // by half-duplex. Writer is on main thread so libev can deal with
+    // delays writing.
     res = server->handler(&workshop->store, workshop->scratch, req);
     if (!res.client) res.client = client;
     workshop->pending.dest = &client->deliver;
