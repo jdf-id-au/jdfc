@@ -503,9 +503,9 @@ b32 s8blank(s8 s) {
   return 1;
 }
 
-// Copies buf
-s8_ s8clone(arena *a, s8 s) {
-  s8_ c = make_s8(a, s.len);
+// Copies buf, optionally null-terminated for easier interop.
+s8_ s8clone(arena *a, s8 s, b32 null_terminate) {
+  s8_ c = make_s8(a, null_terminate ? s.len + 1 : s.len);
   if (!c.ok) return c;
   copy(c.v.buf, s.buf, s.len);
   return c;

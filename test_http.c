@@ -79,7 +79,8 @@ Response send_handler(arena *store, arena scratch, Request req) {
   // /receive
   // ...e.g. laptop/phone can usu connect to /sse but it fails within /receive
   // always works on localhost
-  // reconnection isn't seen at all by accept_client on newly run server... external problem?!?!?
+  // reconnection isn't seen at all by accept_client on newly run server...
+  // external problem?!?!? -> omg yes, confirmed with python/fastapi/uvicorn
   for (size i = 0; i < server->clients.len; i++) {
     Client *c = server->clients.buf[i];
     if (!c) continue;
