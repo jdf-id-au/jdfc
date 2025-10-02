@@ -73,11 +73,13 @@ Response sse_handler(arena *store, arena scratch, Request req) {
 }
 
 Response send_handler(arena *store, arena scratch, Request req) {
-  Server *server = req.client->server; 
+  Server *server = req.client->server;
   // FIXME 2025-10-01 22:43:07
-  // ...failing clients getting connection refused when trying to get /sse from /receive
+  // ...failing clients getting connection refused when trying to get /sse from
+  // /receive
   // ...e.g. laptop/phone can usu connect to /sse but it fails within /receive
-  // don't think it's a direction setting problem?
+  // always works on localhost
+  // reconnection isn't seen at all by accept_client on newly run server... external problem?!?!?
   for (size i = 0; i < server->clients.len; i++) {
     Client *c = server->clients.buf[i];
     if (!c) continue;
