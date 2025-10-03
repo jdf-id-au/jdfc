@@ -80,5 +80,12 @@ i32 main(void) {
   printf("sizeof(s8set) %ti, scratch usage %ti B \n",
          sizeof(s8set), used(&scratch));
 
+  HEAD("argparse");
+  char *argv[] = {"--port=8080", "--workers=2"}; // macros don't like designated initialisers
+  PREP(struct args a = argparse(&store, 2, argv, "--port=int --workers=int"));
+  PREP(s8vm *kv = s8vmget(a.kv, s8("port")));
+  TEST(8080 == *(i32 *)kv->val);
+  PREP(kv = s8vmget(a.kv, s8("workers")));
+  TEST(2 == *(i32 *)kv->val);
   return REPORT();
 }

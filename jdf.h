@@ -17,8 +17,9 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <stdarg.h>
+#include <stdlib.h> // strtol
 #include <stdio.h> // mainly vsnprintf
-#include <string.h> // just strlen eww
+#include <string.h>
 #include <stdatomic.h>
 
 typedef uint8_t   u8;
@@ -342,17 +343,21 @@ size copy(u8 *restrict dst, u8 *restrict src, size len) {
 // ───────────────────────────────────────────────────────────────────── Strings
 
 ARRAY(s8, u8) // s8: Basic UTF-8 string. Not null terminated!
-// Wrap C string literal into s8 string.
-#define s8(s) (s8){(u8 *)(s), countof(s) - 1}
-static const s8_ s8_OOM = {.v = s8("error: out of memory")};
+#define s8(s) (s8){(u8 *)(s), countof(s) - 1} // Wrap C string literal into s8 string.
+static const s8 s8_OOM = s8("error: out of memory");
+
+b32 s8equal(s8, s8);
 ARRAY(s8a, s8)
+LIST(s8l, s8)
+MAP_LIST(s8m, s8, s8, s8equal)
+SET_LIST(s8s, s8, s8equal)
+     
 #ifdef _WIN32
 ARRAY(s16, c16)
 #define s16(s) (s16) { (c16 *)(s), countof(s) - 1 }
-// TODO what about all the fns?!
+// TODO what about all the rest?!
 #endif
 
-LIST(s8l, s8)
 /*
   Make one s8 from unquoted multiline text, after collapsing whitespace.
   IDE may be annoying about it, try fundamental-mode.
@@ -833,7 +838,118 @@ void failwith(i32 code, s8 msg) {
   osfail(code);
 }
 
-// ╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴ debug
+// ╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴ Arg parsing
+
+MAP_LIST(s8vm, s8, void *, s8equal)
+
+enum arg_type {UNK_ARG, INT_ARG, STR_ARG, BOOL_ARG};
+
+MAP_LIST(s8arg_typem, s8, enum arg_type, s8equal)
+
+struct args {
+  s8vm *kv;
+  s8a rest;
+};
+
+// defs of "--port=int --workers=int" allows any combination of styles:
+// "-p8080 -w3"
+// "-p 8080 -w 3"
+// "--port=8080" "--workers=3"
+// "--port 8080" "--workers 3"
+// and puts trailing args (or args after first "--") in .rest.
+// Promotes inital of --long arg name to short arg name (first wins).
+// TODO 2025-10-03 15:50:22
+// - accommodate blank flags like "-n--dry-run=bool" accepting "true" "false" or none->true
+// - accommodate =str, maybe other stuff later e.g. ip, path, ...
+struct args argparse(arena *a, int argc, char **argv, char *defs) {
+  s8arg_typem *types = 0;
+  s8pair def = {.tail = s8wrap(defs, 1024)};
+  s8pair kv = {0};
+  while (def.tail.len) {
+    s8 remaining = def.tail;
+    def = s8cut(def.tail, s8(" "));
+    if (!def.head.len) def.head = remaining;
+    kv = s8cut(def.head, s8("="));
+    if (s8startswith(kv.head, s8("--"))) kv.head = s8slice(kv.head, 2, 0);
+    else if (s8startswith(kv.head, s8("-"))) kv.head = s8slice(kv.head, 1, 0);
+    else failwith(1, s8("Invalid arg name def."));
+    enum arg_type t = UNK_ARG;
+    if (s8equal(s8("int"), kv.tail)) t = INT_ARG;
+    else if (s8equal(s8("str"), kv.tail)) t = STR_ARG;
+    else if (s8equal(s8("bool"), kv.tail)) t = BOOL_ARG;
+    else failwith(1, s8("Invalid arg type def."));
+    types = s8arg_typemassoc(a, types, kv.head, t);
+  }
+  struct args ret = {0};
+  b32 await_val = 0;
+  enum arg_type t = UNK_ARG;
+  int i = 0;
+  for (i = 0; i < argc; i++) {
+    s8 arg = s8wrap(argv[i], 256);
+    if (!await_val) {
+      kv = s8cut(arg, s8("="));
+      kv = kv.head.len ? kv : (s8pair){.head = arg};
+      if (s8equal(kv.head, s8("--"))) break; // with i set
+      if (s8startswith(kv.head, s8("--"))) kv.head = s8slice(kv.head, 2, 0);
+      else if (s8startswith(kv.head, s8("-"))) kv.head = s8slice(kv.head, 1, 0);
+      else failwith(1, s8("Invalid arg sequence."));
+      s8arg_typem *kt = s8arg_typemget(types, kv.head);
+      // TODO 2025-10-03 18:24:35 match and short keys !
+      if (kt) t = kt->val; else t = STR_ARG; // default
+      if (!kv.tail.len) {
+        await_val = 1;
+        continue;
+      }
+    }
+    i32 *i32p = 0;
+    b32 *b32p = 0;
+    s8 *s8p = 0;
+    kv.tail = await_val ? arg : kv.tail; // .head = key, .tail = value
+    switch (t) {
+    case INT_ARG:
+      i32p = new (a, i32, 1);
+      if (!i32p) failwith(1, s8_OOM);
+      kv.tail = s8wrap((char *)kv.tail.buf, 16); // should be null terminated
+      char *end = 0;
+      *i32p = strtol((char *)kv.tail.buf, &end, 10);
+      if (!end) failwith(1, s8("Invalid int argument."));
+      ret.kv = s8vmassoc(a, ret.kv, kv.head, i32p);
+      break;
+    case BOOL_ARG:
+      b32p = new (a, b32, 1); // initialised to 0 i.e. false
+      if (!b32p) failwith(1, s8_OOM);
+      *b32p = 1; // if none->true
+      if (s8equal(kv.tail, s8("false"))) *b32p = 0;
+      else if (s8equal(kv.tail, s8("true"))); // already
+      else if (s8startswith(kv.tail, s8("-"))) i-- ; // no value, would be next arg relook at this arg next loop
+      else failwith(1, s8("Invalid bool argument."));
+      break;
+    case STR_ARG:
+      s8p = new (a, s8, 1);
+      if (!s8p) failwith(1, s8_OOM);
+      if (s8startswith(kv.tail, s8("-"))) failwith(1, s8("Invalid str argument."));
+      *s8p = kv.tail;
+      break;
+    default:
+      if (s8equal(kv.tail, s8("--"))) {
+        continue;
+      }
+    }
+    kv = (s8pair){0};
+    t = UNK_ARG;
+    await_val = 0;
+  }
+  if (++i < argc) {
+    s8a_ rest = make_s8a(a, argc - i);
+    if (!rest.ok) failwith(1, s8_OOM);
+    for (int j = 0; j < argc - i; j++) 
+      rest.v.buf[j] = s8wrap(argv[i + j], 256);
+    ret.rest = rest.v;
+  }
+  return ret;
+}
+
+// ╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴ Debug
 
 // have you heard of a debugger!?
 void denibble(i32 fd, byte nib) {

@@ -40,7 +40,7 @@ Response handler(arena *store, arena scratch, Request req) {
       "<body>Using %ti/%ti B for server, %ti/%ti B for this client %s:%d"
       "<h1>Workshops</h1>",
       used(&req.client->server->store), capacity(&req.client->server->store),
-      used(&req.client->store), capacity(&req.client->store), req.client->ip, &req.client->port);
+      used(&req.client->store), capacity(&req.client->store), req.client->ip, req.client->port);
   
   assert(body.ok);
   res.body = s8lappend(store, res.body, body.v);
@@ -148,8 +148,11 @@ Response router(arena *store, arena scratch, Request req) {
   return (Response){.status = NOT_FOUND};
 }
 
-i32 main(void) {
-  Server server = make_server(router, .port = 8080);
+i32 main(int argc, char **argv) {
+  arena init = alloc_arena(KiB(1));
+  
+  struct args args = argparse(&init, argc, argv, "--port=int --workers=int");
+  Server server = make_server(args, router, .port = 8080);
   launch(&server);
   return 0;
 }

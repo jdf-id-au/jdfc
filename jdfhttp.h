@@ -18,7 +18,7 @@
 #include <pthread.h>
 #include <ev.h>
 
-MAP_LIST(s8map, s8, s8, s8equal)
+
 
 // Dump s8 in desperation (debugging)
 void dumbp(s8 s) {
@@ -46,8 +46,8 @@ typedef struct {
       s8 uri;
       s8 protocol;
       void *params; // optional pointer-to-struct of parsed params
-      s8map *headers;
-      s8map *cookies;
+      s8m *headers;
+      s8m *cookies;
       s8 body;
     };
   };
@@ -61,8 +61,8 @@ typedef struct {
     struct {
       enum http_status status;
       enum content_type type;
-      s8map *headers; // does not accommodate repeat keys, which are permitted by http spec https://stackoverflow.com/a/4371395/780743
-      s8map *cookies;
+      s8m *headers; // does not accommodate repeat keys, which are permitted by http spec https://stackoverflow.com/a/4371395/780743
+      s8m *cookies;
       s8l *body;
     };
   };
@@ -203,7 +203,10 @@ typedef struct client {
   int stem##port = ntohs(addr.sin_port);                                \
   inet_ntop(PF_INET, &addr.sin_addr, stem##ip, INET_ADDRSTRLEN)
 
-Server make_server_fn(Handler h, Config c) {
+Server make_server_fn(struct args args, Handler h, Config c) {
+  if (args) {
+    
+  }
   Server server = {
     .config = c,
       // learn about SOCK_DGRAM, SOCK_RAW types later
@@ -235,6 +238,9 @@ Server make_server_fn(Handler h, Config c) {
   return server;
 }
 
+// Slightly misleading name because launch does most of resource alloc.
+#define make_server(a, h, ...) make_server_fn(a, h, (Config){DEFAULT_CONFIG, __VA_ARGS__})
+
 #ifdef _WIN32
 #include <sysinfoapi.h>
 i32 nproc(void) {
@@ -260,9 +266,6 @@ i32 nworkers(void) {
   i32 np = nproc();
   return np==1 ? np : np-1;
 }
-
-// Slightly misleading name because launch does most of resource alloc.
-#define make_server(h, ...) make_server_fn(h, (Config){DEFAULT_CONFIG, __VA_ARGS__})
 
 i32 set_non_blocking(int sockfd) {
   i32 flags = fcntl(sockfd, F_GETFL, 0);
@@ -316,7 +319,7 @@ Request parse_request(arena *store, arena scratch, s8 raw) {
   req.uri = seg.head;
   req.protocol = seg.tail;
 
-  s8map *headers = {0};
+  s8m *headers = {0};
   while (line.tail.len) {
     s8pair next = s8cutu8(line.tail, '\n');
     if (next.ok) line = next;
@@ -327,7 +330,7 @@ Request parse_request(arena *store, arena scratch, s8 raw) {
     }
     s8pair header = s8cut(line.head, s8(": "));
     if (!header.ok) ReqErr(BAD_REQUEST);
-    headers = s8mapassoc(store, headers, header.head, header.tail);
+    headers = s8massoc(store, headers, header.head, header.tail);
     if (!headers) {
       fprintf(stderr, "💣 OOM saving headers \n");
       ReqErr(SERVICE_UNAVAILABLE);
@@ -335,9 +338,9 @@ Request parse_request(arena *store, arena scratch, s8 raw) {
     req.headers = headers;
   }
 
-  s8map *cookies = {0};
+  s8m *cookies = {0};
   // e.g. Cookie: name=value; name2=value2; name3=value3
-  s8map *cookiekv = s8mapget(headers, spell_header[COOKIE]);
+  s8m *cookiekv = s8mget(headers, spell_header[COOKIE]);
   if (cookiekv) {
     line = (s8pair){.head = (s8){0}, .tail = cookiekv->val};
     while (line.tail.len) {
@@ -346,7 +349,7 @@ Request parse_request(arena *store, arena scratch, s8 raw) {
       else line = (s8pair){.head = line.tail, .tail = (s8){0}};
       s8pair cookie = s8cutu8(line.head, '=');
       if (!cookie.ok) ReqErr(BAD_REQUEST);
-      cookies = s8mapassoc(store, cookies, cookie.head, cookie.tail);
+      cookies = s8massoc(store, cookies, cookie.head, cookie.tail);
       if (!cookies) {
         fprintf(stderr, "💣 OOM saving cookies \n");
         ReqErr(SERVICE_UNAVAILABLE);
@@ -385,12 +388,12 @@ size arena_printf(arena *a, const char *format) {
   return printf(format, a->beg);
 }
 
-s8map *s8mapassoc_clonev(arena *store, s8map *head, s8 k, s8 v) {
-  s8map *already = s8mapget(head, k);
+s8m *s8massoc_clonev(arena *store, s8m *head, s8 k, s8 v) {
+  s8m *already = s8mget(head, k);
   if (already && s8equal(already->val, v)) return head;
   s8_ vc = s8clone(store, v, 0);
   if (vc.ok) {
-    s8map *ret = s8mapassoc(store, head, k, vc.v);
+    s8m *ret = s8massoc(store, head, k, vc.v);
     if (ret) return ret;
   }
   fprintf(stderr, "Store usage %td/%td\n", used(store), available(store));
@@ -405,7 +408,7 @@ void add_header(arena *store, Response *res, enum header h, s8 v) {
     fprintf(stderr, "Tried to add_header to null Response.\n");
     return;
   }
-  res->headers = s8mapassoc_clonev(store, res->headers, spell_header[h], v);
+  res->headers = s8massoc_clonev(store, res->headers, spell_header[h], v);
 }
 
 // TODO 2025-10-01 17:49:58 optimal return type?
@@ -520,7 +523,7 @@ void serialise_response(Workshop *shop, Response res) {
   } else {
     s8 crlf = s8("\r\n");
     add_headers(store, scratch, &res); // reassigning to pass-by-value parameter
-    s8map *header = res.headers;
+    s8m *header = res.headers;
     s8printf(scratch, s8writec, out, "HTTP/1.1 %i %s\r\n",
              res.status, spell_http_status[res.status]);
     while (header) { // grug approve
@@ -751,7 +754,7 @@ void read_client(EV_P_ ev_io *w, i32 events) {
   ssize_t bytes_read = read(w->fd, client->scratch.beg, available(&client->scratch));
   client->scratch.cur = client->scratch.beg + bytes_read;
   if (bytes_read == 0) { // client closed connection
-    printf("Zero bytes read from %s:%d, cleaning up\n", client->ip, client->port);
+    // printf("Zero bytes read from %s:%d, cleaning up\n", client->ip, client->port);
     cleanup_client(EV_A_ w);
   } else if (bytes_read < 0) {
     if (errno == EAGAIN || errno == EWOULDBLOCK) {
