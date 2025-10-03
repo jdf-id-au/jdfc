@@ -126,7 +126,7 @@ typedef struct { // impl after jdf.h bufout
   size cap;
   enum direction then;
   b32 finished; // 1 = end of current message
-  Product *dest; // for workshop.chunk's benefit
+  Client *dest; // for workshop.pending's benefit
 } Chunk;
 
 typedef struct {
@@ -297,6 +297,8 @@ i32 set_timeout(int sockfd, int which, int seconds) {
 
 #define ReqErr(e) do { req.error = e; return req; } while (0) // macro block semicolon hack
 
+// Store raw request, "parse" into zero-copy s8s.
+// TODO 2025-10-03 12:48:25 maybe divert body elsewhere for large requests, deal with separately...
 Request parse_request(arena *store, arena scratch, s8 raw) {
   Request req = {.raw = raw};
   // https://developer.mozilla.org/en-US/docs/Web/HTTP/Guides/Messages
@@ -335,7 +337,7 @@ Request parse_request(arena *store, arena scratch, s8 raw) {
 
   s8map *cookies = {0};
   // e.g. Cookie: name=value; name2=value2; name3=value3
-  s8map *cookiekv = s8mapget(headers, s8("Cookie"));
+  s8map *cookiekv = s8mapget(headers, spell_header[COOKIE]);
   if (cookiekv) {
     line = (s8pair){.head = (s8){0}, .tail = cookiekv->val};
     while (line.tail.len) {
@@ -383,14 +385,12 @@ size arena_printf(arena *a, const char *format) {
   return printf(format, a->beg);
 }
 
-// FIXME 2025-10-01 18:01:41 pointless cloning of static keys?
-s8map *s8mapassoc_cloned(arena *store, s8map *head, s8 k, s8 v) {
+s8map *s8mapassoc_clonev(arena *store, s8map *head, s8 k, s8 v) {
   s8map *already = s8mapget(head, k);
   if (already && s8equal(already->val, v)) return head;
-  s8_ kc = s8clone(store, k, 0);
   s8_ vc = s8clone(store, v, 0);
-  if (kc.ok && vc.ok) {
-    s8map *ret = s8mapassoc(store, head, kc.v, vc.v);
+  if (vc.ok) {
+    s8map *ret = s8mapassoc(store, head, k, vc.v);
     if (ret) return ret;
   }
   fprintf(stderr, "Store usage %td/%td\n", used(store), available(store));
@@ -405,7 +405,7 @@ void add_header(arena *store, Response *res, enum header h, s8 v) {
     fprintf(stderr, "Tried to add_header to null Response.\n");
     return;
   }
-  res->headers = s8mapassoc_cloned(store, res->headers, spell_header[h], v);
+  res->headers = s8mapassoc_clonev(store, res->headers, spell_header[h], v);
 }
 
 // TODO 2025-10-01 17:49:58 optimal return type?
@@ -438,39 +438,36 @@ void add_headers(arena *store, arena scratch, Response *res) {
   else fprintf(stderr, "Error setting Content-Length\n");
 }
 
-void flushc(Chunk *c) {
-  Product *p = c->dest;
-  if (!p) {
+b32 flushc(Chunk *workshop_pending) {
+  Client *dest = workshop_pending->dest;
+  if (!dest) {
     fprintf(stderr, "💣 Tried to flush to uninitialised destination\n");
-    return;
+    return 0;
   }
-  i32 idx = 0; // impl after write_qout
-  // printf("Trying to flush %td bytes", c->len);
-  // s8 insp = (s8){.buf = c->buf, .len = c->len};
-  // log_debug(insp);
-  idx = queue_push(&p->q, p->chunks.len); // ╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴ Queue access
+  Product *d = &dest->deliver;
+  i32 idx = 0; // also see write_qout for queue semantics
+
+  idx = queue_push(&d->q, d->chunks.len); // ╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴ Queue access
+  // printf("%d %s:%d\n", idx, dest->ip, dest->port);
   if (idx < 0) {
-    fprintf(stderr, "⚠ Product queue full, chunk flush failed.\n");
-    return;
-  } 
-  // shallow copy to work around Atomic struct member access UB
-  Chunk tmp = p->chunks.buf[idx];
-  // tmp.buf is client.deliver.chunks.buf, preallocated in Client arena by `make_product`
-  // c->buf is workshop.pending.buf, preallocated in Workshop arena by `launch`
-  copy(tmp.buf, c->buf, c->len);
-  // FIXME 2025-10-01 18:25:23 data is not even appearing on telnet 8080 !
-  // s8 help = (s8){c->buf, c->len}; log_debug(help);
-  tmp.len = c->len;
-  tmp.then = c->then;
-  tmp.finished = c->finished;
-  p->chunks.buf[idx] = tmp;
-  queue_push_commit(&p->q); // ╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴
+    //fprintf(stderr, "⚠ Product queue full for %s:%d, chunk flush failed.\n", dest->ip, dest->port);
+    fprintf(stderr, "⚠ Product queue full for %p, chunk flush failed.\n", (void *)dest);
+    return 0;
+  }
+  // workshop_pending->buf is preallocated in Workshop arena by `launch`
+  Chunk *client_deliver = &d->chunks.buf[idx];
+  u8 *buf = client_deliver->buf; // preallocated in Client arena by `make_product`
+  *client_deliver = *workshop_pending; // copy all fields but clobbers buf pointer
+  client_deliver->buf = buf; // correct buf pointer
+  copy(client_deliver->buf, workshop_pending->buf, workshop_pending->len);
+  queue_push_commit(&d->q); //  ╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴
 
   // Reset chunk for reuse! FIXME 2025-09-30 15:15:06 Error-prone
-  c->len = 0;
-  c->then = NEITHER;
-  c->finished = 0;
+  workshop_pending->len = 0;
+  workshop_pending->then = NEITHER;
+  workshop_pending->finished = 0;
   // keep buf, cap, dest
+  return 1;
 }
 
 size s8writec(void *out, s8 s) { // impl after s8write
@@ -494,7 +491,7 @@ size s8writec(void *out, s8 s) { // impl after s8write
     buf += count;
     c->len += count;
     total_copied += count;
-    if (c->len == c->cap) flushc(c);
+    if (c->len == c->cap) if (!flushc(c)) break;
   }
   return total_copied;
 }
@@ -846,6 +843,7 @@ void accept_client(EV_P_ ev_io *w, i32 events) {
              client->mode==SERVER_SENT_EVENTS ? "📡" : "📣");
     client_set_direction(EV_A_ &client->read_io, READ, note);
 
+    // ╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴ delivery queue
     // TODO 2025-09-30 09:04:44 make len configurable
     Product_ deliver = make_product(&client->store, 32, server->config.chunk_size);
     if (deliver.ok) client->deliver = deliver.v;
@@ -907,7 +905,7 @@ void *worker(Workshop *workshop) { // ──────────────
     // so libev can deal with delays writing.
     res = server->handler(&workshop->store, workshop->scratch, req);
     if (!res.client) res.client = client;
-    workshop->pending.dest = &client->deliver;
+    workshop->pending.dest = client;
     serialise_response(workshop, res);
   reset_store:
     workshop->store.cur = workshop->store_reset;

@@ -40,7 +40,7 @@ Response handler(arena *store, arena scratch, Request req) {
       "<body>Using %ti/%ti B for server, %ti/%ti B for this client %s:%d"
       "<h1>Workshops</h1>",
       used(&req.client->server->store), capacity(&req.client->server->store),
-      used(&req.client->store), capacity(&req.client->store), req.client->ip, req.client->port);
+      used(&req.client->store), capacity(&req.client->store), req.client->ip, &req.client->port);
   
   assert(body.ok);
   res.body = s8lappend(store, res.body, body.v);
