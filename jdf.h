@@ -384,6 +384,8 @@ s8 s8slice(s8 src, size from, size to) {
   size f = (from < 0) ? src.len + from : from;
   size t = (to > 0) ? to : src.len + to;
   if (f < 0) f = 0; // clamp offsets
+  if (f > src.len) f = src.len;
+  if (t < 0) t = 0;
   if (t > src.len) t = src.len;
   s.buf += f;
   if (t > f) s.len = t - f;
@@ -851,16 +853,14 @@ struct args {
   s8a rest;
 };
 
-// defs of "--port=int --workers=int" allows any combination of styles:
-// "-p8080 -w3"
-// "-p 8080 -w 3"
+// Defs e.g. "--port=int --workers=int" must be in --long-arg=type form.
+// Initials are promoted to short arg name (first wins).
+// They will allow any combination of styles:
+// "-p8080 -w3" // TODO
+// "-p 8080 -w 3" // TODO
 // "--port=8080" "--workers=3"
 // "--port 8080" "--workers 3"
-// and puts trailing args (or args after first "--") in .rest.
-// Promotes inital of --long arg name to short arg name (first wins).
-// TODO 2025-10-03 15:50:22
-// - accommodate blank flags like "-n--dry-run=bool" accepting "true" "false" or none->true
-// - accommodate =str, maybe other stuff later e.g. ip, path, ...
+// and puts trailing args (or args after first "--") in .rest
 struct args argparse(arena *a, int argc, char **argv, char *defs) {
   s8arg_typem *types = 0;
   s8pair def = {.tail = s8wrap(defs, 1024)};
@@ -871,7 +871,6 @@ struct args argparse(arena *a, int argc, char **argv, char *defs) {
     if (!def.head.len) def.head = remaining;
     kv = s8cut(def.head, s8("="));
     if (s8startswith(kv.head, s8("--"))) kv.head = s8slice(kv.head, 2, 0);
-    else if (s8startswith(kv.head, s8("-"))) kv.head = s8slice(kv.head, 1, 0);
     else failwith(1, s8("Invalid arg name def."));
     enum arg_type t = UNK_ARG;
     if (s8equal(s8("int"), kv.tail)) t = INT_ARG;
@@ -891,13 +890,22 @@ struct args argparse(arena *a, int argc, char **argv, char *defs) {
       kv = kv.head.len ? kv : (s8pair){.head = arg};
       if (s8equal(kv.head, s8("--"))) break; // with i set
       if (s8startswith(kv.head, s8("--"))) kv.head = s8slice(kv.head, 2, 0);
-      else if (s8startswith(kv.head, s8("-"))) kv.head = s8slice(kv.head, 1, 0);
+      else if (s8startswith(kv.head, s8("-"))) {
+        if (kv.tail.len) failwith(1, s8("Invalid short arg format (omit '=')."));
+        kv.tail = s8slice(kv.head, 2, 0);
+        kv.head = s8slice(kv.head, 1, 2);
+        s8arg_typem *cur = types;
+        while (cur) 
+          if (s8startswith(cur->key, kv.head)) {
+            kv.head = cur->key;
+            break;
+          } else cur = cur->next;
+      }
       else { // allow absence of kwargs
         i--;
         break;
       }
       s8arg_typem *kt = s8arg_typemget(types, kv.head);
-      // TODO 2025-10-03 18:24:35 match short keys !
       if (kt) t = kt->val; else t = STR_ARG; // default
       if (!kv.tail.len) {
         if (!(i + 1 == argc && t == BOOL_ARG)) {
@@ -906,7 +914,6 @@ struct args argparse(arena *a, int argc, char **argv, char *defs) {
         }
       }
     }
-  
     i32 *i32p = 0;
     b32 *b32p = 0;
     s8 *s8p = 0;

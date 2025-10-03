@@ -101,13 +101,27 @@ i32 main(void) {
   char *argv4[] = {"--name", "thing"};
   PREP(struct args a4 = argparse(&store, countof(argv4), argv4, "--name=str"));
   PREP(kv = s8vmget(a4.kv, s8("name")));
-  TEST(kv);
   TEST(s8equal(s8("thing"), *(s8 *)kv->val));
   
   char *argv5[] = {"--yes"};
   PREP(struct args a5 = argparse(&store, countof(argv5), argv5, "--yes=bool"));
   PREP(kv = s8vmget(a5.kv, s8("yes")));
-  TEST(kv);
   TEST(*(b32 *)kv->val);
+
+  char *argv6[] = {"-y"};
+  PREP(struct args a6 = argparse(&store, countof(argv6), argv6, "--yes=bool"));
+  PREP(kv = s8vmget(a6.kv, s8("yes")));
+  TEST(*(b32 *)kv->val);
+
+  char *argv7[] = {"-nhello"};
+  PREP(struct args a7 = argparse(&store, countof(argv7), argv7, "--name=str"));
+  PREP(kv = s8vmget(a7.kv, s8("name")));
+  TEST(s8equal(s8("hello"), *(s8 *)kv->val));
+
+  char *argv8[] = {"-n", "hello"};
+  PREP(struct args a8 = argparse(&store, countof(argv8), argv8, "--name=str"));
+  PREP(kv = s8vmget(a8.kv, s8("name")));
+  TEST(s8equal(s8("hello"), *(s8 *)kv->val));
+
   return REPORT();
 }
