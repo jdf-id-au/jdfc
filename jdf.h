@@ -892,15 +892,21 @@ struct args argparse(arena *a, int argc, char **argv, char *defs) {
       if (s8equal(kv.head, s8("--"))) break; // with i set
       if (s8startswith(kv.head, s8("--"))) kv.head = s8slice(kv.head, 2, 0);
       else if (s8startswith(kv.head, s8("-"))) kv.head = s8slice(kv.head, 1, 0);
-      else failwith(1, s8("Invalid arg sequence."));
+      else { // allow absence of kwargs
+        i--;
+        break;
+      }
       s8arg_typem *kt = s8arg_typemget(types, kv.head);
-      // TODO 2025-10-03 18:24:35 match and short keys !
+      // TODO 2025-10-03 18:24:35 match short keys !
       if (kt) t = kt->val; else t = STR_ARG; // default
       if (!kv.tail.len) {
-        await_val = 1;
-        continue;
+        if (!(i + 1 == argc && t == BOOL_ARG)) {
+          await_val = 1;
+          continue;
+        }
       }
     }
+  
     i32 *i32p = 0;
     b32 *b32p = 0;
     s8 *s8p = 0;
@@ -920,15 +926,18 @@ struct args argparse(arena *a, int argc, char **argv, char *defs) {
       if (!b32p) failwith(1, s8_OOM);
       *b32p = 1; // if none->true
       if (s8equal(kv.tail, s8("false"))) *b32p = 0;
-      else if (s8equal(kv.tail, s8("true"))); // already
+      else if (s8equal(kv.tail, s8("true")) || !kv.tail.len); // already
       else if (s8startswith(kv.tail, s8("-"))) i-- ; // no value, would be next arg relook at this arg next loop
-      else failwith(1, s8("Invalid bool argument."));
+      else
+        failwith(1, s8("Invalid bool argument."));
+      ret.kv = s8vmassoc(a, ret.kv, kv.head, b32p);
       break;
     case STR_ARG:
       s8p = new (a, s8, 1);
       if (!s8p) failwith(1, s8_OOM);
       if (s8startswith(kv.tail, s8("-"))) failwith(1, s8("Invalid str argument."));
       *s8p = kv.tail;
+      ret.kv = s8vmassoc(a, ret.kv, kv.head, s8p);
       break;
     default:
       if (s8equal(kv.tail, s8("--"))) {

@@ -81,11 +81,33 @@ i32 main(void) {
          sizeof(s8set), used(&scratch));
 
   HEAD("argparse");
-  char *argv[] = {"--port=8080", "--workers=2"}; // macros don't like designated initialisers
-  PREP(struct args a = argparse(&store, 2, argv, "--port=int --workers=int"));
-  PREP(s8vm *kv = s8vmget(a.kv, s8("port")));
+
+  char *argv[] = {"--port=8080", "--workers=2", "--", "other"}; // macros don't like designated initialisers
+  PREP(struct args a = argparse(&store, countof(argv), argv, "--port=int --workers=int"));
+  s8vm *kv = 0;
+  PREP(kv = s8vmget(a.kv, s8("port")));
   TEST(8080 == *(i32 *)kv->val);
   PREP(kv = s8vmget(a.kv, s8("workers")));
   TEST(2 == *(i32 *)kv->val);
+  TEST(s8equal(s8("other"), a.rest.buf[0]));
+  
+  char *argv2[] = {"--port=8080", "--workers=2", "other"};
+  PREP(struct args a2 = argparse(&store, countof(argv2), argv2, "--port=int --workers=int"));
+  TEST(s8equal(s8("other"), a2.rest.buf[0]));
+  
+  char *argv3[] = {"other"};
+  PREP(struct args a3 = argparse(&store, countof(argv3), argv3, "--port=int --workers=int"));
+  TEST(s8equal(s8("other"), a3.rest.buf[0]));
+char *argv4[] = {"--name", "thing"};
+  PREP(struct args a4 = argparse(&store, countof(argv4), argv4, "--name=str"));
+  PREP(kv = s8vmget(a4.kv, s8("name")));
+  TEST(kv);
+  TEST(s8equal(s8("thing"), *(s8 *)kv->val));
+  
+  char *argv5[] = {"--yes"};
+  PREP(struct args a5 = argparse(&store, countof(argv5), argv5, "--yes=bool"));
+  PREP(kv = s8vmget(a5.kv, s8("yes")));
+  TEST(kv);
+  TEST(*(b32 *)kv->val);
   return REPORT();
 }

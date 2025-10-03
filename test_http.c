@@ -150,9 +150,11 @@ Response router(arena *store, arena scratch, Request req) {
 
 i32 main(int argc, char **argv) {
   arena init = alloc_arena(KiB(1));
-  
+
   struct args args = argparse(&init, argc, argv, "--port=int --workers=int");
-  Server server = make_server(args, router, .port = 8080);
+  s8vm *kv = s8vmget(args.kv, s8("port"));
+  i32 port = kv ? *(i32 *)kv->val : 8080;
+  Server server = make_server(router, .port = port);
   launch(&server);
   return 0;
 }

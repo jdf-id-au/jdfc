@@ -203,10 +203,7 @@ typedef struct client {
   int stem##port = ntohs(addr.sin_port);                                \
   inet_ntop(PF_INET, &addr.sin_addr, stem##ip, INET_ADDRSTRLEN)
 
-Server make_server_fn(struct args args, Handler h, Config c) {
-  if (args) {
-    
-  }
+Server make_server_fn(Handler h, Config c) {
   Server server = {
     .config = c,
       // learn about SOCK_DGRAM, SOCK_RAW types later
@@ -239,7 +236,7 @@ Server make_server_fn(struct args args, Handler h, Config c) {
 }
 
 // Slightly misleading name because launch does most of resource alloc.
-#define make_server(a, h, ...) make_server_fn(a, h, (Config){DEFAULT_CONFIG, __VA_ARGS__})
+#define make_server(h, ...) make_server_fn(h, (Config){DEFAULT_CONFIG, __VA_ARGS__})
 
 #ifdef _WIN32
 #include <sysinfoapi.h>
