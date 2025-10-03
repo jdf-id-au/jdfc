@@ -6,3 +6,4 @@ Includes:
 - [multithreaded http server](jdfhttp.h) using libev, pthreads and lock-free concurrent queues
 - [date arithmetic functions](jdfdate.h)
 - [enhanced enum](make_constants.c) code generation from json using jansson
+- basic argparser

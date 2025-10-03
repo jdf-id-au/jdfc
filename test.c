@@ -2,11 +2,10 @@
 #include "test.h"
 #include <stdio.h>
 
-LIST(i32s, i32)
+LIST(i32l, i32)
 b32 i32eq(i32 a, i32 b) { return a == b; }
 MAP_LIST(i32s8, i32, s8, i32eq)
-SET_LIST(i32set, i32, i32eq)
-SET_LIST(s8set, s8, s8equal)
+SET_LIST(i32s, i32, i32eq)
 
 i32 main(void) {
   HEAD("s8 string functions");
@@ -51,11 +50,11 @@ i32 main(void) {
   // TODO etc...
 
   HEAD("linked list");
-  PREP(i32s *ll = i32sappend(&scratch, 0, 42));
-  PREP(i32sappend(&scratch, ll, 84));
+  PREP(i32l *ll = i32lappend(&scratch, 0, 42));
+  PREP(i32lappend(&scratch, ll, 84));
   TEST(ll->val == 42);
-  TEST(i32snext(ll)->val == 84);
-  TEST(i32snth(ll, 0)->val == 42);
+  TEST(i32lnext(ll)->val == 84);
+  TEST(i32lnth(ll, 0)->val == 42);
   TEST(count(ll) == 2);
   
   HEAD("map (assocation) list");
@@ -69,16 +68,16 @@ i32 main(void) {
   TEST(!i32s8dissoc(m, 84));
 
   HEAD("set list");
-  PREP(i32set *is = i32setconj(&scratch, 0, 42));
-  TEST(i32sethas(is, 42));
-  TEST(!i32sethas(is, 84));
+  PREP(i32s *is = i32sconj(&scratch, 0, 42));
+  TEST(i32shas(is, 42));
+  TEST(!i32shas(is, 84));
 
-  PREP(s8set *ss = s8setconj(&scratch, 0, s8("hello")));
-  TEST(s8setconj(&scratch, ss, s8("there")));
-  TEST(s8sethas(ss, s8("hello")));
+  PREP(s8s *ss = s8sconj(&scratch, 0, s8("hello")));
+  TEST(s8sconj(&scratch, ss, s8("there")));
+  TEST(s8shas(ss, s8("hello")));
   
-  printf("sizeof(s8set) %ti, scratch usage %ti B \n",
-         sizeof(s8set), used(&scratch));
+  printf("sizeof(s8s) %ti, scratch usage %ti B \n",
+         sizeof(s8s), used(&scratch));
 
   HEAD("argparse");
 
@@ -98,7 +97,8 @@ i32 main(void) {
   char *argv3[] = {"other"};
   PREP(struct args a3 = argparse(&store, countof(argv3), argv3, "--port=int --workers=int"));
   TEST(s8equal(s8("other"), a3.rest.buf[0]));
-char *argv4[] = {"--name", "thing"};
+
+  char *argv4[] = {"--name", "thing"};
   PREP(struct args a4 = argparse(&store, countof(argv4), argv4, "--name=str"));
   PREP(kv = s8vmget(a4.kv, s8("name")));
   TEST(kv);
