@@ -13,16 +13,12 @@ test: test.c jdf.h
 	time cc $(CFLAGS) $< -o $@
 	$(PREAMBLE) ./$@
 
-test_rel: test_rel.c relptr.h 
-	time cc $(CFLAGS) $< -o $@
-	$(PREAMBLE) ./$@
-
-test_http: test_http.c jdfhttp.h http_codes.h
+test_http: test_http.c jdf.h jdfhttp.h http_codes.h
 	time cc $(CFLAGS) -Wno-unused-parameter -Wno-switch -lev -lpthread $< -o $@
 	du -sh $@
-	$(PREAMBLE) ./$@
+	$(PREAMBLE) ./$@ -p 8081
 
-test_date: test_date.c jdfdate.h dates.h
+test_date: test_date.c jdf.h jdfdate.h dates.h
 	time cc $(CFLAGS) $< -o $@
 	$(PREAMBLE) ./$@
 

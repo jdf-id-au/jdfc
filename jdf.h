@@ -882,8 +882,8 @@ struct args argparse(arena *a, int argc, char **argv, char *defs) {
   struct args ret = {0};
   b32 await_val = 0;
   enum arg_type t = UNK_ARG;
-  int i = 0;
-  for (i = 0; i < argc; i++) {
+  int i = 1;
+  for (i = 1; i < argc; i++) {
     s8 arg = s8wrap(argv[i], 256);
     if (!await_val) {
       kv = s8cut(arg, s8("="));
