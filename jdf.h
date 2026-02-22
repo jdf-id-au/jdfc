@@ -99,8 +99,9 @@ node_t *nth(node_t *node, size n) {
 // Connect two nodes. Can cause loop! Returns any previous `from` tail.
 node_t *extend(node_t *from, node_t *to) {
   if (!from) return 0;
+  node_t *tail = from->next;
   from->next = to;
-  return from->next;
+  return tail;
 }
 // Insert up to `count` nodes from `from` after `after`, returning any remaining `from` tail.
 node_t *insert(node_t *after, node_t *from, size count) {
