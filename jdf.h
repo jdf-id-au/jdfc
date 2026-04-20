@@ -96,6 +96,10 @@ node_t *nth(node_t *node, size n) {
   }
   return ret;
 }
+node_t *last(node_t *node) {
+  while (node && node->next) node = node->next;
+  return node;
+}
 // Connect two nodes. Can cause loop! Returns any previous `from` tail.
 node_t *extend(node_t *from, node_t *to) {
   if (!from) return 0;
@@ -121,31 +125,33 @@ node_t *insert(node_t *after, node_t *from, size count) {
 
   <tn>append appends node with value `m` to node `maybe`.
   If `maybe` doesn't exist, append starts a new list.
-  If `maybe` already has a ->next, append redirects it, orphaning tail unless
-caller retains it. Caller needs to retain list head.
+  If `maybe` already has a ->next, append follows it to the end.
   Does not prevent inclusion of stack-allocated values in heap-allocated list!
 */
-#define LIST(tn, t)                                                            \
-  typedef struct tn tn;                                                        \
-  struct tn {                                                                  \
-    tn *next;                                                                  \
-    t val;                                                                     \
-  };                                                                           \
-  tn *tn##append(arena *a, tn *maybe, t m) {                                   \
-    tn *cur = new (a, tn, 1);                                                  \
-    if (!cur) return 0;                                                        \
-    cur->val = m;                                                              \
-    if (maybe)                                                                 \
-      maybe->next = cur;                                                       \
-    return cur;                                                                \
-  }                                                                            \
-  tn *tn##next(tn *node) { return (tn *)next((node_t *)node); }                \
-  tn *tn##nth(tn *node, size n) { return (tn *)nth((node_t *)node, n); }       \
-  tn *tn##extend(tn *from, tn *to) {                                           \
-    return (tn *)extend((node_t *)from, (node_t *)to);                         \
-  }                                                                            \
-  tn *tn##insert(tn *after, tn *from, size n) {                                \
-    return (tn *)insert((node_t *)after, (node_t *)from, n);                   \
+#define LIST(tn, t)                                                     \
+  typedef struct tn tn;                                                 \
+  struct tn {                                                           \
+    tn *next;                                                           \
+    t val;                                                              \
+  };                                                                    \
+  tn *tn##last(tn *node) { return (tn *)last((node_t *)node); }         \
+  tn *tn##append(arena *a, tn *maybe, t m) {                            \
+    tn *cur = new (a, tn, 1);                                           \
+    if (!cur) return 0;                                                 \
+    cur->val = m;                                                       \
+    if (maybe) {                                                        \
+      maybe = tn##last(maybe);                                          \
+      maybe->next = cur;                                                \
+    }                                                                   \
+    return cur;                                                         \
+  }                                                                     \
+  tn *tn##next(tn *node) { return (tn *)next((node_t *)node); }         \
+  tn *tn##nth(tn *node, size n) { return (tn *)nth((node_t *)node, n); } \
+  tn *tn##extend(tn *from, tn *to) {                                    \
+    return (tn *)extend((node_t *)from, (node_t *)to);                  \
+  }                                                                     \
+  tn *tn##insert(tn *after, tn *from, size n) {                         \
+    return (tn *)insert((node_t *)after, (node_t *)from, n);            \
   }
 
 /*

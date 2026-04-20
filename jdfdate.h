@@ -90,6 +90,7 @@ b32 date_equal(date d1, date d2) {
 }
 
 date date_offset(date d, i32 days) {
+  // TODO 2026-04-20 22:08:47 overflow check
   return epoch_date(date_epoch(d) + days);
 }
 
@@ -103,7 +104,7 @@ s8_ s8date(arena *store, date d) {
 
 date s8parsedate(s8 s) {
   if (s.len != 10) return (date){0};
-  u8 buf[11] = {0}; // make zero-terminated ugh local s8unwrap
+  u8 buf[11] = {0}; // make zero-terminated
   copy(buf, s.buf, 10);
   date ret = {0};
   if (sscanf((const char *)buf, date_format, &ret.y, &ret.m, &ret.d) == 3)
