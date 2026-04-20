@@ -99,22 +99,24 @@ node_t *nth(node_t *node, size n) {
 // Connect two nodes. Can cause loop! Returns any previous `from` tail.
 node_t *extend(node_t *from, node_t *to) {
   if (!from) return 0;
-  node_t *tail = from->next;
+  node_t *from_tail = from->next;
   from->next = to;
-  return tail;
+  return from_tail;
 }
-// Insert up to `count` nodes from `from` after `after`, returning any remaining `from` tail.
+// Insert exactly `count` nodes from `from` after `after`, returning any remaining `from` tail (including if count > available: return all of `from`).
 node_t *insert(node_t *after, node_t *from, size count) {
   if (!after || !from || count <= 0) return from;
-  node_t *after_tail = after->next;
   node_t *to = nth(from, count - 1);
-  node_t *to_tail = to ? to->next : 0;
-  after->next = from;
-  to->next = after_tail;
-  return to_tail;
+  if (to) {
+    node_t *after_tail = after->next;
+    node_t *from_tail = to->next;
+    after->next = from;
+    to->next = after_tail;
+    return from_tail;
+  } else return from;
 }
 /*
-  Define new linked list type tn, el type t.
+  Define new linked list type tn, element type t.
   t can be typename * for pointer (i.e. reference list).
 
   <tn>append appends node with value `m` to node `maybe`.
@@ -213,7 +215,7 @@ caller retains it. Caller needs to retain list head.
     } while ((cur = cur->next));                                      \
     return 0;                                                         \
   }
-// Barely worth it vs ASSOCIATION_LIST with ignored vt. Make sure to use `disj`s returned head!
+// Barely worth it vs MAP_LIST with ignored vt. Make sure to use `disj`s returned head!
 #define SET_LIST(tn, kt, keq)                   \
   typedef struct tn tn;                         \
   struct tn {                                   \
@@ -221,7 +223,7 @@ caller retains it. Caller needs to retain list head.
     kt key;                                     \
   };                                            \
   tn *tn##conj(arena *a, tn *head, kt key) {    \
-    tn *beg = {0};                              \
+    tn *beg = 0;                                \
     if (!head) {                                \
       beg = new (a, tn, 1);                     \
       if (!beg)                                 \
@@ -235,10 +237,9 @@ caller retains it. Caller needs to retain list head.
     for (; cur; prev = cur, cur = cur->next)    \
       if (keq(cur->key, key))                   \
         return beg;                             \
-    cur = new (a, tn, 1);                       \
+    cur = prev->next = new (a, tn, 1);          \
     if (!cur)                                   \
       return 0;                                 \
-    prev->next = cur;                           \
     cur->key = key;                             \
     return beg;                                 \
   }                                             \
@@ -289,7 +290,7 @@ typedef struct arena {
   first alloc here would fail if the arena is 0.
 */
 byte *alloc(arena *a, size objsize, size align, size count, const char *t) {
-  if (!a || count <= 0 || align < 0) return 0; // why are count and size signed?
+  if (!a || count <= 0 || align <= 0) return 0; // why are count and size signed?
   //printf("Trying to allocate %ti %ss of size %ti\n", count, t, objsize);
   size avail = a->end - a->cur;
   /*
@@ -901,8 +902,7 @@ struct args argparse(arena *a, int argc, char **argv, char *defs) {
             kv.head = cur->key;
             break;
           } else cur = cur->next;
-      }
-      else { // allow absence of kwargs
+      } else { // allow absence of kwargs
         i--;
         break;
       }

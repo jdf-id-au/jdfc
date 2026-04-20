@@ -29,8 +29,10 @@ s8_ sanitise(arena *store, arena scratch, s8 s) {
   for (size i = 0; i < s.len; i++) {
     b32 targeted = 0;
     for (usize j = 0; j < sizeof(targets); j++)
-      if (s.buf[i] == targets[j])
+      if (s.buf[i] == targets[j]) {
         targeted = 1;
+        break;
+      }   
     if (targeted) ret.v.buf[r++] = '\\';
     ret.v.buf[r++] = s.buf[i];
   }
