@@ -112,7 +112,7 @@ date s8parsedate(s8 s) {
 }
 
 s8 month_abbr(month m) {
-  return s8span((u8 *)spell_month[m], (u8 *)spell_month[m] + 3);
+  return s8slice(spell_month[m], 0, 3);
 }
 
 #endif // date_h

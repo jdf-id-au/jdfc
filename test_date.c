@@ -8,6 +8,7 @@ i32 main(void) {
   TEST(valid_date((date){2020, 1, 2}));
   TEST(!valid_date((date){2020, 13, 2}));
   TEST(date_equal((date){2020, 1, 2}, date_offset((date){2020, 2, 4}, -33)));
+  TEST(s8equal(month_abbr(JANUARY), s8("Jan")));
   HEAD("duration calculation");
   date d1 = (date){2018, 1, 1};
   date d2 = (date){2018, 1, 8};

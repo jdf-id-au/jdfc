@@ -17,37 +17,37 @@ enum month {
   NOVEMBER,
   DECEMBER,
 };
-const char *spell_month[] = {
-  [JANUARY] = "January",
-  [FEBRUARY] = "February",
-  [MARCH] = "March",
-  [APRIL] = "April",
-  [MAY] = "May",
-  [JUNE] = "June",
-  [JULY] = "July",
-  [AUGUST] = "August",
-  [SEPTEMBER] = "September",
-  [OCTOBER] = "October",
-  [NOVEMBER] = "November",
-  [DECEMBER] = "December",
+static const s8 spell_month[] = {
+  [JANUARY] = s8("January"),
+  [FEBRUARY] = s8("February"),
+  [MARCH] = s8("March"),
+  [APRIL] = s8("April"),
+  [MAY] = s8("May"),
+  [JUNE] = s8("June"),
+  [JULY] = s8("July"),
+  [AUGUST] = s8("August"),
+  [SEPTEMBER] = s8("September"),
+  [OCTOBER] = s8("October"),
+  [NOVEMBER] = s8("November"),
+  [DECEMBER] = s8("December"),
 };
-const char *describe_month[] = {
-  [JANUARY] = "January",
-  [FEBRUARY] = "February",
-  [MARCH] = "March",
-  [APRIL] = "April",
-  [MAY] = "May",
-  [JUNE] = "June",
-  [JULY] = "July",
-  [AUGUST] = "August",
-  [SEPTEMBER] = "September",
-  [OCTOBER] = "October",
-  [NOVEMBER] = "November",
-  [DECEMBER] = "December",
+static const s8 describe_month[] = {
+  [JANUARY] = s8("January"),
+  [FEBRUARY] = s8("February"),
+  [MARCH] = s8("March"),
+  [APRIL] = s8("April"),
+  [MAY] = s8("May"),
+  [JUNE] = s8("June"),
+  [JULY] = s8("July"),
+  [AUGUST] = s8("August"),
+  [SEPTEMBER] = s8("September"),
+  [OCTOBER] = s8("October"),
+  [NOVEMBER] = s8("November"),
+  [DECEMBER] = s8("December"),
 };
 enum month parse_month(s8 s) {
   for (size i = 0; i < 12; i++)
-    if(s8equal(s, s8wrap(spell_month[i], 1024)))
+    if(s8equal(s, spell_month[i]))
       return (enum month)i;
   return (enum month)0;
 }
@@ -60,27 +60,27 @@ enum weekday {
   FRIDAY,
   SATURDAY,
 };
-const char *spell_weekday[] = {
-  [SUNDAY] = "Sunday",
-  [MONDAY] = "Monday",
-  [TUESDAY] = "Tuesday",
-  [WEDNESDAY] = "Wednesday",
-  [THURSDAY] = "Thursday",
-  [FRIDAY] = "Friday",
-  [SATURDAY] = "Saturday",
+static const s8 spell_weekday[] = {
+  [SUNDAY] = s8("Sunday"),
+  [MONDAY] = s8("Monday"),
+  [TUESDAY] = s8("Tuesday"),
+  [WEDNESDAY] = s8("Wednesday"),
+  [THURSDAY] = s8("Thursday"),
+  [FRIDAY] = s8("Friday"),
+  [SATURDAY] = s8("Saturday"),
 };
-const char *describe_weekday[] = {
-  [SUNDAY] = "Sunday",
-  [MONDAY] = "Monday",
-  [TUESDAY] = "Tuesday",
-  [WEDNESDAY] = "Wednesday",
-  [THURSDAY] = "Thursday",
-  [FRIDAY] = "Friday",
-  [SATURDAY] = "Saturday",
+static const s8 describe_weekday[] = {
+  [SUNDAY] = s8("Sunday"),
+  [MONDAY] = s8("Monday"),
+  [TUESDAY] = s8("Tuesday"),
+  [WEDNESDAY] = s8("Wednesday"),
+  [THURSDAY] = s8("Thursday"),
+  [FRIDAY] = s8("Friday"),
+  [SATURDAY] = s8("Saturday"),
 };
 enum weekday parse_weekday(s8 s) {
   for (size i = 0; i < 7; i++)
-    if(s8equal(s, s8wrap(spell_weekday[i], 1024)))
+    if(s8equal(s, spell_weekday[i]))
       return (enum weekday)i;
   return (enum weekday)0;
 }

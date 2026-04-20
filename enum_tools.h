@@ -116,7 +116,7 @@ void render_enum(arena *store, arena scratch, bufout *b, s8 id, enum_values *val
       S("[");
       W(cur->val.symbol);
       S("] = s8(\"");
-      s8 which = cur->val.text.len ? cur->val.text : cur->val.symbol;
+      s8 which = cur->val.text.len ? cur->val.text : cur->val.name;
       s8_ santext = sanitise(store, scratch, which);
       W(santext.v);
       S("\"),\n");
