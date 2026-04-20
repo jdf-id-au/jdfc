@@ -650,7 +650,7 @@ enum direction client_set_direction(EV_P_ ev_io *w, enum direction next, char *n
     }
     //printf(" → %d", next);
   }
-  //printf(" %s\n", note ? note : "");
+  //printf(" %s\n", note ? note : ""); // TODO 2026-04-20 20:03:31 remove note 
   return previous;
 }
 

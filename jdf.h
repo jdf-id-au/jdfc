@@ -538,57 +538,6 @@ s8pair s8cutu8(s8 s, u8 on) {
   return (s8pair) {.head = s8span(s.buf, found), .tail = s8span(found + 1, endof(s)), .ok = 1};
 }
 
-/*
-  Split s, returning s8spans referring to it (zero copy of buffer).
-  max_splits can be 0 for unlimited splits.
-*/
-s8a_ s8split(arena *store, arena scratch, s8 s, s8 on, size max_splits) {
-  if (s.len == 0) return (s8a_){.v = {.buf = (s8 *)s.buf, .len = 0}}; // Hack to show ok-ness.
-  u8 *end = endof(s);
-  u8 **matches = (u8 **)scratch.beg;
-  size match_count = 0;
-  for (u8 *cur = s.buf; cur < end && (max_splits == 0 || match_count < max_splits);) {
-    cur = s8find(s8span(cur, end), on);
-    if (!cur) break;
-    u8 **match = new (&scratch, u8 *, 1); 
-    if (!match) return (s8a_){0}; // FIXME 2025-08-10 21:53:36 clearer indication of alloc fail
-    matches[match_count++] = cur;
-    cur += on.len;
-  }
-  s8 *buf = new (store, s8, match_count + 1);
-  if (!buf) return (s8a_){0};
-  for (size i = 0; i <= match_count; i++) 
-    buf[i] = s8span(i == 0 ? s.buf : (matches[i - 1] + on.len),
-                    i == match_count ? end : matches[i]);
-  return (s8a_){.v = {.buf = buf, .len = match_count + 1}};
-}
-
-// Trivially less efficient than impl calling s8findu8, but easier to maintain.
-s8a_ s8splitu8(arena *store, arena scratch, s8 s, u8 on, size max_splits) {
-  s8 ons = (s8){.buf = (u8[]){on}, .len = 1};
-  return s8split(store, scratch, s, ons, max_splits);
-}
-
-s8_ s8replace(arena *store, arena scratch,
-              s8 source, s8 target, s8 replacement) {
-  s8a_ split = s8split(store, scratch, source, target, 0);
-  if (!split.ok) return (s8_){0};
-  if (split.v.len == 1) return (s8_) {.v = source};
-  size len = (split.v.len - 1) * replacement.len;
-  for (size i = 0; i < split.v.len; i++) len += split.v.buf[i].len;
-  s8_ ret = make_s8(store, len);
-  if (!ret.ok) return (s8_){0};
-  copy(ret.v.buf, split.v.buf[0].buf, split.v.buf[0].len);
-  u8 *cur = ret.v.buf + split.v.buf[0].len;
-  for (size i = 1; i < split.v.len; i++) {
-    copy(cur, replacement.buf, replacement.len);
-    cur += replacement.len;
-    copy(cur, split.v.buf[i].buf, split.v.buf[i].len);
-    cur += split.v.buf[i].len;
-  }
-  return ret;
-}
-
 // Concatenate array of strings
 s8_ s8concat(arena *a, s8 *ss, size len) {
   size tot = 0;
@@ -668,7 +617,7 @@ i32 queue_mpop(queue *q, i32 len, u32 *save) {
   i32 tail = r >> 16 & mask;
   return head == tail ? -1 : tail;
 }
-// NB element load must be atomic
+// NB element load must be atomic TODO 2026-04-20 18:30:01 spell out meaning of this
 b32 queue_mpop_commit(queue *q, u32 save) {
   return atomic_compare_exchange_strong(q, &save, save + 0x10000);
 }
@@ -716,7 +665,7 @@ i32 queue_push(queue *q, i32 len) {
 }
 // After storing into (separately allocated) element array.
 void queue_push_commit(queue *q) {
-  *q += 1;
+  *q += 0x1;
 }
 // ╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴ Concurrent output buffer
 typedef struct {
@@ -990,7 +939,7 @@ void debytes(i32 fd, void *val, size len) { // too cool for stdio.h printf
 }
 
 #define inspect(ptr)                                  \
-  s8write_(2, s8("Contents of pointer " #ptr ":"));   \
+  s8writefd(2, s8("Contents of pointer " #ptr ":"));   \
   debytes(2, ptr, sizeof(*(ptr)))
 
 #define log_debug(s)                              \
@@ -1019,8 +968,7 @@ arena alloc_arena(size cap) {
   // flAllocationType =  MEM_COMMIT + MEM_RESERVE
   // flProtect = PAGE_READWRITE
   byte* beg = VirtualAlloc(0, cap, 0x3000, 4);
-  byte* end = beg ? beg + cap : 0;
-  if (beg) return (arena){.beg = beg, .cur = beg, .end = end};
+  if (beg) return (arena){.beg = beg, .cur = beg, .end = beg + cap};
   else return (arena){0};
 }
 
@@ -1066,8 +1014,7 @@ u32 oswrite(i32 fd, u8 *buf, i32 len) {
 // malloc failure will return zero-capacity arena so its `alloc`s will just fail.
 arena alloc_arena(size cap) {
   byte* beg = malloc(cap);
-  byte* end = beg ? beg + cap : 0;
-  if (beg) return (arena){.beg = beg, .cur = beg, .end = end};
+  if (beg) return (arena){.beg = beg, .cur = beg, .end = beg + cap};
   else return (arena){0};
 }
 
@@ -1092,7 +1039,7 @@ i32 osread(i32 fd, u8 *buf, i32 cap) {
 u32 oswrite(i32 fd, u8 *buf, i32 len) {
   for (i32 off = 0; off < len; ) {
     i32 r = (i32)write(fd, buf + off, len - off);
-    if (r < 1) return errno;
+    if (r < 1) return errno; // TODO 2026-04-20 20:17:31 0 and EAGAIN? block here?
     off += r;
   }
   return 0;
