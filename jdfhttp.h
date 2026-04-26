@@ -18,8 +18,6 @@
 #include <pthread.h>
 #include <ev.h>
 
-
-
 // Dump s8 in desperation (debugging)
 void dumbp(s8 s) {
   printf("%*ti B ✏ ", 5, s.len);

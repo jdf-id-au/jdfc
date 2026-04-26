@@ -132,7 +132,7 @@ Response router(arena *store, arena scratch, Request req) {
     if (routes[i].uri.len) {
       if (routes[i].parser) {
         void *params = routes[i].parser(store, scratch, req.uri);
-        if (!params) continue;
+        if (!params) continue; // NB 2026-04-21 13:19:23 parser also needs to handle uri match
         req.params = params;
         return h(store, scratch, req);
       } else if (s8equal(req.uri, routes[i].uri))

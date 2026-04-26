@@ -1,14 +1,6 @@
 /*
-  After Wellons https://nullprogram.com/blog/2023/10/08/
-  and https://nullprogram.com/blog/2023/09/27/ .
-  See discussion https://old.reddit.com/r/C_Programming/comments/173e0vn/nullprogram_my_personal_c_coding_style_as_of_late/ .
-  
-  - generally omit const (controversial!)
-  - literal 0 for null pointers and false
-  - restrict when necessary
-  - typedef all structures
-  - static all functions except for entry points (not applied here; less meaningful in single translation unit build)
-  - structure returns instead of out parameters; initialise with {0} as per C99
+  Rework jdf.h for relative pointers (indices within arena) to ease
+  arena resizing and maybe serialisation.
 */
 
 #ifndef jdf_h
@@ -35,6 +27,7 @@ typedef uint64_t  u64;
 typedef float     f32;
 typedef double    f64;
 typedef uintptr_t uptr;
+typedef uint32_t  rptr; // relative pointer, limits to 4GiB; may regret unsignedness
 typedef char      byte;
 typedef ptrdiff_t size;
 typedef size_t    usize;
@@ -43,6 +36,7 @@ typedef struct arena arena; // forward decl
 
 #define alignof(x) (size)_Alignof(x) // casting from size_t
 #define countof(arrayptr) (size)(sizeof(arrayptr) / sizeof(*(arrayptr))) // casting from size_t
+
 /*
   Somewhat evil semantic affordance for structs starting with (possibly nested)
   nullable pointer. Allows if(s.ok) process(s.v). Should be safer than null
@@ -52,19 +46,19 @@ typedef struct arena arena; // forward decl
   https://stackoverflow.com/a/3995987/780743
 */
 #define MAYBE(t) typedef union {uptr ok; t v;} t##_;
-#define new(a, t, n) (t *)alloc(a, sizeof(t), alignof(t), n, #t) // arena, type, number
+#define new(a, t, n) alloc(a, sizeof(t), alignof(t), n, #t) // arena, type, number
 #define ARRAY(tn, t) /* new type name, el type */            \
   typedef struct {                                           \
-    t *buf;                                                  \
+    t *rbuf; /* relative pointer, needs conversion!! */      \
     size len;                                                \
   } tn;                                                      \
   MAYBE(tn)                                                  \
   tn##_ make_##tn(arena *a, size len) {                      \
-    t *buf = new (a, t, len);                                \
-    if (buf) return (tn##_){.v = {.buf = buf, .len = len }}; \
+    rptr rbuf = relptr(a, new (a, t, len));                  \
+    if (rbuf) return (tn##_){.v = {.rbuf = (t *)rbuf, .len = len }}; \
     else return (tn##_){0};                                  \
   }
-#define endof(v) ((v).buf + (v).len) // one beyond last of sized value
+#define rendof(v) ((v).rbuf + (v).len) // one beyond last of sized value, relative pointer, needs conversion!!
 /*
   To enable assertions in release builds,
   put UBSan in trap mode with -fsanitize-trap
@@ -75,46 +69,51 @@ typedef struct arena arena; // forward decl
 #define assert(c) while (!(c)) __builtin_unreachable()
 
 // ──────────────────────────────────────────────────────────────── Linked lists
+// TODO 2026-04-21 15:32:15 keep chipping away, watch with horror as api changes
+typedef struct node_t node_t;
+struct node_t { node_t *rnext; }; // relative pointer, needs conversion!! ignore subsequent fields
 
-typedef struct node_t node_t; struct node_t { node_t *next; }; // ignore subsequent fields
+node_t *next(arena *a, node_t *node) {
+  assert(node);
+  return (node_t *)absptr(a, node->rnext);
+}
 // No loop detection!
-size countfn(node_t *node) {
+size countfn(arena *a, node_t *node) {
+  assert(node);
   size c = 0;
-  node_t *cur = node;
-  if (!cur) return 0;
-  do { c++; } while ((cur = cur->next));
+  for(node_t *cur = node; cur; cur = next(a, cur)) c++;
   return c;
 }
 // Indirections to allow use from multiple linked list-derived data structures...
-#define count(n) countfn((node_t *)n)
-node_t *next(node_t *node) { return node->next; }
-node_t *nth(node_t *node, size n) {
+#define count(a, n) countfn(a, (node_t *)n)
+node_t *nth(arena *a, node_t *node, size n) {
+  assert(node);
   node_t *ret = node;
-  for (size i = 0; i < n; i++) {
-    if (!ret) return 0;
-    ret = ret->next;
-  }
+  for (size i = 0; i < n && ret; i++, ret = next(a, ret)); 
   return ret;
 }
-node_t *last(node_t *node) {
-  while (node && node->next) node = node->next;
-  return node;
+node_t *last(arena *a, node_t *node) {
+  assert(node);
+  node_t *prev = 0;
+  for(; node; prev = node, node = next(node));
+  return prev;
 }
 // Connect two nodes. Can cause loop! Returns any previous `from` tail.
-node_t *extend(node_t *from, node_t *to) {
-  if (!from) return 0;
-  node_t *from_tail = from->next;
-  from->next = to;
+node_t *extend(arena *a, node_t *from, node_t *to) {
+  assert(from);
+  node_t *from_tail = next(from);
+  from->rnext = relptr(a, to);
   return from_tail;
 }
 // Insert exactly `count` nodes from `from` after `after`, returning any remaining `from` tail (including if count > available: return all of `from`).
-node_t *insert(node_t *after, node_t *from, size count) {
-  if (!after || !from || count <= 0) return from;
+node_t *insert(arena *a, node_t *after, node_t *from, size count) {
+  assert(after);
+  if (!from || count <= 0) return from;
   node_t *to = nth(from, count - 1);
   if (to) {
-    node_t *after_tail = after->next;
-    node_t *from_tail = to->next;
-    after->next = from;
+    node_t *after_tail = after->rnext;
+    node_t *from_tail = to->rnext;
+    after->rnext = relptr(a, from);
     to->next = after_tail;
     return from_tail;
   } else return from;
@@ -287,6 +286,27 @@ typedef struct arena {
   byte *cur; // cursor: current start of free space
   byte *end; // allocated end of arena
 } arena;
+
+/*
+  Relative pointers, with respect to host arena (not anything else).
+  Should allow areana resizing and maybe serialisation. NB +1 keeps
+  meaning of 0 as null.
+
+  Operate on normal pointers, store relative pointers.
+
+  NB 2026-04-26 11:44:01 doesn't allow "child" arenas to reference ancestors :(
+  Need to track?
+
+  Kind of breaks type system.
+ */
+rptr relptr(arena *a, void *p) {
+  if (p) return (byte *)p - a->beg + 1;
+  else return 0;
+}
+void *absptr(arena *a, rptr rp) {
+  if (rp) return a->beg + rp - 1;
+  else return 0;
+}
 
 // TODO could visualise correctness of padding algorithm
 /*
