@@ -27,12 +27,12 @@ typedef uint64_t  u64;
 typedef float     f32;
 typedef double    f64;
 typedef uintptr_t uptr;
-typedef uint32_t  rptr; // relative pointer, limits to 4GiB; may regret unsignedness
 typedef char      byte;
 typedef ptrdiff_t size;
 typedef size_t    usize;
 
-typedef struct arena arena; // forward decl
+typedef struct arena arena; // forward decls
+typedef struct rptr rptr;
 
 #define alignof(x) (size)_Alignof(x) // casting from size_t
 #define countof(arrayptr) (size)(sizeof(arrayptr) / sizeof(*(arrayptr))) // casting from size_t
@@ -279,13 +279,18 @@ node_t *insert(arena *a, node_t *after, node_t *from, size count) {
   Pass "store" arena by reference, and "scratch" by value.
   This effectively resets the scratch *cur pointer on fn return.
 */
-typedef struct arena {
+struct arena {
   // https://stackoverflow.com/a/21476937/780743
   // easier not to have `byte *const beg` and end to facilitate free_arena
   byte *beg; // original start of arena
   byte *cur; // cursor: current start of free space
   byte *end; // allocated end of arena
-} arena;
+};
+
+#define ARENA_ID_BITS 10
+#define RPTR_BITS 54
+
+arena *arenas[2**ARENA_ID_BITS] = {0}; // array of pointers to arena; index is arena id
 
 /*
   Relative pointers, with respect to host arena (not anything else).
@@ -295,15 +300,26 @@ typedef struct arena {
   Operate on normal pointers, store relative pointers.
 
   NB 2026-04-26 11:44:01 doesn't allow "child" arenas to reference ancestors :(
-  Need to track?
+  Need to maintain tree of arenas? How to resize inner?
 
   Kind of breaks type system.
+
+  TODO 2026-04-28 22:40:17 require leaf arena (no children) before allowing resize
+  ...should be ok in single-threaded "stack of arenas", might get hairy in threads
+  ...won't quite work for scratch (pass by value), could fake it
  */
-rptr relptr(arena *a, void *p) {
-  if (p) return (byte *)p - a->beg + 1;
-  else return 0;
+struct rptr {
+  uint:ARENA_INDEX_BITS arena;
+  uint:RPTR_BITS ptr;
+};
+
+rptr relptr(u32 arena_index, void *p) {
+  return (rptr){
+    .arena = arena_index;
+    .ptr = ret.ptr ? (byte *)p - a->beg + 1 : 0}
+  };
 }
-void *absptr(arena *a, rptr rp) {
+void *absptr(rptr rp) {
   if (rp) return a->beg + rp - 1;
   else return 0;
 }
