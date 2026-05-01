@@ -32,33 +32,61 @@ typedef ptrdiff_t size;
 typedef size_t    usize;
 
 typedef struct arena arena; // forward decls
-typedef struct rptr rptr;
 
 #define alignof(x) (size)_Alignof(x) // casting from size_t
 #define countof(arrayptr) (size)(sizeof(arrayptr) / sizeof(*(arrayptr))) // casting from size_t
 
+#define new(a, t, n)                                                           \
+  alloc(a, sizeof(t), alignof(t), n, #t) // arena, type, number
+
 /*
-  Somewhat evil semantic affordance for structs starting with (possibly nested)
-  nullable pointer. Allows if(s.ok) process(s.v). Should be safer than null
-  pointer because of explicit types. Type name followed by underscore.
-  Use to represent e.g. internal allocation failure.
-  (Can only cast scalars unfortunately.)
-  https://stackoverflow.com/a/3995987/780743
-*/
-#define MAYBE(t) typedef union {uptr ok; t v;} t##_;
-#define new(a, t, n) alloc(a, sizeof(t), alignof(t), n, #t) // arena, type, number
-#define ARRAY(tn, t) /* new type name, el type */            \
-  typedef struct {                                           \
-    t *rbuf; /* relative pointer, needs conversion!! */      \
-    size len;                                                \
-  } tn;                                                      \
-  MAYBE(tn)                                                  \
-  tn##_ make_##tn(arena *a, size len) {                      \
-    rptr rbuf = relptr(a, new (a, t, len));                  \
-    if (rbuf) return (tn##_){.v = {.rbuf = (t *)rbuf, .len = len }}; \
-    else return (tn##_){0};                                  \
+  Relative pointers, with respect to host arena (not anything else).
+  Should allow areana resizing and maybe serialisation. NB +1 keeps
+  meaning of 0 as null.
+
+  Operate on normal pointers, store relative pointers.
+
+  Kind of breaks type system.
+
+  TODO 2026-04-28 22:40:17 require leaf arena (no children) before allowing
+  resize
+  ...should be ok in single-threaded "stack of arenas", might get hairy in
+  threads
+  ...won't quite work for scratch (pass by value), could fake it
+ */
+
+#define reltype(t)                                                             \
+  typedef struct rel_##t {                                                     \
+    uint : ARENA_ID_BITS arena;                                                \
+    uint : RPTR_BITS ptr;                                                      \
+  } rel_##t;                                                                   \
+  rel_##t rel_##t(a, p) {                                                      \
+    assert(a->beg <= p && p < a->cur && p < a->beg + (1 << RPTR_BITS) - 2);    \
+    return (rel_##t){.arena = a->id, .ptr = p ? (byte *)p - a->beg + 1 : 0};   \
+  }                                                                            \
+  t *abs_##t(rel_##t r) {                                                      \
+    if (r.ptr)                                                                 \
+      return (t *)(r.arena->beg + r.ptr - 1);                                  \
+    else                                                                       \
+      return 0;                                                                \
   }
-#define rendof(v) ((v).rbuf + (v).len) // one beyond last of sized value, relative pointer, needs conversion!!
+
+#define rel(a, t, n) rel_##t(a, new (a, t, n));
+#define ARRAY(tn, t) /* new type name, el type */                              \
+  typedef struct {                                                             \
+    rel_##t r;                                                                 \
+    size len;                                                                  \
+  } tn;                                                                        \
+  tn make_##tn(arena *a, size len) {                                           \
+    rel_##t r = rel(a, t, len);                                                \
+    if (r.ptr)                                                                 \
+      return (tn){.v = {.r = r, .len = len}};                                  \
+    else                                                                       \
+      return (tn){0};                                                          \
+  }                                                                            \
+  t *startof_##t(tn v) { return abs_##t(v.r); }                                \
+  t *endof_##t(tn v) { return abs_##t(v.r) + v.len; } /* one beyond last of sized value */
+
 /*
   To enable assertions in release builds,
   put UBSan in trap mode with -fsanitize-trap
@@ -275,6 +303,9 @@ node_t *insert(arena *a, node_t *after, node_t *from, size count) {
 
 // ─────────────────────────────────────────────────────────────────────── Arena
 
+#define ARENA_ID_BITS 10
+#define RPTR_BITS 54
+
 /*
   Pass "store" arena by reference, and "scratch" by value.
   This effectively resets the scratch *cur pointer on fn return.
@@ -285,44 +316,11 @@ struct arena {
   byte *beg; // original start of arena
   byte *cur; // cursor: current start of free space
   byte *end; // allocated end of arena
+  uint:ARENA_ID_BITS id;
 };
 
-#define ARENA_ID_BITS 10
-#define RPTR_BITS 54
+arena *arenas[1 << ARENA_ID_BITS] = {0}; // array of pointers to arena; index is arena id
 
-arena *arenas[2**ARENA_ID_BITS] = {0}; // array of pointers to arena; index is arena id
-
-/*
-  Relative pointers, with respect to host arena (not anything else).
-  Should allow areana resizing and maybe serialisation. NB +1 keeps
-  meaning of 0 as null.
-
-  Operate on normal pointers, store relative pointers.
-
-  NB 2026-04-26 11:44:01 doesn't allow "child" arenas to reference ancestors :(
-  Need to maintain tree of arenas? How to resize inner?
-
-  Kind of breaks type system.
-
-  TODO 2026-04-28 22:40:17 require leaf arena (no children) before allowing resize
-  ...should be ok in single-threaded "stack of arenas", might get hairy in threads
-  ...won't quite work for scratch (pass by value), could fake it
- */
-struct rptr {
-  uint:ARENA_INDEX_BITS arena;
-  uint:RPTR_BITS ptr;
-};
-
-rptr relptr(u32 arena_index, void *p) {
-  return (rptr){
-    .arena = arena_index;
-    .ptr = ret.ptr ? (byte *)p - a->beg + 1 : 0}
-  };
-}
-void *absptr(rptr rp) {
-  if (rp) return a->beg + rp - 1;
-  else return 0;
-}
 
 // TODO could visualise correctness of padding algorithm
 /*
@@ -1055,8 +1053,12 @@ u32 oswrite(i32 fd, u8 *buf, i32 len) {
 
 // malloc failure will return zero-capacity arena so its `alloc`s will just fail.
 arena alloc_arena(size cap) {
+  static u32 arena_id_seq; // TODO 2026-04-29 14:06:56 confirm init 0 1st time
+  assert(arena_id_seq < 2**ARENA_ID_BITS);
   byte* beg = malloc(cap);
-  if (beg) return (arena){.beg = beg, .cur = beg, .end = beg + cap};
+  if (beg) return (arena){ // FIXME 2026-05-01 00:04:37 needs to be threadsafe: use atomic something
+      .id = arena_id_seq++; .beg = beg, .cur = beg, .end = beg + cap
+    };
   else return (arena){0};
 }
 
@@ -1067,6 +1069,7 @@ b32 free_arena(arena *a) {
   a->cur = 0;
   a->end = 0;
   free(me); // safe even if null
+  // TODO 2026-05-01 17:59:16 mechanism for removing from arenas global (and notifying errors)?
   return 1;
 }
 
