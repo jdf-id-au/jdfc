@@ -66,12 +66,13 @@ struct rel { // NB 2026-05-02 13:22:42 think bitfield types need to be same; bes
 };
 
 #define REL(t)                                                                 \
-  typedef struct rel rel_##t;                                                  \
-  rel_##t rel_##t(a, p) {                                                      \
-    assert(a->beg <= p && p < a->cur && p < a->beg + (1 << RPTR_BITS) - 2);    \
-    return (rel_##t){.arena = a->id, .ptr = p ? (byte *)p - a->beg + 1 : 0};   \
+  typedef struct rel rel_##t##_t;                                              \
+  rel_##t##_t rel_##t(arena *a, void *p) {                                     \
+    byte *b = (byte *)p;\
+    assert(a->beg <= b && b < a->cur && b < a->beg + (1L << RPTR_BITS) - 2);    \
+    return (rel_##t##_t){.aid = a->id, .ptr = b ? b - a->beg + 1 : 0};   \
   }                                                                            \
-  t *abs_##t(rel_##t r) {                                                      \
+  t *abs_##t(rel_##t##_t r) {                                                      \
     if (r.ptr)                                                                 \
       return (t *)(arenas[r.aid]->beg + r.ptr - 1);                            \
     else                                                                       \
@@ -81,13 +82,13 @@ struct rel { // NB 2026-05-02 13:22:42 think bitfield types need to be same; bes
 #define rel(a, t, n) rel_##t(a, new (a, t, n))
 #define ARRAY(tn, t) /* new type name, el type */                              \
   typedef struct {                                                             \
-    rel_##t r;                                                                 \
+    rel_##t##_t r;                                                                 \
     size len;                                                                  \
   } tn;                                                                        \
   tn make_##tn(arena *a, size len) {                                           \
-    rel_##t r = rel(a, t, len);                                                \
+    rel_##t##_t r = rel(a, t, len);                                                \
     if (r.ptr)                                                                 \
-      return (tn){.v = {.r = r, .len = len}};                                  \
+      return (tn){.r = r, .len = len};                                  \
     else                                                                       \
       return (tn){0};                                                          \
   }                                                                            \
@@ -105,7 +106,7 @@ struct rel { // NB 2026-05-02 13:22:42 think bitfield types need to be same; bes
 
 // ──────────────────────────────────────────────────────────────── Linked lists
 // TODO 2026-04-21 15:32:15 keep chipping away, watch with horror as api changes
-typedef struct { size next; } node_t; // can be either direction; ignore subsequent fields (TODO 2026-05-02 12:48:43 prove not reordered???)
+typedef struct { size next; } node_t; // can be either direction; ignore subsequent fields (TODO 2026-05-02 12:48:43 prove not reordered???); 0 indicates none, not self
 node_t *offset(node_t *from, size by) { return (node_t *)((byte *)from + by); }
 size ptrdiff(void *from, void *to) { return (byte *)to - (byte *)from; }
 node_t *next(node_t *node) {
@@ -161,7 +162,7 @@ node_t *insert(node_t *after, node_t *from, size count) {
 }
 /*
   Define new linked list type tn, element type t.
-  t can be typename * for pointer (i.e. reference list).
+  t can be typename * for pointer (i.e. reference list). FIXME 2026-05-02 13:44:10 complicated because needs to be relative pointer; TODO 2026-05-02 13:44:50 just specify as rel_##t ?
 
   <tn>append appends node with value `m` to node `maybe`.
   If `maybe` doesn't exist, append starts a new list.
@@ -172,29 +173,31 @@ node_t *insert(node_t *after, node_t *from, size count) {
 // NB 2026-05-02 00:09:37 only supports LIST within same arena
 #define LIST(tn, t)                                                            \
   typedef struct tn tn;                                                        \
-  REL(tn) \
-  struct tn {                                                           \
-    size next; /* relative to this struct! no +1, unlike REL */                                        \
-    t val; /* FIXME 2026-05-02 13:31:29 complicated if pointer by need to be relative */                                                         \
-  };                                                                    \
-  tn *tn##last(tn *node) { return (tn *)last((node_t *)node); }         \
-  tn *tn##append(arena *a, tn *maybe, t m) {                            \
-    tn *cur = new (a, tn, 1);                                           \
-    if (!cur) return 0;                                                 \
-    cur->val = m;                                                       \
-    if (maybe) {                                                        \
-      maybe = tn##last(maybe); /* avoid passing early nodes if hot */   \
-      maybe->next = cur;                                                \
-    }                                                                   \
-    return cur;                                                         \
-  }                                                                     \
-  tn *tn##next(tn *node) { return (tn *)next((node_t *)node); }         \
-  tn *tn##nth(tn *node, size n) { return (tn *)nth((node_t *)node, n); } \
-  tn *tn##extend(tn *from, tn *to) {                                    \
-    return (tn *)extend((node_t *)from, (node_t *)to);                  \
-  }                                                                     \
-  tn *tn##insert(tn *after, tn *from, size n) {                         \
-    return (tn *)insert((node_t *)after, (node_t *)from, n);            \
+  REL(tn)                                                                      \
+  struct tn {                                                                  \
+    size next; /* relative to this struct! no +1, unlike REL; 0 indicates      \
+                  nothing, not self */                                         \
+    t val;                                                                     \
+  };                                                                           \
+  tn *tn##last(tn *node) { return (tn *)last((node_t *)node); }                \
+  tn *tn##append(arena *a, tn *maybe, t m) {                                   \
+    tn *cur = new (a, tn, 1);                                                  \
+    if (!cur)                                                                  \
+      return 0;                                                                \
+    cur->val = m;                                                              \
+    if (maybe) {                                                               \
+      maybe = tn##last(maybe); /* avoid passing early nodes if hot */          \
+      maybe->next = ptrdiff(maybe, cur);                                       \
+    }                                                                          \
+    return cur;                                                                \
+  }                                                                            \
+  tn *tn##next(tn *node) { return (tn *)next((node_t *)node); }                \
+  tn *tn##nth(tn *node, size n) { return (tn *)nth((node_t *)node, n); }       \
+  tn *tn##extend(tn *from, tn *to) {                                           \
+    return (tn *)extend((node_t *)from, (node_t *)to);                         \
+  }                                                                            \
+  tn *tn##insert(tn *after, tn *from, size n) {                                \
+    return (tn *)insert((node_t *)after, (node_t *)from, n);                   \
   }
 
 /*
@@ -205,120 +208,124 @@ node_t *insert(node_t *after, node_t *from, size count) {
   Make sure to use `dissoc`s returned head! Dissoc final key will return null.
   Makes no attempt to compact or reorder storage within arena.
 */
-#define MAP_LIST(tn, kt, vt, keq)                                     \
-  typedef struct tn tn;                                               \
-  struct tn {                                                         \
-    tn *next;                                                         \
-    kt key;                                                           \
-    vt val;                                                           \
-  };                                                                  \
-  /* Uniquely associate key to value. Caller must ensure kv validity. \
-     Assoc to null head to make new association list.                 \
-     Allows null val. Returns null pointer if new fails. */           \
-  tn *tn##assoc(arena *a, tn *head, kt key, vt val) {                 \
-    tn *beg = 0;                                                      \
-    if (!head) {                                                      \
-      beg = new (a, tn, 1);                                           \
-      if (!beg)                                                       \
-        return 0;                                                     \
-      beg->key = key;                                                 \
-      beg->val = val;                                                 \
-      return beg;                                                     \
-    }                                                                 \
-    beg = head;                                                       \
-    tn *cur = beg;                                                    \
-    tn *prev = 0;                                                     \
-    for (; cur; prev = cur, cur = cur->next) {                        \
-      if (keq(cur->key, key)) {                                       \
-        cur->val = val;                                               \
-        return beg;                                                   \
-      }                                                               \
-    }                                                                 \
-    cur = prev->next = new (a, tn, 1);                                \
-    if (!cur)                                                         \
-      return 0;                                                       \
-    cur->key = key;                                                   \
-    cur->val = val;                                                   \
-    return beg;                                                       \
-  }                                                                   \
-  tn *tn##dissoc(tn *head, kt key) {                                  \
-    if (!head)                                                        \
-      return 0;                                                       \
-    tn *cur = head;                                                   \
-    tn *prev = 0;                                                     \
-    for (; cur; prev = cur, cur = cur->next) {                        \
-      if (keq(cur->key, key)) {                                       \
-        if (prev) prev->next = cur->next;                             \
-        else return cur->next;                                        \
-      }                                                               \
-    }                                                                 \
-    return head;                                                      \
-  }                                                                   \
-  /* Return possibly-null pointer to kv pair with key match. */       \
-  tn *tn##get(tn *head, kt key) {                                     \
-      if (!head)                                                      \
-        return 0;                                                     \
-      tn *cur = head;                                                 \
-    do {                                                              \
-      if (keq(cur->key, key)) return cur;                             \
-    } while ((cur = cur->next));                                      \
-    return 0;                                                         \
+#define MAP_LIST(tn, kt, vt, keq)                                              \
+  typedef struct tn tn;                                                        \
+  REL(tn)                                                                      \
+  struct tn {                                                                  \
+    size next;                                                                 \
+    kt key;                                                                    \
+    vt val;                                                                    \
+  };                                                                           \
+  /* Uniquely associate key to value. Caller must ensure kv validity.          \
+     Assoc to null head to make new association list.                          \
+     Allows null val. Returns null pointer if new fails. */                    \
+  tn *tn##assoc(arena *a, tn *head, kt key, vt val) {                          \
+    tn *beg = 0;                                                               \
+    if (!head) {                                                               \
+      beg = new (a, tn, 1);                                                    \
+      if (!beg)                                                                \
+        return 0;                                                              \
+      beg->key = key;                                                          \
+      beg->val = val;                                                          \
+      return beg;                                                              \
+    }                                                                          \
+    beg = head;                                                                \
+    tn *cur = beg;                                                             \
+    tn *prev = 0;                                                              \
+    for (; cur; prev = cur, cur = tn##next(cur)) {                             \
+      if (keq(cur->key, key)) {                                                \
+        cur->val = val;                                                        \
+        return beg;                                                            \
+      }                                                                        \
+    }                                                                          \
+    cur = new (a, tn, 1);                                                      \
+    if (!cur)                                                                  \
+      return 0;                                                                \
+    prev->next = ptrdiff(prev, cur);                                           \
+    cur->key = key;                                                            \
+    cur->val = val;                                                            \
+    return beg;                                                                \
+  }                                                                            \
+  tn *tn##dissoc(tn *head, kt key) {                                           \
+    tn *cur = head;                                                            \
+    tn *prev = 0;                                                              \
+    for (; cur; prev = cur, cur = tn##next(cur)) {                             \
+      if (keq(cur->key, key)) {                                                \
+        if (prev)                                                              \
+          prev->next = ptrdiff(prev, tn##next(cur));                           \
+        else                                                                   \
+          return next(cur);                                                    \
+      }                                                                        \
+    }                                                                          \
+    return head;                                                               \
+  }                                                                            \
+  /* Return possibly-null pointer to kv pair with key match. */                \
+  tn *tn##get(tn *head, kt key) {                                              \
+    assert(head);                                                              \
+    tn *cur = head;                                                            \
+    do {                                                                       \
+      if (keq(cur->key, key))                                                  \
+        return cur;                                                            \
+    } while ((cur = cur->next));                                               \
+    return 0;                                                                  \
   }
+
 // Barely worth it vs MAP_LIST with ignored vt. Make sure to use `disj`s returned head!
-#define SET_LIST(tn, kt, keq)                   \
-  typedef struct tn tn;                         \
-  struct tn {                                   \
-    tn *next;                                   \
-    kt key;                                     \
-  };                                            \
-  tn *tn##conj(arena *a, tn *head, kt key) {    \
-    tn *beg = 0;                                \
-    if (!head) {                                \
-      beg = new (a, tn, 1);                     \
-      if (!beg)                                 \
-        return 0;                               \
-      beg->key = key;                           \
-      return beg;                               \
-    }                                           \
-    beg = head;                                 \
-    tn *cur = beg;                              \
-    tn *prev = 0;                               \
-    for (; cur; prev = cur, cur = cur->next)    \
-      if (keq(cur->key, key))                   \
-        return beg;                             \
-    cur = prev->next = new (a, tn, 1);          \
-    if (!cur)                                   \
-      return 0;                                 \
-    cur->key = key;                             \
-    return beg;                                 \
-  }                                             \
-  tn *tn##disj(tn *head, kt key) {              \
-    if (!head)                                  \
-      return 0;                                 \
-    tn *cur = head;                             \
-    tn *prev = 0;                               \
-    for (; cur; prev = cur, cur = cur->next) {  \
-      if (keq(cur->key, key)) {                 \
-        if (prev)                               \
-          prev->next = cur->next;               \
-        else return cur->next;                  \
-      }                                         \
-    }                                           \
-    return head;                                \
-  }                                             \
-  tn *tn##has(tn *head, kt key) {               \
-    if (!head)                                  \
-      return 0;                                 \
-    tn *cur = head;                             \
-    do {                                        \
-      if (keq(cur->key, key))                   \
-        return cur;                             \
-    } while ((cur =  cur->next));               \
-    return 0;                                   \
+#define SET_LIST(tn, kt, keq)                                                  \
+  typedef struct tn tn;                                                        \
+  struct tn {                                                                  \
+    size next;                                                                 \
+    kt key;                                                                    \
+  };                                                                           \
+  tn *tn##conj(arena *a, tn *head, kt key) {                                   \
+    tn *beg = 0;                                                               \
+    if (!head) {                                                               \
+      beg = new (a, tn, 1);                                                    \
+      if (!beg)                                                                \
+        return 0;                                                              \
+      beg->key = key;                                                          \
+      return beg;                                                              \
+    }                                                                          \
+    beg = head;                                                                \
+    tn *cur = beg;                                                             \
+    tn *prev = 0;                                                              \
+    for (; cur; prev = cur, cur = next(cur))                                   \
+      if (keq(cur->key, key))                                                  \
+        return beg;                                                            \
+    cur = new (a, tn, 1);                                                      \
+    if (!cur)                                                                  \
+      return 0;                                                                \
+    prev->next = ptrdiff(prev, cur);                                           \
+    cur->key = key;                                                            \
+    return beg;                                                                \
+  }                                                                            \
+  tn *tn##disj(tn *head, kt key) {                                             \
+    if (!head)                                                                 \
+      return 0;                                                                \
+    tn *cur = head;                                                            \
+    tn *prev = 0;                                                              \
+    for (; cur; prev = cur, cur = next(cur)) {                                 \
+      if (keq(cur->key, key)) {                                                \
+        if (prev)                                                              \
+          prev->next = ptrdiff(prev, next(cur));                               \
+        else                                                                   \
+          return next(cur);                                                    \
+      }                                                                        \
+    }                                                                          \
+    return head;                                                               \
+  }                                                                            \
+  tn *tn##has(tn *head, kt key) {                                              \
+    if (!head)                                                                 \
+      return 0;                                                                \
+    tn *cur = head;                                                            \
+    do {                                                                       \
+      if (keq(cur->key, key))                                                  \
+        return cur;                                                            \
+    } while ((cur = next(cur)));                                               \
+    return 0;                                                                  \
   }
 
 // ─────────────────────────────────────────────────────────────────────── Arena
-
 
 /*
   Pass "store" arena by reference, and "scratch" by value.
@@ -330,10 +337,8 @@ struct arena {
   byte *beg; // original start of arena
   byte *cur; // cursor: current start of free space
   byte *end; // allocated end of arena
-  uint:ARENA_ID_BITS id;
+  size id : ARENA_ID_BITS;
 };
-
-
 
 // TODO could visualise correctness of padding algorithm
 /*
@@ -397,6 +402,7 @@ size copy(u8 *restrict dst, u8 *restrict src, size len) {
 
 // ───────────────────────────────────────────────────────────────────── Strings
 
+REL(u8)
 ARRAY(s8, u8) // s8: Basic UTF-8 string. Not null terminated!
 #define s8(s) (s8){(u8 *)(s), countof(s) - 1} // Wrap C string literal into s8 string.
 static const s8 s8_OOM = s8("error: out of memory");
@@ -1020,6 +1026,8 @@ arena alloc_arena(size cap) {
   // dwSize = size in bytes
   // flAllocationType =  MEM_COMMIT + MEM_RESERVE
   // flProtect = PAGE_READWRITE
+
+  // TODO 2026-05-02 13:58:20 adapt as for not _WIN32
   byte* beg = VirtualAlloc(0, cap, 0x3000, 4);
   if (beg) return (arena){.beg = beg, .cur = beg, .end = beg + cap};
   else return (arena){0};
@@ -1066,12 +1074,17 @@ u32 oswrite(i32 fd, u8 *buf, i32 len) {
 
 // malloc failure will return zero-capacity arena so its `alloc`s will just fail.
 arena alloc_arena(size cap) {
-  static u32 arena_id_seq; // TODO 2026-04-29 14:06:56 confirm init 0 1st time
+  static u32 arena_id_seq; // TODO 2026-04-29 14:06:56 confirm init 0 1st time and global across threads
   assert(arena_id_seq < 2**ARENA_ID_BITS);
   byte* beg = malloc(cap);
-  if (beg) return (arena){ // FIXME 2026-05-01 00:04:37 needs to be threadsafe: use atomic something
-      .id = arena_id_seq++; .beg = beg, .cur = beg, .end = beg + cap
-    };
+  if (beg) {
+    // FIXME 2026-05-01 00:04:37 needs to be threadsafe!!
+    arena ret = {
+      .beg = beg; .cur = beg; .end = beg + cap; .id = arena_id_seq};
+    arenas[arena_id_seq] = ret;
+    arena_id_seq++;
+    return ret;
+  }
   else return (arena){0};
 }
 
@@ -1082,6 +1095,7 @@ b32 free_arena(arena *a) {
   a->cur = 0;
   a->end = 0;
   free(me); // safe even if null
+  tn// NB 2026-05-02 13:59:49 not resetting id 
   // TODO 2026-05-01 17:59:16 mechanism for removing from arenas global (and notifying errors)?
   return 1;
 }

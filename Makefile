@@ -13,6 +13,10 @@ test: test.c jdf.h
 	time cc $(CFLAGS) $< -o $@
 	$(PREAMBLE) ./$@
 
+testrel: testrel.c jdfrel.h
+	time cc $(CFLAGS) $< -o $@
+	$(PREAMBLE) ./$@
+
 test_http: test_http.c jdf.h jdfhttp.h http_codes.h
 	time cc $(CFLAGS) -Wno-unused-parameter -Wno-switch -lev -lpthread $< -o $@
 	du -sh $@
