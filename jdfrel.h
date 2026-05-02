@@ -436,13 +436,13 @@ ARRAY(s16, c16)
   Slice using pointers, doesn't check that actually within an s8!
   Not MAYBE because doesn't allocate.
 */
-s8 s8span(u8 *beg, u8 *end) {
-  if (beg && end >= beg) return (s8){.buf = beg, .len = end - beg}; // FIXME 2026-05-02 22:22:58 api collapsing now
+s8 s8span(arena *a, u8 *beg, u8 *end) {
+  if (beg && end >= beg) return (s8){.rel = rel_u8(a, beg), .len = end - beg};
   return (s8){0};
 }
 
-s8 s8bytespan(byte *beg, byte *end) {
-  return s8span((u8 *)beg, (u8 *)end);
+s8 s8bytespan(arena *a, byte *beg, byte *end) {
+  return s8span(a, (u8 *)beg, (u8 *)end);
 }
 
 // Slice forward using clamped offsets, which may be positive or negative (i.e. from start or end, respectively)
