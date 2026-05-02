@@ -68,11 +68,11 @@ struct rel { // NB 2026-05-02 13:22:42 think bitfield types need to be same; bes
 #define REL(t)                                                                 \
   typedef struct rel rel_##t##_t;                                              \
   rel_##t##_t rel_##t(arena *a, void *p) {                                     \
-    byte *b = (byte *)p;\
-    assert(a->beg <= b && b < a->cur && b < a->beg + (1L << RPTR_BITS) - 2);    \
-    return (rel_##t##_t){.aid = a->id, .ptr = b ? b - a->beg + 1 : 0};   \
+    byte *b = (byte *)p;                                                       \
+    assert(a->beg <= b && b < a->cur && b < a->beg + (1L << RPTR_BITS) - 2);   \
+    return (rel_##t##_t){.aid = a->id, .ptr = b ? b - a->beg + 1 : 0};         \
   }                                                                            \
-  t *abs_##t(rel_##t##_t r) {                                                      \
+  t *abs_##t(rel_##t##_t r) {                                                  \
     if (r.ptr)                                                                 \
       return (t *)(arenas[r.aid]->beg + r.ptr - 1);                            \
     else                                                                       \
@@ -82,18 +82,19 @@ struct rel { // NB 2026-05-02 13:22:42 think bitfield types need to be same; bes
 #define rel(a, t, n) rel_##t(a, new (a, t, n))
 #define ARRAY(tn, t) /* new type name, el type */                              \
   typedef struct {                                                             \
-    rel_##t##_t r;                                                                 \
+    union {                                                                    \
+      rel_##t##_t rel;                                                         \
+      t *abs;                                                                  \
+    };                                                                         \
     size len;                                                                  \
   } tn;                                                                        \
   tn make_##tn(arena *a, size len) {                                           \
-    rel_##t##_t r = rel(a, t, len);                                                \
+    rel_##t##_t r = rel(a, t, len);                                            \
     if (r.ptr)                                                                 \
-      return (tn){.r = r, .len = len};                                  \
+      return (tn){.rel = r, .len = len};                                       \
     else                                                                       \
       return (tn){0};                                                          \
-  }                                                                            \
-  t *startof_##t(tn v) { return abs_##t(v.r); }                                \
-  t *endof_##t(tn v) { return abs_##t(v.r) + v.len; } /* one beyond last of sized value */
+  }
 
 /*
   To enable assertions in release builds,
@@ -170,6 +171,9 @@ node_t *insert(node_t *after, node_t *from, size count) {
   Does not prevent inclusion of stack-allocated values in heap-allocated list!
 */
 
+#define NEXT(tn)                                                               \
+  tn *tn##next(tn *node) { return (tn *)next((node_t *)node); }
+
 // NB 2026-05-02 00:09:37 only supports LIST within same arena
 #define LIST(tn, t)                                                            \
   typedef struct tn tn;                                                        \
@@ -181,7 +185,7 @@ node_t *insert(node_t *after, node_t *from, size count) {
   };                                                                           \
   tn *tn##last(tn *node) { return (tn *)last((node_t *)node); }                \
   tn *tn##append(arena *a, tn *maybe, t m) {                                   \
-    tn *cur = new (a, tn, 1);                                                  \
+    tn *cur = (tn *)new (a, tn, 1);                                            \
     if (!cur)                                                                  \
       return 0;                                                                \
     cur->val = m;                                                              \
@@ -191,7 +195,7 @@ node_t *insert(node_t *after, node_t *from, size count) {
     }                                                                          \
     return cur;                                                                \
   }                                                                            \
-  tn *tn##next(tn *node) { return (tn *)next((node_t *)node); }                \
+  NEXT(tn)                                                                     \
   tn *tn##nth(tn *node, size n) { return (tn *)nth((node_t *)node, n); }       \
   tn *tn##extend(tn *from, tn *to) {                                           \
     return (tn *)extend((node_t *)from, (node_t *)to);                         \
@@ -216,13 +220,14 @@ node_t *insert(node_t *after, node_t *from, size count) {
     kt key;                                                                    \
     vt val;                                                                    \
   };                                                                           \
+  NEXT(tn)                                                                     \
   /* Uniquely associate key to value. Caller must ensure kv validity.          \
      Assoc to null head to make new association list.                          \
      Allows null val. Returns null pointer if new fails. */                    \
   tn *tn##assoc(arena *a, tn *head, kt key, vt val) {                          \
     tn *beg = 0;                                                               \
     if (!head) {                                                               \
-      beg = new (a, tn, 1);                                                    \
+      beg = (tn *)new (a, tn, 1);                                              \
       if (!beg)                                                                \
         return 0;                                                              \
       beg->key = key;                                                          \
@@ -238,7 +243,7 @@ node_t *insert(node_t *after, node_t *from, size count) {
         return beg;                                                            \
       }                                                                        \
     }                                                                          \
-    cur = new (a, tn, 1);                                                      \
+    cur = (tn *)new (a, tn, 1);                                         \
     if (!cur)                                                                  \
       return 0;                                                                \
     prev->next = ptrdiff(prev, cur);                                           \
@@ -254,7 +259,7 @@ node_t *insert(node_t *after, node_t *from, size count) {
         if (prev)                                                              \
           prev->next = ptrdiff(prev, tn##next(cur));                           \
         else                                                                   \
-          return next(cur);                                                    \
+          return tn##next(cur);                                                \
       }                                                                        \
     }                                                                          \
     return head;                                                               \
@@ -266,7 +271,7 @@ node_t *insert(node_t *after, node_t *from, size count) {
     do {                                                                       \
       if (keq(cur->key, key))                                                  \
         return cur;                                                            \
-    } while ((cur = cur->next));                                               \
+    } while ((cur = tn##next(cur)));                                           \
     return 0;                                                                  \
   }
 
@@ -277,10 +282,11 @@ node_t *insert(node_t *after, node_t *from, size count) {
     size next;                                                                 \
     kt key;                                                                    \
   };                                                                           \
+  NEXT(tn)                                                                     \
   tn *tn##conj(arena *a, tn *head, kt key) {                                   \
     tn *beg = 0;                                                               \
     if (!head) {                                                               \
-      beg = new (a, tn, 1);                                                    \
+      beg = (tn *)new (a, tn, 1);                                       \
       if (!beg)                                                                \
         return 0;                                                              \
       beg->key = key;                                                          \
@@ -289,7 +295,7 @@ node_t *insert(node_t *after, node_t *from, size count) {
     beg = head;                                                                \
     tn *cur = beg;                                                             \
     tn *prev = 0;                                                              \
-    for (; cur; prev = cur, cur = next(cur))                                   \
+    for (; cur; prev = cur, cur = tn##next(cur))                               \
       if (keq(cur->key, key))                                                  \
         return beg;                                                            \
     cur = new (a, tn, 1);                                                      \
@@ -304,12 +310,12 @@ node_t *insert(node_t *after, node_t *from, size count) {
       return 0;                                                                \
     tn *cur = head;                                                            \
     tn *prev = 0;                                                              \
-    for (; cur; prev = cur, cur = next(cur)) {                                 \
+    for (; cur; prev = cur, cur = tn##next(cur)) {                             \
       if (keq(cur->key, key)) {                                                \
         if (prev)                                                              \
-          prev->next = ptrdiff(prev, next(cur));                               \
+          prev->next = ptrdiff(prev, tn##next(cur));                           \
         else                                                                   \
-          return next(cur);                                                    \
+          return tn##next(cur);                                                \
       }                                                                        \
     }                                                                          \
     return head;                                                               \
@@ -321,7 +327,7 @@ node_t *insert(node_t *after, node_t *from, size count) {
     do {                                                                       \
       if (keq(cur->key, key))                                                  \
         return cur;                                                            \
-    } while ((cur = next(cur)));                                               \
+    } while ((cur = tn##next(cur)));                                           \
     return 0;                                                                  \
   }
 
@@ -404,7 +410,7 @@ size copy(u8 *restrict dst, u8 *restrict src, size len) {
 
 REL(u8)
 ARRAY(s8, u8) // s8: Basic UTF-8 string. Not null terminated!
-#define s8(s) (s8){(u8 *)(s), countof(s) - 1} // Wrap C string literal into s8 string.
+#define s8(s) (s8){.abs = (u8 *)(s), .len = countof(s) - 1} // Wrap C string literal into s8 string.
 REL(s8)
 static const s8 s8_OOM = s8("error: out of memory"); // FIXME  2026-05-02 15:04:06 ugh stuck
 b32 s8equal(s8, s8);
@@ -431,7 +437,7 @@ ARRAY(s16, c16)
   Not MAYBE because doesn't allocate.
 */
 s8 s8span(u8 *beg, u8 *end) {
-  if (beg && end >= beg) return (s8){.buf = beg, .len = end - beg};
+  if (beg && end >= beg) return (s8){.buf = beg, .len = end - beg}; // FIXME 2026-05-02 22:22:58 api collapsing now
   return (s8){0};
 }
 
