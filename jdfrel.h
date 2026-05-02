@@ -405,8 +405,8 @@ size copy(u8 *restrict dst, u8 *restrict src, size len) {
 REL(u8)
 ARRAY(s8, u8) // s8: Basic UTF-8 string. Not null terminated!
 #define s8(s) (s8){(u8 *)(s), countof(s) - 1} // Wrap C string literal into s8 string.
-static const s8 s8_OOM = s8("error: out of memory");
-
+REL(s8)
+static const s8 s8_OOM = s8("error: out of memory"); // FIXME  2026-05-02 15:04:06 ugh stuck
 b32 s8equal(s8, s8);
 ARRAY(s8a, s8)
 LIST(s8l, s8)
