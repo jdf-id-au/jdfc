@@ -55,23 +55,30 @@ typedef struct arena arena; // forward decls
   ...won't quite work for scratch (pass by value), could fake it
  */
 
-#define reltype(t)                                                             \
-  typedef struct rel_##t {                                                     \
-    uint : ARENA_ID_BITS arena;                                                \
-    uint : RPTR_BITS ptr;                                                      \
-  } rel_##t;                                                                   \
+#define ARENA_ID_BITS 10
+#define RPTR_BITS 54
+
+arena *arenas[1 << ARENA_ID_BITS] = {0}; // array of pointers to arena; index is arena id
+
+struct rel { // NB 2026-05-02 13:22:42 think bitfield types need to be same; best to keep signed ptr
+  size aid : ARENA_ID_BITS; // allow pointing to parent arena contents
+  size ptr : RPTR_BITS;
+};
+
+#define REL(t)                                                                 \
+  typedef struct rel rel_##t;                                                  \
   rel_##t rel_##t(a, p) {                                                      \
     assert(a->beg <= p && p < a->cur && p < a->beg + (1 << RPTR_BITS) - 2);    \
     return (rel_##t){.arena = a->id, .ptr = p ? (byte *)p - a->beg + 1 : 0};   \
   }                                                                            \
   t *abs_##t(rel_##t r) {                                                      \
     if (r.ptr)                                                                 \
-      return (t *)(r.arena->beg + r.ptr - 1);                                  \
+      return (t *)(arenas[r.aid]->beg + r.ptr - 1);                            \
     else                                                                       \
       return 0;                                                                \
   }
 
-#define rel(a, t, n) rel_##t(a, new (a, t, n));
+#define rel(a, t, n) rel_##t(a, new (a, t, n))
 #define ARRAY(tn, t) /* new type name, el type */                              \
   typedef struct {                                                             \
     rel_##t r;                                                                 \
@@ -98,51 +105,57 @@ typedef struct arena arena; // forward decls
 
 // ──────────────────────────────────────────────────────────────── Linked lists
 // TODO 2026-04-21 15:32:15 keep chipping away, watch with horror as api changes
-typedef struct node_t node_t;
-struct node_t { node_t *rnext; }; // relative pointer, needs conversion!! ignore subsequent fields
-
-node_t *next(arena *a, node_t *node) {
+typedef struct { size next; } node_t; // can be either direction; ignore subsequent fields (TODO 2026-05-02 12:48:43 prove not reordered???)
+node_t *offset(node_t *from, size by) { return (node_t *)((byte *)from + by); }
+size ptrdiff(void *from, void *to) { return (byte *)to - (byte *)from; }
+node_t *next(node_t *node) {
   assert(node);
-  return (node_t *)absptr(a, node->rnext);
+  // NB 2026-05-02 12:54:00 need bounds checking elsewhere
+  return node->next ? offset(node, node->next) : 0;
 }
-// No loop detection!
-size countfn(arena *a, node_t *node) {
+// No loop detection
+size countfn(node_t *node) {
   assert(node);
   size c = 0;
-  for(node_t *cur = node; cur; cur = next(a, cur)) c++;
+  for(node_t *cur = node; cur; cur = next(cur)) c++;
   return c;
 }
 // Indirections to allow use from multiple linked list-derived data structures...
-#define count(a, n) countfn(a, (node_t *)n)
-node_t *nth(arena *a, node_t *node, size n) {
+#define count(n) countfn((node_t *)n)
+// No loop detection
+node_t *nth(node_t *node, size n) {
   assert(node);
   node_t *ret = node;
-  for (size i = 0; i < n && ret; i++, ret = next(a, ret)); 
+  for (size i = 0; i < n && ret; i++, ret = next(ret)); 
   return ret;
-}
-node_t *last(arena *a, node_t *node) {
+  }
+// No loop detection!
+node_t *last(node_t *node) {
   assert(node);
   node_t *prev = 0;
   for(; node; prev = node, node = next(node));
   return prev;
 }
-// Connect two nodes. Can cause loop! Returns any previous `from` tail.
-node_t *extend(arena *a, node_t *from, node_t *to) {
+// Connect two nodes from same arena. Can cause loop! Returns any previous `from` tail.
+// FIXME 2026-05-02 13:03:05 doesn't validate they're in same arena!
+node_t *extend(node_t *from, node_t *to) {
   assert(from);
   node_t *from_tail = next(from);
-  from->rnext = relptr(a, to);
+  from->next = ptrdiff(from, to);
   return from_tail;
 }
-// Insert exactly `count` nodes from `from` after `after`, returning any remaining `from` tail (including if count > available: return all of `from`).
-node_t *insert(arena *a, node_t *after, node_t *from, size count) {
+// Insert exactly `count` nodes from `from` after `after`, returning
+// any remaining `from` tail (including if count > available: insert
+// none and return all of `from`).
+node_t *insert(node_t *after, node_t *from, size count) {
   assert(after);
   if (!from || count <= 0) return from;
   node_t *to = nth(from, count - 1);
   if (to) {
-    node_t *after_tail = after->rnext;
-    node_t *from_tail = to->rnext;
-    after->rnext = relptr(a, from);
-    to->next = after_tail;
+    node_t *after_tail = next(after);
+    node_t *from_tail = next(to);
+    after->next = ptrdiff(after, from);
+    to->next = ptrdiff(to, after_tail);
     return from_tail;
   } else return from;
 }
@@ -155,11 +168,14 @@ node_t *insert(arena *a, node_t *after, node_t *from, size count) {
   If `maybe` already has a ->next, append follows it to the end.
   Does not prevent inclusion of stack-allocated values in heap-allocated list!
 */
-#define LIST(tn, t)                                                     \
-  typedef struct tn tn;                                                 \
+
+// NB 2026-05-02 00:09:37 only supports LIST within same arena
+#define LIST(tn, t)                                                            \
+  typedef struct tn tn;                                                        \
+  REL(tn) \
   struct tn {                                                           \
-    tn *next;                                                           \
-    t val;                                                              \
+    size next; /* relative to this struct! no +1, unlike REL */                                        \
+    t val; /* FIXME 2026-05-02 13:31:29 complicated if pointer by need to be relative */                                                         \
   };                                                                    \
   tn *tn##last(tn *node) { return (tn *)last((node_t *)node); }         \
   tn *tn##append(arena *a, tn *maybe, t m) {                            \
@@ -303,8 +319,6 @@ node_t *insert(arena *a, node_t *after, node_t *from, size count) {
 
 // ─────────────────────────────────────────────────────────────────────── Arena
 
-#define ARENA_ID_BITS 10
-#define RPTR_BITS 54
 
 /*
   Pass "store" arena by reference, and "scratch" by value.
@@ -319,7 +333,6 @@ struct arena {
   uint:ARENA_ID_BITS id;
 };
 
-arena *arenas[1 << ARENA_ID_BITS] = {0}; // array of pointers to arena; index is arena id
 
 
 // TODO could visualise correctness of padding algorithm
