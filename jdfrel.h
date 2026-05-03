@@ -1,6 +1,6 @@
 /*
   Rework jdf.h for relative pointers (indices within arena) to ease
-  arena resizing and maybe serialisation.
+  arena resizing and maybe serialisation. Also drop win32.
 */
 
 #ifndef jdf_h
@@ -15,10 +15,6 @@
 #include <stdatomic.h>
 
 typedef uint8_t   u8;
-#ifdef _WIN32
-#include <uchar.h>
-typedef char16_t  c16;
-#endif
 typedef int32_t   b32; // 0 false, 1 true
 typedef int32_t   i32;
 typedef int64_t   i64;
@@ -82,10 +78,7 @@ struct rel { // NB 2026-05-02 13:22:42 think bitfield types need to be same; bes
 #define rel(a, t, n) rel_##t(a, new (a, t, n))
 #define ARRAY(tn, t) /* new type name, el type */                              \
   typedef struct {                                                             \
-    union {                                                                    \
-      rel_##t##_t rel;                                                         \
-      t *abs;                                                                  \
-    };                                                                         \
+    rel_##t##_t rel;                                                           \
     size len;                                                                  \
   } tn;                                                                        \
   tn make_##tn(arena *a, size len) {                                           \
@@ -286,7 +279,7 @@ node_t *insert(node_t *after, node_t *from, size count) {
   tn *tn##conj(arena *a, tn *head, kt key) {                                   \
     tn *beg = 0;                                                               \
     if (!head) {                                                               \
-      beg = (tn *)new (a, tn, 1);                                       \
+      beg = (tn *)new (a, tn, 1);                                              \
       if (!beg)                                                                \
         return 0;                                                              \
       beg->key = key;                                                          \
@@ -298,7 +291,7 @@ node_t *insert(node_t *after, node_t *from, size count) {
     for (; cur; prev = cur, cur = tn##next(cur))                               \
       if (keq(cur->key, key))                                                  \
         return beg;                                                            \
-    cur = new (a, tn, 1);                                                      \
+    cur = (tn *)new (a, tn, 1);                                                \
     if (!cur)                                                                  \
       return 0;                                                                \
     prev->next = ptrdiff(prev, cur);                                           \
@@ -410,28 +403,13 @@ size copy(u8 *restrict dst, u8 *restrict src, size len) {
 
 REL(u8)
 ARRAY(s8, u8) // s8: Basic UTF-8 string. Not null terminated!
-#define s8(s) (s8){.abs = (u8 *)(s), .len = countof(s) - 1} // Wrap C string literal into s8 string.
 REL(s8)
-static const s8 s8_OOM = s8("error: out of memory"); // FIXME  2026-05-02 15:04:06 ugh stuck
 b32 s8equal(s8, s8);
 ARRAY(s8a, s8)
 LIST(s8l, s8)
 MAP_LIST(s8m, s8, s8, s8equal)
 SET_LIST(s8s, s8, s8equal)
      
-#ifdef _WIN32
-ARRAY(s16, c16)
-#define s16(s) (s16) { (c16 *)(s), countof(s) - 1 }
-// TODO what about all the rest?!
-#endif
-
-/*
-  Make one s8 from unquoted multiline text, after collapsing whitespace.
-  IDE may be annoying about it, try fundamental-mode.
-  Compare with s8("first line"⏎"second line"⏎"etc").
-*/ 
-#define text(...) s8(#__VA_ARGS__) // https://stackoverflow.com/a/17996915/780743
-
 /*
   Slice using pointers, doesn't check that actually within an s8!
   Not MAYBE because doesn't allocate.
@@ -447,14 +425,14 @@ s8 s8bytespan(arena *a, byte *beg, byte *end) {
 
 // Slice forward using clamped offsets, which may be positive or negative (i.e. from start or end, respectively)
 s8 s8slice(s8 src, size from, size to) {
-  s8 s = {.buf = src.buf};
+  s8 s = {.rel = src.rel};
   size f = (from < 0) ? src.len + from : from;
   size t = (to > 0) ? to : src.len + to;
   if (f < 0) f = 0; // clamp offsets
   if (f > src.len) f = src.len;
   if (t < 0) t = 0;
   if (t > src.len) t = src.len;
-  s.buf += f;
+  s.rel.ptr += f;
   if (t > f) s.len = t - f;
   else s.len = 0; // refuse to slice backwards
   return s;
@@ -462,14 +440,16 @@ s8 s8slice(s8 src, size from, size to) {
 
 b32 s8equal(s8 a, s8 b) {
   if (a.len != b.len) return 0;
-  for (size i = 0; i < a.len ; i++) if (a.buf[i] != b.buf[i]) return 0;
+  u8 *acur = abs_u8(a.rel), *bcur = abs_u8(b.rel);
+  for (size i = 0; i < a.len ; i++) if (acur[i] != bcur[i]) return 0;
   return 1;
 }
 
 size s8cmp(s8 a, s8 b) {
   size len = (a.len < b.len) ? a.len : b.len;
+  u8 *acur = abs_u8(a.rel), *bcur = abs_u8(b.rel);
   for (size i = 0; i < len; i++) {
-    size d = a.buf[i] - b.buf[i];
+    size d = acur[i] - bcur[i];
     if (d) return d;
   }
   return a.len - b.len;
@@ -478,8 +458,9 @@ size s8cmp(s8 a, s8 b) {
 // Why `size`? TODO visualise hashification of input
 size s8hash(s8 s) {
   u64 h = 0x100;
+  u8 *scur = abs_u8(s8.rel);
   for (size i = 0; i < s.len; i++) {
-    h ^= s.buf[i];
+    h ^= scur[i];
     h *= 1111111111111111111u; // nineteen ones
   }
   return (h ^ h>>32) & (u32)-1;
@@ -1003,76 +984,17 @@ void debytes(i32 fd, void *val, size len) { // too cool for stdio.h printf
   oswrite(fd, (u8 *)"\n", 1);
 }
 
-#define inspect(ptr)                                  \
-  s8writefd(2, s8("Contents of pointer " #ptr ":"));   \
+#define inspect(ptr)                                                           \
+  s8writefd(2, s8("Contents of pointer " #ptr ":"));                           \
   debytes(2, ptr, sizeof(*(ptr)))
 
-#define log_debug(s)                              \
-  s8writefd(2, s8("Value of " #s ": "));          \
+#define log_debug(s)                                                           \
+  s8writefd(2, s8("Value of " #s ": "));                                       \
   s8log(2, s)
 
+// ╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴ Essentials
+
 // TODO why are there so many signed ints below where negative is incorrect?
-
-#ifdef _WIN32 // ╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴ _WIN32
-// msys2 clang64 to get asan & usan
-// /usr/share/mintty/emojis/getemojis -d
-typedef struct { i32 dummy; } *handle;
-#define W32(r) __declspec(dllimport) r __stdcall
-W32(byte *) VirtualAlloc(byte *, usize, u32, u32);
-W32(b32) VirtualFree(byte *, usize, u32);
-W32(handle) GetStdHandle(u32);
-W32(b32) ReadFile(handle, u8 *, u32, u32 *, void *);
-W32(b32) WriteFile(handle, u8 *, u32, u32 *, void *);
-W32(void) ExitProcess(u32);
-W32(u32) GetLastError(void);
-
-arena alloc_arena(size cap) {
-  // https://learn.microsoft.com/en-us/windows/win32/api/memoryapi/nf-memoryapi-virtualalloc
-  // lpAddress = system determines where to allocate
-  // dwSize = size in bytes
-  // flAllocationType =  MEM_COMMIT + MEM_RESERVE
-  // flProtect = PAGE_READWRITE
-
-  // TODO 2026-05-02 13:58:20 adapt as for not _WIN32
-  byte* beg = VirtualAlloc(0, cap, 0x3000, 4);
-  if (beg) return (arena){.beg = beg, .cur = beg, .end = beg + cap};
-  else return (arena){0};
-}
-
-b32 free_arena(arena *a) {
-  b32 ret = 0;
-  if (!a) return 0;
-  byte *me = a->beg;
-  a->beg = 0;
-  a->cur = 0;
-  a->end = 0;
-  if (me) ret = VirtualFree(me, 0, 0x00008000); // MEM_RELEASE
-  return ret; // nonzero on success
-}
-
-void osfail(i32 code) {
-  ExitProcess(code); // TOOD check vs 1
-}
-
-i32 osread(i32 fd, u8 *buf, i32 cap) {
-  handle in = GetStdHandle(-10 - fd);
-  u32 len;
-  ReadFile(in, buf, cap, &len, 0);
-  return len;
-}
-
-u32 oswrite(i32 fd, u8 *buf, i32 len) {
-  handle out = GetStdHandle(-10 - fd);
-  u32 dummy;
-  b32 stat = WriteFile(out, buf, len, &dummy, 0); // TODO GetLastError if fails
-  if (stat) return 0;
-  else return GetLastError();
-}
-
-// https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-exitprocess
-// void mainCRTStartup(void) { stuff; ExitProcess(code); }
-        
-#else // ╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴ not _WIN32
  
 #include <stdlib.h> // malloc
 #include <unistd.h> // read write _exit
@@ -1124,7 +1046,5 @@ u32 oswrite(i32 fd, u8 *buf, i32 len) {
 }
 
 // i32 main(void) { stuff; return r; }
-
-#endif // ╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴
 
 #endif // jdf_h
