@@ -468,13 +468,14 @@ size s8hash(s8 s) {
 
 // Find string
 u8 *s8find(s8 haystack, s8 needle) {
-  if (!haystack.buf || !needle.buf) return 0;
+  u8 *hcur = abs_u8(haystack.rel), *ncur = abs_u8(needle.rel);
+  if (!hcur || !ncur) return 0;
   u8 *found = 0;
-  u8 *he = endof(haystack);
-  u8 *ne = endof(needle);
+  u8 *he = hcur + haystack.len;
+  u8 *ne = ncur + needle.len;
   // init first; cond before loop; iter after loop
-  for (u8 *h = haystack.buf; !found && (h < he); h++) {
-    for (u8 *n = needle.buf;
+  for (u8 *h = hcur; !found && (h < he); h++) {
+    for (u8 *n = ncur;
          n < ne && h < he;
          n++) {
       if (*h == *n) {
@@ -492,9 +493,10 @@ u8 *s8find(s8 haystack, s8 needle) {
 
 // Find char
 u8 *s8findu8(s8 haystack, u8 needle) {
-  if (!haystack.buf) return 0; // allow \0 needle
-  u8 *end = endof(haystack);
-  for (u8 *h = haystack.buf; h < end; h++)
+  u8 *hcur = abs_u8(haystack.rel);
+  if (!hcur) return 0; // allow \0 needle
+  u8 *end = hcur + haystack.len;
+  for (u8 *h = hcur; h < end; h++)
     if (*h == needle)
       return h;
   return 0;
@@ -508,7 +510,7 @@ b32 s8endswith(s8 s, s8 with) {
   return s8equal(s8slice(s, -with.len, 0), with);
 }
 
-// Wrap decayed C string into s8 string
+// Wrap decayed C string into s8 string FIXME 2026-05-03 19:50:01 needs a solution...
 s8 s8wrap(const char *cstr, size maxlen) {
   if (!cstr) return (s8){0};
   u8 *beg = (u8 *)cstr;
