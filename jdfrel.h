@@ -31,9 +31,8 @@ typedef struct arena arena; // forward decls
 
 #define alignof(x) (size)_Alignof(x) // casting from size_t
 #define countof(arrayptr) (size)(sizeof(arrayptr) / sizeof(*(arrayptr))) // casting from size_t
-
-#define new(a, t, n)                                                           \
-  alloc(a, sizeof(t), alignof(t), n, #t) // arena, type, number
+#define new(a, t, n)                                            \
+  (t *)alloc(a, sizeof(t), alignof(t), n, #t) // arena, type, number
 
 /*
   Relative pointers, with respect to host arena (not anything else).
@@ -54,7 +53,7 @@ typedef struct arena arena; // forward decls
 #define ARENA_ID_BITS 10
 #define RPTR_BITS 54
 
-arena *arenas[1 << ARENA_ID_BITS] = {0}; // array of pointers to arena; index is arena id
+arena *arenas[1 << ARENA_ID_BITS] = {0}; // global array of pointers to arena; index is arena id
 
 struct rel { // NB 2026-05-02 13:22:42 think bitfield types need to be same; best to keep signed ptr
   size aid : ARENA_ID_BITS; // allow pointing to parent arena contents
@@ -87,7 +86,14 @@ struct rel { // NB 2026-05-02 13:22:42 think bitfield types need to be same; bes
       return (tn){.rel = r, .len = len};                                       \
     else                                                                       \
       return (tn){0};                                                          \
-  }
+  }                                                                            \
+  t *abs_##tn(tn v) { return abs_##t(v.rel); }
+
+#define AWRAP(tn, t) /* new type name, el type */                              \
+  typedef struct {                                                             \
+    t *buf;                                                                    \
+    size len;                                                                  \
+  } tn;
 
 /*
   To enable assertions in release builds,
@@ -178,7 +184,7 @@ node_t *insert(node_t *after, node_t *from, size count) {
   };                                                                           \
   tn *tn##last(tn *node) { return (tn *)last((node_t *)node); }                \
   tn *tn##append(arena *a, tn *maybe, t m) {                                   \
-    tn *cur = (tn *)new (a, tn, 1);                                            \
+    tn *cur = new (a, tn, 1);                                           \
     if (!cur)                                                                  \
       return 0;                                                                \
     cur->val = m;                                                              \
@@ -220,7 +226,7 @@ node_t *insert(node_t *after, node_t *from, size count) {
   tn *tn##assoc(arena *a, tn *head, kt key, vt val) {                          \
     tn *beg = 0;                                                               \
     if (!head) {                                                               \
-      beg = (tn *)new (a, tn, 1);                                              \
+      beg = new (a, tn, 1);                                                    \
       if (!beg)                                                                \
         return 0;                                                              \
       beg->key = key;                                                          \
@@ -236,7 +242,7 @@ node_t *insert(node_t *after, node_t *from, size count) {
         return beg;                                                            \
       }                                                                        \
     }                                                                          \
-    cur = (tn *)new (a, tn, 1);                                         \
+    cur = new (a, tn, 1);                                                      \
     if (!cur)                                                                  \
       return 0;                                                                \
     prev->next = ptrdiff(prev, cur);                                           \
@@ -279,7 +285,7 @@ node_t *insert(node_t *after, node_t *from, size count) {
   tn *tn##conj(arena *a, tn *head, kt key) {                                   \
     tn *beg = 0;                                                               \
     if (!head) {                                                               \
-      beg = (tn *)new (a, tn, 1);                                              \
+      beg = new (a, tn, 1);                                                    \
       if (!beg)                                                                \
         return 0;                                                              \
       beg->key = key;                                                          \
@@ -291,7 +297,7 @@ node_t *insert(node_t *after, node_t *from, size count) {
     for (; cur; prev = cur, cur = tn##next(cur))                               \
       if (keq(cur->key, key))                                                  \
         return beg;                                                            \
-    cur = (tn *)new (a, tn, 1);                                                \
+    cur = new (a, tn, 1);                                                      \
     if (!cur)                                                                  \
       return 0;                                                                \
     prev->next = ptrdiff(prev, cur);                                           \
@@ -403,6 +409,7 @@ size copy(u8 *restrict dst, u8 *restrict src, size len) {
 
 REL(u8)
 ARRAY(s8, u8) // s8: Basic UTF-8 string. Not null terminated!
+AWRAP(S8, u8)
 REL(s8)
 b32 s8equal(s8, s8);
 ARRAY(s8a, s8)
@@ -440,14 +447,14 @@ s8 s8slice(s8 src, size from, size to) {
 
 b32 s8equal(s8 a, s8 b) {
   if (a.len != b.len) return 0;
-  u8 *acur = abs_u8(a.rel), *bcur = abs_u8(b.rel);
+  u8 *acur = abs_s8(a), *bcur = abs_s8(b);
   for (size i = 0; i < a.len ; i++) if (acur[i] != bcur[i]) return 0;
   return 1;
 }
 
 size s8cmp(s8 a, s8 b) {
   size len = (a.len < b.len) ? a.len : b.len;
-  u8 *acur = abs_u8(a.rel), *bcur = abs_u8(b.rel);
+  u8 *acur = abs_s8(a), *bcur = abs_s8(b);
   for (size i = 0; i < len; i++) {
     size d = acur[i] - bcur[i];
     if (d) return d;
@@ -458,7 +465,7 @@ size s8cmp(s8 a, s8 b) {
 // Why `size`? TODO visualise hashification of input
 size s8hash(s8 s) {
   u64 h = 0x100;
-  u8 *scur = abs_u8(s8.rel);
+  u8 *scur = abs_s8(s);
   for (size i = 0; i < s.len; i++) {
     h ^= scur[i];
     h *= 1111111111111111111u; // nineteen ones
@@ -468,7 +475,7 @@ size s8hash(s8 s) {
 
 // Find string
 u8 *s8find(s8 haystack, s8 needle) {
-  u8 *hcur = abs_u8(haystack.rel), *ncur = abs_u8(needle.rel);
+  u8 *hcur = abs_s8(haystack), *ncur = abs_s8(needle);
   if (!hcur || !ncur) return 0;
   u8 *found = 0;
   u8 *he = hcur + haystack.len;
@@ -493,7 +500,7 @@ u8 *s8find(s8 haystack, s8 needle) {
 
 // Find char
 u8 *s8findu8(s8 haystack, u8 needle) {
-  u8 *hcur = abs_u8(haystack.rel);
+  u8 *hcur = abs_s8(haystack);
   if (!hcur) return 0; // allow \0 needle
   u8 *end = hcur + haystack.len;
   for (u8 *h = hcur; h < end; h++)
@@ -510,13 +517,13 @@ b32 s8endswith(s8 s, s8 with) {
   return s8equal(s8slice(s, -with.len, 0), with);
 }
 
-// Wrap decayed C string into s8 string FIXME 2026-05-03 19:50:01 needs a solution...
-s8 s8wrap(const char *cstr, size maxlen) {
-  if (!cstr) return (s8){0};
+// Wrap decayed C string
+S8 S8wrap(const char *cstr, size maxlen) {
+  if (!cstr) return (S8){0};
   u8 *beg = (u8 *)cstr;
   u8 *end = beg;
   while (*end != '\0' && (end-beg) < maxlen) end++;
-  return s8span(beg, end);
+  return (S8){.buf = beg, .len = end - beg};
 }
 
 // Return pointer to copy of s in a, one byte longer for terminal
@@ -525,7 +532,7 @@ s8 s8wrap(const char *cstr, size maxlen) {
 char *s8unwrap(arena *a, s8 s) {
   u8 *buf = new (a, u8, s.len + 1); // is zeroed
   if (!buf) return 0;
-  copy(buf, s.buf, s.len);
+  copy(buf, abs_s8(s), s.len);
   return (char *)buf;
 }
 
@@ -545,8 +552,9 @@ b32 whitespace(u8 c) { // too cool for ctype.h isspace
 }
 
 s8 s8trim(s8 src) {
-  u8 *beg = src.buf;
-  u8 *end = endof(src);
+  u8 *scur = abs_s8(src);
+  u8 *beg = scur;
+  u8 *end = scur + src.len;
   while (end > beg && whitespace(*(end - 1))) end--;
   while (beg < end && whitespace(*beg)) beg++;
   return s8span(beg, end);
@@ -554,8 +562,9 @@ s8 s8trim(s8 src) {
 
 /* Is s only whitespace? */
 b32 s8blank(s8 s) {
+  u8 *scur = abs_s8(s);
   for (size i = 0; i < s.len; i++)
-    if (!whitespace(s.buf[i]))
+    if (!whitespace(scur[i]))
       return 0;
   return 1;
 }
