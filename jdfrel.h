@@ -27,8 +27,6 @@ typedef char      byte;
 typedef ptrdiff_t size;
 typedef size_t    usize;
 
-typedef struct arena arena; // forward decls
-
 #define alignof(x) (size)_Alignof(x) // casting from size_t
 #define countof(arrayptr) (size)(sizeof(arrayptr) / sizeof(*(arrayptr))) // casting from size_t
 #define new(a, t, n)                                            \
@@ -52,8 +50,21 @@ typedef struct arena arena; // forward decls
 
 #define ARENA_ID_BITS 10
 #define RPTR_BITS 54
+/*
+  Pass "store" arena by reference, and "scratch" by value.
+  This effectively resets the scratch *cur pointer on fn return.
+*/
 
-arena *arenas[1 << ARENA_ID_BITS] = {0}; // global array of pointers to arena; index is arena id
+typedef struct {
+  // https://stackoverflow.com/a/21476937/780743
+  // easier not to have `byte *const beg` and end to facilitate free_arena
+  byte *beg; // original start of arena
+  byte *cur; // cursor: current start of free space
+  byte *end; // allocated end of arena
+  size id : ARENA_ID_BITS;
+} arena;
+
+arena arenas[1 << ARENA_ID_BITS] = {0}; // global array of arenas; index is arena id
 
 struct rel { // NB 2026-05-02 13:22:42 think bitfield types need to be same; best to keep signed ptr
   size aid : ARENA_ID_BITS; // allow pointing to parent arena contents
@@ -62,14 +73,14 @@ struct rel { // NB 2026-05-02 13:22:42 think bitfield types need to be same; bes
 
 #define REL(t)                                                                 \
   typedef struct rel rel_##t##_t;                                              \
-  rel_##t##_t rel_##t(arena *a, void *p) {                                     \
+  rel_##t##_t rel_##t(arena a, void *p) {                                     \
     byte *b = (byte *)p;                                                       \
-    assert(a->beg <= b && b < a->cur && b < a->beg + (1L << RPTR_BITS) - 2);   \
-    return (rel_##t##_t){.aid = a->id, .ptr = b ? b - a->beg + 1 : 0};         \
+    assert(a.beg <= b && b < a.cur && b < a.beg + (1L << RPTR_BITS) - 2);   \
+    return (rel_##t##_t){.aid = a.id, .ptr = b ? b - a.beg + 1 : 0};         \
   }                                                                            \
   t *abs_##t(rel_##t##_t r) {                                                  \
     if (r.ptr)                                                                 \
-      return (t *)(arenas[r.aid]->beg + r.ptr - 1);                            \
+      return (t *)(arenas[r.aid].beg + r.ptr - 1);                            \
     else                                                                       \
       return 0;                                                                \
   }
@@ -77,30 +88,38 @@ struct rel { // NB 2026-05-02 13:22:42 think bitfield types need to be same; bes
 #define rel(a, t, n) rel_##t(a, new (a, t, n))
 #define ARRAY(tn, t) /* new type name, el type */                              \
   typedef struct {                                                             \
-    rel_##t##_t rel;                                                           \
+    union {                                                                    \
+      rel_##t##_t rel;                                                         \
+      t *abs;                                                                  \
+    };                                                                         \
     size len;                                                                  \
+    b32 absolute;                                                              \
   } tn;                                                                        \
   tn make_##tn(arena *a, size len) {                                           \
-    rel_##t##_t r = rel(a, t, len);                                            \
+    rel_##t##_t r = rel_##t(*a, new(a, t, len));                        \
     if (r.ptr)                                                                 \
       return (tn){.rel = r, .len = len};                                       \
     else                                                                       \
       return (tn){0};                                                          \
   }                                                                            \
-  rel_##t##_t arel_##tn(tn v, t *p) { return rel_##t(arenas[v.rel.aid], p); }  \
-  t *aabs_##tn(tn v) { return abs_##t(v.rel); }                                \
+  rel_##t##_t arel_##tn(tn v, t *p) {                                          \
+    return v.absolute ? (rel_##t##_t){0} : rel_##t(arenas[v.rel.aid], p); \
+  }                                                                            \
+  t *aabs_##tn(tn v) { return v.absolute ? v.abs : abs_##t(v.rel); }           \
   t *endof_##tn(tn v) { return aabs_##tn(v) + v.len; }                         \
   /* Slice forward using pointers */                                           \
   tn tn##span(tn src, t *beg, t *end) {                                        \
     t *src_beg = aabs_##tn(src);                                               \
     if (beg >= src_beg && end <= src_beg + src.len && end > beg)               \
-      return (tn){.rel = arel_##tn(src, beg), .len = end - beg};               \
+      return src.absolute                                                      \
+                 ? (tn){.abs = beg, .len = end - beg, .absolute = 1}           \
+                 : (tn){.rel = arel_##tn(src, beg), .len = end - beg};         \
     return (tn){0};                                                            \
   }                                                                            \
   /*  Slice forward using clamped offsets, which may be positive or negative   \
       (i.e. from start or end, respectively) */                                \
   tn tn##slice(tn src, size from, size to) {                                   \
-    tn s = {.rel = src.rel};                                                   \
+    tn s = src;                                                                \
     size f = (from < 0) ? src.len + from : from;                               \
     size t = (to > 0) ? to : src.len + to;                                     \
     if (f < 0)                                                                 \
@@ -111,19 +130,16 @@ struct rel { // NB 2026-05-02 13:22:42 think bitfield types need to be same; bes
       t = 0;                                                                   \
     if (t > src.len)                                                           \
       t = src.len;                                                             \
-    s.rel.ptr += f;                                                            \
+    if (src.absolute)                                                          \
+      s.abs += f;                                                              \
+    else                                                                       \
+      s.rel.ptr += f;                                                          \
     if (t > f)                                                                 \
       s.len = t - f;                                                           \
     else                                                                       \
       s.len = 0; /* refuse to slice backwards */                               \
     return s;                                                                  \
   }
-
-#define AWRAP(tn, t) /* new type name, el type */                              \
-  typedef struct {                                                             \
-    t *buf;                                                                    \
-    size len;                                                                  \
-  } tn;
 
 /*
   To enable assertions in release builds,
@@ -362,19 +378,6 @@ node_t *insert(node_t *after, node_t *from, size count) {
 
 // ─────────────────────────────────────────────────────────────────────── Arena
 
-/*
-  Pass "store" arena by reference, and "scratch" by value.
-  This effectively resets the scratch *cur pointer on fn return.
-*/
-struct arena {
-  // https://stackoverflow.com/a/21476937/780743
-  // easier not to have `byte *const beg` and end to facilitate free_arena
-  byte *beg; // original start of arena
-  byte *cur; // cursor: current start of free space
-  byte *end; // allocated end of arena
-  size id : ARENA_ID_BITS;
-};
-
 // TODO could visualise correctness of padding algorithm
 /*
   Allocate space within arena. Use via `new` macro.
@@ -439,7 +442,8 @@ size copy(u8 *restrict dst, u8 *restrict src, size len) {
 
 REL(u8)
 ARRAY(s8, u8) // s8: Basic UTF-8 string. Not null terminated!
-AWRAP(S8, u8)
+#define s8(s) (s8){.abs = (u8 *)s, .len = countof(s) - 1, .absolute = 1}
+static const s8 s8_OOM = s8("error: out of memory");
 b32 s8equal(s8, s8);
 REL(s8)
 ARRAY(s8a, s8)
@@ -520,12 +524,12 @@ b32 s8endswith(s8 s, s8 with) {
 }
 
 // Wrap decayed C string
-S8 S8wrap(const char *cstr, size maxlen) {
-  if (!cstr) return (S8){0};
+s8 s8wrap(const char *cstr, size maxlen) {
+  if (!cstr) return (s8){0};
   u8 *beg = (u8 *)cstr;
   u8 *end = beg;
   while (*end != '\0' && (end-beg) < maxlen) end++;
-  return (S8){.buf = beg, .len = end - beg};
+  return (s8){.abs = beg, .len = end - beg, .absolute = 1};
 }
 
 // Return pointer to copy of s in a, one byte longer for terminal
@@ -576,13 +580,6 @@ s8 s8clone(arena *a, s8 s, b32 null_terminate) {
   s8 c = make_s8(a, null_terminate ? s.len + 1 : s.len);
   if (!c.len) return c;
   copy(aabs_s8(c), aabs_s8(s), s.len);
-  return c;
-}
-
-s8 S8clone(arena *a, S8 s, b32 null_terminate) {
-  s8 c = make_s8(a, null_terminate ? s.len + 1 : s.len);
-  if (!c.len) return c;
-  copy(aabs_s8(c), s.buf, s.len);
   return c;
 }
 
@@ -669,7 +666,7 @@ s8 s8sprintf(arena *buf, const char *format, ...) {
   if (n > 0) {
     buf->cur += n > avail ? avail : n;
     return (s8) {
-      .rel = rel_u8(buf, start), .len = buf->cur - start
+      .rel = rel_u8(*buf, start), .len = buf->cur - start
     };
   } else return (s8){0};
 }
@@ -756,7 +753,7 @@ qout make_qout(arena *a, i32 len) {
   if (!cap) return nil;
   u8 *buf = new (a, u8, len);
   if (!buf) return nil;
-  return (qout) {.buf = (s8){.rel = rel_u8(a, buf), .len = len}, .q = 0 } ;
+  return (qout) {.buf = (s8){.rel = rel_u8(*a, buf), .len = len}, .q = 0 } ;
 }
 size read_qout(qout *qo, s8 buf) {
   i32 qi = 0;
@@ -836,7 +833,7 @@ i32 s8printf(arena scratch, Writer writer, void *out, const char *format, ...) {
   va_end(args);
   if (n > 0) {
     scratch.cur += (n > avail ? avail : n); // at terminal \0
-    return writer(out, (s8){.rel = rel_u8(&scratch, scratch.beg),
+    return writer(out, (s8){.rel = rel_u8(scratch, scratch.beg),
                             .len = scratch.cur - scratch.beg});
     
   } else return n;
@@ -890,9 +887,9 @@ struct args {
 // "--port=8080" "--workers=3"
 // "--port 8080" "--workers 3"
 // and puts trailing args (or args after first "--") in .rest
-struct args argparse(arena *a, int argc, char **argv, char *defs) {
+struct args argparse(arena *store, arena scratch, int argc, char **argv, char *defs) {
   s8arg_typem *types = 0;
-  s8pair def = {.tail = s8wrap(defs, 1024)};
+  s8pair def = {.tail = s8clone(&scratch, s8wrap(defs, 1024), 0)};
   s8pair kv = {0};
   while (def.tail.len) {
     s8 remaining = def.tail;
@@ -906,7 +903,7 @@ struct args argparse(arena *a, int argc, char **argv, char *defs) {
     else if (s8equal(s8("str"), kv.tail)) t = STR_ARG;
     else if (s8equal(s8("bool"), kv.tail)) t = BOOL_ARG;
     else failwith(1, s8("Invalid arg type def."));
-    types = s8arg_typemassoc(a, types, kv.head, t);
+    types = s8arg_typemassoc(&scratch, types, kv.head, t);
   }
   struct args ret = {0};
   b32 await_val = 0;
@@ -928,7 +925,7 @@ struct args argparse(arena *a, int argc, char **argv, char *defs) {
           if (s8startswith(cur->key, kv.head)) {
             kv.head = cur->key;
             break;
-          } else cur = cur->next;
+          } else cur = s8arg_typemnext(cur);
       } else { // allow absence of kwargs
         i--;
         break;
@@ -948,16 +945,16 @@ struct args argparse(arena *a, int argc, char **argv, char *defs) {
     kv.tail = await_val ? arg : kv.tail; // .head = key, .tail = value
     switch (t) {
     case INT_ARG:
-      i32p = new (a, i32, 1);
+      i32p = new (&scratch, i32, 1);
       if (!i32p) failwith(1, s8_OOM);
-      kv.tail = s8wrap((char *)kv.tail.buf, 16); // should be null terminated
+      kv.tail = s8wrap((char *)kv.tail.abs, 16); // should be null terminated
       char *end = 0;
-      *i32p = strtol((char *)kv.tail.buf, &end, 10);
+      *i32p = strtol((char *)kv.tail.abs, &end, 10);
       if (!end) failwith(1, s8("Invalid int argument."));
-      ret.kv = s8vmassoc(a, ret.kv, kv.head, i32p);
+      ret.kv = s8vmassoc(store, ret.kv, kv.head, i32p);
       break;
     case BOOL_ARG:
-      b32p = new (a, b32, 1); // initialised to 0 i.e. false
+      b32p = new (store, b32, 1); // initialised to 0 i.e. false
       if (!b32p) failwith(1, s8_OOM);
       *b32p = 1; // if none->true
       if (s8equal(kv.tail, s8("false"))) *b32p = 0;
@@ -965,14 +962,14 @@ struct args argparse(arena *a, int argc, char **argv, char *defs) {
       else if (s8startswith(kv.tail, s8("-"))) i-- ; // no value, would be next arg relook at this arg next loop
       else
         failwith(1, s8("Invalid bool argument."));
-      ret.kv = s8vmassoc(a, ret.kv, kv.head, b32p);
+      ret.kv = s8vmassoc(store, ret.kv, kv.head, b32p);
       break;
     case STR_ARG:
-      s8p = new (a, s8, 1);
+      s8p = new (&scratch, s8, 1);
       if (!s8p) failwith(1, s8_OOM);
       if (s8startswith(kv.tail, s8("-"))) failwith(1, s8("Invalid str argument."));
       *s8p = kv.tail;
-      ret.kv = s8vmassoc(a, ret.kv, kv.head, s8p);
+      ret.kv = s8vmassoc(store, ret.kv, kv.head, s8p);
       break;
     default:
       if (s8equal(kv.tail, s8("--"))) {
@@ -984,11 +981,12 @@ struct args argparse(arena *a, int argc, char **argv, char *defs) {
     await_val = 0;
   }
   if (++i < argc) {
-    s8a_ rest = make_s8a(a, argc - i);
-    if (!rest.ok) failwith(1, s8_OOM);
+    s8a rest = make_s8a(store, argc - i);
+    s8 *cur = aabs_s8a(rest);
+    if (!rest.len) failwith(1, s8_OOM);
     for (int j = 0; j < argc - i; j++) 
-      rest.v.buf[j] = s8wrap(argv[i + j], 256);
-    ret.rest = rest.v;
+      cur[j] = s8wrap(argv[i + j], 256);
+    ret.rest = rest;
   }
   return ret;
 }
@@ -1035,15 +1033,13 @@ void debytes(i32 fd, void *val, size len) { // too cool for stdio.h printf
 // malloc failure will return zero-capacity arena so its `alloc`s will just fail.
 arena alloc_arena(size cap) {
   static u32 arena_id_seq; // TODO 2026-04-29 14:06:56 confirm init 0 1st time and global across threads
-  assert(arena_id_seq < 2**ARENA_ID_BITS);
+  assert(arena_id_seq < 2<<ARENA_ID_BITS);
   byte* beg = malloc(cap);
   if (beg) {
     // FIXME 2026-05-01 00:04:37 needs to be threadsafe!!
-    arena ret = {
-      .beg = beg; .cur = beg; .end = beg + cap; .id = arena_id_seq};
-    arenas[arena_id_seq] = ret;
-    arena_id_seq++;
-    return ret;
+    arenas[arena_id_seq] = (arena){
+      .beg = beg, .cur = beg, .end = beg + cap, .id = arena_id_seq};
+    return arenas[arena_id_seq++];
   }
   else return (arena){0};
 }
@@ -1055,7 +1051,7 @@ b32 free_arena(arena *a) {
   a->cur = 0;
   a->end = 0;
   free(me); // safe even if null
-  tn// NB 2026-05-02 13:59:49 not resetting id 
+  // NB 2026-05-02 13:59:49 not resetting id 
   // TODO 2026-05-01 17:59:16 mechanism for removing from arenas global (and notifying errors)?
   return 1;
 }

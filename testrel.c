@@ -17,9 +17,9 @@ i32 main(void) {
   TEST(s8cmp(s8("b"), s8("a")) == 1);
   TEST(s8hash(s8("a")) != s8hash(s8("b")));
   PREP(s8 haystack = s8("abcdef"));
-  TEST(s8find(haystack, s8("cd")) == haystack.buf + 2);
+  TEST(s8find(haystack, s8("cd")) == haystack.abs + 2);
   TEST(!s8find(haystack, s8("g")));
-  TEST(s8findu8(haystack, 'e') == haystack.buf + 4);
+  TEST(s8findu8(haystack, 'e') == haystack.abs + 4);
   TEST(s8startswith(haystack, s8("abc")));
   TEST(s8endswith(haystack, s8("def")));
   TEST(s8equal(s8("hello"), s8trim(s8("       hello\t\r\n\v\f"))));
@@ -70,17 +70,17 @@ i32 main(void) {
   HEAD("argparse");
 
   char *argv[] = {"pname", "--port=8080", "--workers=2", "--", "other"}; // macros don't like designated initialisers
-  PREP(struct args a = argparse(&store, countof(argv), argv, "--port=int --workers=int"));
+  PREP(struct args a = argparse(&store, scratch, countof(argv), argv, "--port=int --workers=int"));
   s8vm *kv = 0;
   PREP(kv = s8vmget(a.kv, s8("port")));
   TEST(8080 == *(i32 *)kv->val);
   PREP(kv = s8vmget(a.kv, s8("workers")));
   TEST(2 == *(i32 *)kv->val);
-  TEST(s8equal(s8("other"), a.rest.buf[0]));
+  TEST(s8equal(s8("other"), *aabs_s8a(a.rest)));
   
   char *argv2[] = {"pname", "--port=8080", "--workers=2", "other"};
-  PREP(struct args a2 = argparse(&store, countof(argv2), argv2, "--port=int --workers=int"));
-  TEST(s8equal(s8("other"), a2.rest.buf[0]));
+  PREP(struct args a2 = argparse(&store, scratch, countof(argv2), argv2, "--port=int --workers=int"));
+  TEST(s8equal(s8("other"), *aabs_s8a(a2.rest)));
   
   char *argv3[] = {"pname", "other"};
   PREP(struct args a3 = argparse(&store, countof(argv3), argv3, "--port=int --workers=int"));
