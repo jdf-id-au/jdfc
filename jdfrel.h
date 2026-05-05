@@ -87,7 +87,9 @@ struct rel { // NB 2026-05-02 13:22:42 think bitfield types need to be same; bes
     else                                                                       \
       return (tn){0};                                                          \
   }                                                                            \
-  t *abs_##tn(tn v) { return abs_##t(v.rel); }
+  rel_##t##_t arel_##tn(tn v, t *p) { return rel_##t(arenas[v.rel.aid], p); }  \
+  t *aabs_##tn(tn v) { return abs_##t(v.rel); }                                \
+  t *endof_##tn(tn v) { return aabs_##tn(v) + v.len; }
 
 #define AWRAP(tn, t) /* new type name, el type */                              \
   typedef struct {                                                             \
@@ -410,24 +412,25 @@ size copy(u8 *restrict dst, u8 *restrict src, size len) {
 REL(u8)
 ARRAY(s8, u8) // s8: Basic UTF-8 string. Not null terminated!
 AWRAP(S8, u8)
-REL(s8)
 b32 s8equal(s8, s8);
+REL(s8)
 ARRAY(s8a, s8)
 LIST(s8l, s8)
 MAP_LIST(s8m, s8, s8, s8equal)
 SET_LIST(s8s, s8, s8equal)
      
 /*
-  Slice using pointers, doesn't check that actually within an s8!
-  Not MAYBE because doesn't allocate.
+  Slice using pointers.
 */
-s8 s8span(arena *a, u8 *beg, u8 *end) {
-  if (beg && end >= beg) return (s8){.rel = rel_u8(a, beg), .len = end - beg};
+s8 s8span(s8 src, u8 *beg, u8 *end) {
+  u8 *src_beg = aabs_s8(src);
+  if (beg >= src_beg && end <= src_beg + src.len)
+    return (s8){.rel = arel_s8(src, beg), .len = end - beg};
   return (s8){0};
 }
 
-s8 s8bytespan(arena *a, byte *beg, byte *end) {
-  return s8span(a, (u8 *)beg, (u8 *)end);
+s8 s8bytespan(s8 src, byte *beg, byte *end) {
+  return s8span(src, (u8 *)beg, (u8 *)end);
 }
 
 // Slice forward using clamped offsets, which may be positive or negative (i.e. from start or end, respectively)
@@ -447,14 +450,14 @@ s8 s8slice(s8 src, size from, size to) {
 
 b32 s8equal(s8 a, s8 b) {
   if (a.len != b.len) return 0;
-  u8 *acur = abs_s8(a), *bcur = abs_s8(b);
+  u8 *acur = aabs_s8(a), *bcur = aabs_s8(b);
   for (size i = 0; i < a.len ; i++) if (acur[i] != bcur[i]) return 0;
   return 1;
 }
 
 size s8cmp(s8 a, s8 b) {
   size len = (a.len < b.len) ? a.len : b.len;
-  u8 *acur = abs_s8(a), *bcur = abs_s8(b);
+  u8 *acur = aabs_s8(a), *bcur = aabs_s8(b);
   for (size i = 0; i < len; i++) {
     size d = acur[i] - bcur[i];
     if (d) return d;
@@ -465,7 +468,7 @@ size s8cmp(s8 a, s8 b) {
 // Why `size`? TODO visualise hashification of input
 size s8hash(s8 s) {
   u64 h = 0x100;
-  u8 *scur = abs_s8(s);
+  u8 *scur = aabs_s8(s);
   for (size i = 0; i < s.len; i++) {
     h ^= scur[i];
     h *= 1111111111111111111u; // nineteen ones
@@ -475,7 +478,7 @@ size s8hash(s8 s) {
 
 // Find string
 u8 *s8find(s8 haystack, s8 needle) {
-  u8 *hcur = abs_s8(haystack), *ncur = abs_s8(needle);
+  u8 *hcur = aabs_s8(haystack), *ncur = aabs_s8(needle);
   if (!hcur || !ncur) return 0;
   u8 *found = 0;
   u8 *he = hcur + haystack.len;
@@ -500,7 +503,7 @@ u8 *s8find(s8 haystack, s8 needle) {
 
 // Find char
 u8 *s8findu8(s8 haystack, u8 needle) {
-  u8 *hcur = abs_s8(haystack);
+  u8 *hcur = aabs_s8(haystack);
   if (!hcur) return 0; // allow \0 needle
   u8 *end = hcur + haystack.len;
   for (u8 *h = hcur; h < end; h++)
@@ -532,7 +535,7 @@ S8 S8wrap(const char *cstr, size maxlen) {
 char *s8unwrap(arena *a, s8 s) {
   u8 *buf = new (a, u8, s.len + 1); // is zeroed
   if (!buf) return 0;
-  copy(buf, abs_s8(s), s.len);
+  copy(buf, aabs_s8(s), s.len);
   return (char *)buf;
 }
 
@@ -552,17 +555,17 @@ b32 whitespace(u8 c) { // too cool for ctype.h isspace
 }
 
 s8 s8trim(s8 src) {
-  u8 *scur = abs_s8(src);
+  u8 *scur = aabs_s8(src);
   u8 *beg = scur;
   u8 *end = scur + src.len;
   while (end > beg && whitespace(*(end - 1))) end--;
   while (beg < end && whitespace(*beg)) beg++;
-  return s8span(beg, end);
+  return s8span(src, beg, end);
 }
 
 /* Is s only whitespace? */
 b32 s8blank(s8 s) {
-  u8 *scur = abs_s8(s);
+  u8 *scur = aabs_s8(s);
   for (size i = 0; i < s.len; i++)
     if (!whitespace(scur[i]))
       return 0;
@@ -570,29 +573,37 @@ b32 s8blank(s8 s) {
 }
 
 // Copies buf, optionally null-terminated for easier interop.
-s8_ s8clone(arena *a, s8 s, b32 null_terminate) {
-  s8_ c = make_s8(a, null_terminate ? s.len + 1 : s.len);
-  if (!c.ok) return c;
-  copy(c.v.buf, s.buf, s.len);
+s8 s8clone(arena *a, s8 s, b32 null_terminate) {
+  s8 c = make_s8(a, null_terminate ? s.len + 1 : s.len);
+  if (!c.len) return c;
+  copy(aabs_s8(c), aabs_s8(s), s.len);
   return c;
 }
 
 typedef struct {
-  s8 head;
+  s8 head; // could be empty
   s8 tail;
-  b32 ok; // different to MAYBE because head could be empty
+  b32 ok;
 } s8pair;
 
 s8pair s8cut(s8 s, s8 on) {
   u8 *found = s8find(s, on);
   if (!found) return (s8pair){0};
-  return (s8pair) {.head = s8span(s.buf, found), .tail = s8span(found + on.len, endof(s)), .ok = 1};
+  return (s8pair) {
+    .head = s8span(s, aabs_s8(s), found),
+    .tail = s8span(s, found + on.len, endof_s8(s)),
+    .ok = 1
+  };
 }
 
 s8pair s8cutu8(s8 s, u8 on) {
   u8 *found = s8findu8(s, on);
   if (!found) return (s8pair){0};
-  return (s8pair) {.head = s8span(s.buf, found), .tail = s8span(found + 1, endof(s)), .ok = 1};
+  return (s8pair) {
+    .head = s8span(s, aabs_s8(s), found),
+    .tail = s8span(s, found + 1, endof_s8(s)),
+    .ok = 1
+  };
 }
 
 // Concatenate array of strings
