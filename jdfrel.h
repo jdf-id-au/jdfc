@@ -89,7 +89,35 @@ struct rel { // NB 2026-05-02 13:22:42 think bitfield types need to be same; bes
   }                                                                            \
   rel_##t##_t arel_##tn(tn v, t *p) { return rel_##t(arenas[v.rel.aid], p); }  \
   t *aabs_##tn(tn v) { return abs_##t(v.rel); }                                \
-  t *endof_##tn(tn v) { return aabs_##tn(v) + v.len; }
+  t *endof_##tn(tn v) { return aabs_##tn(v) + v.len; }                         \
+  /* Slice forward using pointers */                                           \
+  tn tn##span(tn src, t *beg, t *end) {                                        \
+    t *src_beg = aabs_##tn(src);                                               \
+    if (beg >= src_beg && end <= src_beg + src.len && end > beg)               \
+      return (tn){.rel = arel_##tn(src, beg), .len = end - beg};               \
+    return (tn){0};                                                            \
+  }                                                                            \
+  /*  Slice forward using clamped offsets, which may be positive or negative   \
+      (i.e. from start or end, respectively) */                                \
+  tn tn##slice(tn src, size from, size to) {                                   \
+    tn s = {.rel = src.rel};                                                   \
+    size f = (from < 0) ? src.len + from : from;                               \
+    size t = (to > 0) ? to : src.len + to;                                     \
+    if (f < 0)                                                                 \
+      f = 0; /* clamp offsets */                                               \
+    if (f > src.len)                                                           \
+      f = src.len;                                                             \
+    if (t < 0)                                                                 \
+      t = 0;                                                                   \
+    if (t > src.len)                                                           \
+      t = src.len;                                                             \
+    s.rel.ptr += f;                                                            \
+    if (t > f)                                                                 \
+      s.len = t - f;                                                           \
+    else                                                                       \
+      s.len = 0; /* refuse to slice backwards */                               \
+    return s;                                                                  \
+  }
 
 #define AWRAP(tn, t) /* new type name, el type */                              \
   typedef struct {                                                             \
@@ -418,35 +446,6 @@ ARRAY(s8a, s8)
 LIST(s8l, s8)
 MAP_LIST(s8m, s8, s8, s8equal)
 SET_LIST(s8s, s8, s8equal)
-     
-/*
-  Slice using pointers.
-*/
-s8 s8span(s8 src, u8 *beg, u8 *end) {
-  u8 *src_beg = aabs_s8(src);
-  if (beg >= src_beg && end <= src_beg + src.len)
-    return (s8){.rel = arel_s8(src, beg), .len = end - beg};
-  return (s8){0};
-}
-
-s8 s8bytespan(s8 src, byte *beg, byte *end) {
-  return s8span(src, (u8 *)beg, (u8 *)end);
-}
-
-// Slice forward using clamped offsets, which may be positive or negative (i.e. from start or end, respectively)
-s8 s8slice(s8 src, size from, size to) {
-  s8 s = {.rel = src.rel};
-  size f = (from < 0) ? src.len + from : from;
-  size t = (to > 0) ? to : src.len + to;
-  if (f < 0) f = 0; // clamp offsets
-  if (f > src.len) f = src.len;
-  if (t < 0) t = 0;
-  if (t > src.len) t = src.len;
-  s.rel.ptr += f;
-  if (t > f) s.len = t - f;
-  else s.len = 0; // refuse to slice backwards
-  return s;
-}
 
 b32 s8equal(s8 a, s8 b) {
   if (a.len != b.len) return 0;
@@ -572,11 +571,18 @@ b32 s8blank(s8 s) {
   return 1;
 }
 
-// Copies buf, optionally null-terminated for easier interop.
+// Copies buffer, optionally null-terminated for easier interop.
 s8 s8clone(arena *a, s8 s, b32 null_terminate) {
   s8 c = make_s8(a, null_terminate ? s.len + 1 : s.len);
   if (!c.len) return c;
   copy(aabs_s8(c), aabs_s8(s), s.len);
+  return c;
+}
+
+s8 S8clone(arena *a, S8 s, b32 null_terminate) {
+  s8 c = make_s8(a, null_terminate ? s.len + 1 : s.len);
+  if (!c.len) return c;
+  copy(aabs_s8(c), s.buf, s.len);
   return c;
 }
 
@@ -607,14 +613,14 @@ s8pair s8cutu8(s8 s, u8 on) {
 }
 
 // Concatenate array of strings
-s8_ s8concat(arena *a, s8 *ss, size len) {
+s8 s8concat(arena *a, s8 *ss, size len) {
   size tot = 0;
   for (size i = 0; i < len; i++) tot += ss[i].len;
-  s8_ ret = make_s8(a, tot);
-  if (!ret.ok) return ret;
-  u8 *cur = ret.v.buf;
+  s8 ret = make_s8(a, tot);
+  if (!ret.len) return ret;
+  u8 *cur = aabs_s8(ret);
   for (size i = 0; i < len; i++) {
-    copy(cur, ss[i].buf, ss[i].len);
+    copy(cur, aabs_s8(ss[i]), ss[i].len);
     cur += ss[i].len;
   }
   return ret;
@@ -623,33 +629,34 @@ s8_ s8concat(arena *a, s8 *ss, size len) {
 size s8llen(s8l *sl) {
   size len = 0;
   s8l *node = sl;
-  do { len += node->val.len; } while ((node = node->next));
+  do { len += node->val.len; } while ((node = s8lnext(node)));
   return len;
 }
      
-s8_ s8lconcat(arena *store, s8l *sl) {
-  s8_ ret = make_s8(store, s8llen(sl));
-  if (!ret.ok) return ret;
-  u8 *cur = ret.v.buf;
+s8 s8lconcat(arena *store, s8l *sl) {
+  s8 ret = make_s8(store, s8llen(sl));
+  if (!ret.len) return ret;
+  u8 *cur = aabs_s8(ret);
   s8l *node = sl;
   do {
-    copy(cur, sl->val.buf, sl->val.len);
+    copy(cur, aabs_s8(sl->val), sl->val.len);
     cur += sl->val.len;
-  } while ((node = node->next));
+  } while ((node = s8lnext(node)));
   return ret;
 }
 
-s8_ u8fill(arena *buf, u8 with, size count) {
-  s8_ ret = make_s8(buf, count);
-  if (!ret.ok) return ret;
-  for (size i = 0; i < count; i++) ret.v.buf[i] = with;
+s8 u8fill(arena *buf, u8 with, size count) {
+  s8 ret = make_s8(buf, count);
+  if (!ret.len) return ret;
+  u8 *cur = aabs_s8(ret);
+  for (size i = 0; i < count; i++) cur[i] = with;
   return ret;
 }
 
-// Does effectively allocate by moving buf.cur, so MAYBE return type.
+// Does effectively allocate by moving buf.cur, so can fail.
 // Also see s8printf.
-s8_ s8sprintf(arena *buf, const char *format, ...) {
-  if (!buf || !buf->cur) return (s8_){0};
+s8 s8sprintf(arena *buf, const char *format, ...) {
+  if (!buf || !buf->cur) return (s8){0};
   byte *start = buf->cur;
   size avail = available(buf);
   va_list args;
@@ -661,8 +668,10 @@ s8_ s8sprintf(arena *buf, const char *format, ...) {
   va_end(args);
   if (n > 0) {
     buf->cur += n > avail ? avail : n;
-    return (s8_){.v = s8bytespan(start, buf->cur)};
-  } else return (s8_){0};
+    return (s8) {
+      .rel = rel_u8(buf, start), .len = buf->cur - start
+    };
+  } else return (s8){0};
 }
 
 // ───────────────────────────────────────────────── Lock-free concurrent queues
@@ -740,21 +749,22 @@ typedef struct {
   s8 buf;
   queue q;
 } qout;
-MAYBE(qout)
-qout_ make_qout(arena *a, i32 len) {
-  qout_ nil = (qout_){0};
+
+qout make_qout(arena *a, i32 len) {
+  qout nil = (qout){0};
   i32 cap = queue_capacity(len);
   if (!cap) return nil;
   u8 *buf = new (a, u8, len);
   if (!buf) return nil;
-  return (qout_) { .v = {.buf = (s8){.buf = buf, .len = len}, .q = 0 } };
+  return (qout) {.buf = (s8){.rel = rel_u8(a, buf), .len = len}, .q = 0 } ;
 }
 size read_qout(qout *qo, s8 buf) {
   i32 qi = 0;
   size bi = 0;
+  u8 *abuf = aabs_s8(buf), *qbuf = aabs_s8(qo->buf);
   while ((qi = queue_pop(&qo->q, qo->buf.len))) { // where .len is queue capacity
     if (qi < 0) break; // empty
-    buf.buf[bi++] = qo->buf.buf[qi];
+    abuf[bi++] = qbuf[qi];
     queue_pop_commit(&qo->q);
   }
   return bi;
@@ -762,12 +772,13 @@ size read_qout(qout *qo, s8 buf) {
 size write_qout(qout *qo, u8 *buf, size maxlen) {
   i32 qi = 0;
   i32 bi = 0;
+  u8 *qbuf = aabs_s8(qo->buf);
   while (1) {
     qi = queue_push(&qo->q, qo->buf.len); // where .len is queue capacity
     if (qi < 0 || bi >= maxlen) break;
     // printf("pushing %c to queue position %i\n", buf[bi], qi);
     // printf("%c", buf[bi]);
-    qo->buf.buf[qi] = buf[bi++]; // byte at a time
+    qbuf[qi] = buf[bi++]; // byte at a time
     queue_push_commit(&qo->q);
   }
   return bi;
@@ -782,11 +793,10 @@ typedef struct {
   i32 fd; // 1 stdout, 2 stderr
   b32 err;
 } bufout;
-MAYBE(bufout)
-bufout_ make_bufout(arena *a, i32 cap, i32 fd) {
+bufout make_bufout(arena *a, i32 cap, i32 fd) {
   u8 *buf = new (a, u8, cap);
-  if (!buf) return (bufout_){0};
-  return (bufout_){.v = {.buf = buf, .cap = cap, .fd = fd}};
+  if (!buf) return (bufout){0};
+  return (bufout){.buf = buf, .cap = cap, .fd = fd};
 }
 
 void flush(bufout *b);
@@ -796,9 +806,9 @@ typedef size (*Writer)(void *out, s8 s);
 // Caller needs to flush
 size s8write(void *out, s8 s) {
   bufout *b = (bufout *)out;
-  if (!b->buf || !s.buf) return 0;
-  u8 *buf = s.buf;
-  u8 *end = endof(s);
+  if (!b->buf || !s.len) return 0;
+  u8 *buf = aabs_s8(s);
+  u8 *end = endof_s8(s);
   size total_copied = 0;
   while (!b->err && (buf < end)) {
     i32 avail = b->cap - b->len; // TODO learn about size -> i32
@@ -826,7 +836,9 @@ i32 s8printf(arena scratch, Writer writer, void *out, const char *format, ...) {
   va_end(args);
   if (n > 0) {
     scratch.cur += (n > avail ? avail : n); // at terminal \0
-    return writer(out, s8bytespan(scratch.beg, scratch.cur));
+    return writer(out, (s8){.rel = rel_u8(&scratch, scratch.beg),
+                            .len = scratch.cur - scratch.beg});
+    
   } else return n;
 }
 
@@ -840,14 +852,12 @@ void flush(bufout *b) {
     }
 }
 
-void s8writefd(i32 fd, s8 s) {
-  oswrite(fd, (u8 *)s.buf, s.len);
-}
+void s8writefd(i32 fd, s8 s) {oswrite(fd, aabs_s8(s), s.len);}
 
 // Unbuffered
 void s8log(i32 fd, s8 s) {
   s8writefd(fd, s);
-  s8writefd(fd, s8("\n"));
+  oswrite(fd, (u8 *)"\n", 1);
 }
 
 // ──────────────────────────────────────────────────────────── Operating System
