@@ -75,7 +75,9 @@ struct rel { // NB 2026-05-02 13:22:42 think bitfield types need to be same; bes
   typedef struct rel rel_##t##_t;                                              \
   rel_##t##_t rel_##t(arena a, void *p) {                                     \
     byte *b = (byte *)p;                                                       \
-    assert(a.beg <= b && b < a.cur && b < a.beg + (1L << RPTR_BITS) - 2);   \
+   printf("a.beg %p *b %p a.cur %p .aid %d\n", a.beg, b, a.cur,a.id); \
+   printf(".ptr %ld max %p\n", b?b-a.beg+1:0, a.beg + (1L<<RPTR_BITS) -2 ); \
+   assert(a.beg <= b && b < a.cur && b < a.beg + (1L << RPTR_BITS) - 2);  printf("got here\n"); \
     return (rel_##t##_t){.aid = a.id, .ptr = b ? b - a.beg + 1 : 0};         \
   }                                                                            \
   t *abs_##t(rel_##t##_t r) {                                                  \
@@ -103,6 +105,7 @@ struct rel { // NB 2026-05-02 13:22:42 think bitfield types need to be same; bes
       return (tn){0};                                                          \
   }                                                                            \
   rel_##t##_t arel_##tn(tn v, t *p) {                                          \
+    /* FIXME need to see actual scratch arena */                                                      \
     return v.absolute ? (rel_##t##_t){0} : rel_##t(arenas[v.rel.aid], p); \
   }                                                                            \
   t *aabs_##tn(tn v) { return v.absolute ? v.abs : abs_##t(v.rel); }           \
@@ -893,7 +896,7 @@ struct args argparse(arena *store, arena scratch, int argc, char **argv, char *d
   s8pair kv = {0};
   while (def.tail.len) {
     s8 remaining = def.tail;
-    def = s8cut(def.tail, s8(" "));
+    def = s8cut(def.tail, s8(" ")); // FIXME UB
     if (!def.head.len) def.head = remaining;
     kv = s8cut(def.head, s8("="));
     if (s8startswith(kv.head, s8("--"))) kv.head = s8slice(kv.head, 2, 0);

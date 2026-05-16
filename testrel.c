@@ -70,7 +70,8 @@ i32 main(void) {
   HEAD("argparse");
 
   char *argv[] = {"pname", "--port=8080", "--workers=2", "--", "other"}; // macros don't like designated initialisers
-  PREP(struct args a = argparse(&store, scratch, countof(argv), argv, "--port=int --workers=int"));
+  PREP(struct args a = argparse(&store, scratch, countof(argv), argv,
+                                "--port=int --workers=int"));
   s8vm *kv = 0;
   PREP(kv = s8vmget(a.kv, s8("port")));
   TEST(8080 == *(i32 *)kv->val);
@@ -83,36 +84,36 @@ i32 main(void) {
   TEST(s8equal(s8("other"), *aabs_s8a(a2.rest)));
   
   char *argv3[] = {"pname", "other"};
-  PREP(struct args a3 = argparse(&store, countof(argv3), argv3, "--port=int --workers=int"));
-  TEST(s8equal(s8("other"), a3.rest.buf[0]));
+  PREP(struct args a3 = argparse(&store, scratch, countof(argv3), argv3, "--port=int --workers=int"));
+  TEST(s8equal(s8("other"), *aabs_s8a(a3.rest)));
 
   char *argv4[] = {"pname", "--name", "thing"};
-  PREP(struct args a4 = argparse(&store, countof(argv4), argv4, "--name=str"));
+  PREP(struct args a4 = argparse(&store, scratch, countof(argv4), argv4, "--name=str"));
   PREP(kv = s8vmget(a4.kv, s8("name")));
   TEST(s8equal(s8("thing"), *(s8 *)kv->val));
   
   char *argv5[] = {"pname", "--yes"};
-  PREP(struct args a5 = argparse(&store, countof(argv5), argv5, "--yes=bool"));
+  PREP(struct args a5 = argparse(&store, scratch, countof(argv5), argv5, "--yes=bool"));
   PREP(kv = s8vmget(a5.kv, s8("yes")));
   TEST(*(b32 *)kv->val);
 
   char *argv6[] = {"pname", "-y"};
-  PREP(struct args a6 = argparse(&store, countof(argv6), argv6, "--yes=bool"));
+  PREP(struct args a6 = argparse(&store, scratch, countof(argv6), argv6, "--yes=bool"));
   PREP(kv = s8vmget(a6.kv, s8("yes")));
   TEST(*(b32 *)kv->val);
 
   char *argv7[] = {"pname", "-nhello"};
-  PREP(struct args a7 = argparse(&store, countof(argv7), argv7, "--name=str"));
+  PREP(struct args a7 = argparse(&store, scratch, countof(argv7), argv7, "--name=str"));
   PREP(kv = s8vmget(a7.kv, s8("name")));
   TEST(s8equal(s8("hello"), *(s8 *)kv->val));
 
   char *argv8[] = {"pname", "-n", "hello"};
-  PREP(struct args a8 = argparse(&store, countof(argv8), argv8, "--name=str"));
+  PREP(struct args a8 = argparse(&store, scratch, countof(argv8), argv8, "--name=str"));
   PREP(kv = s8vmget(a8.kv, s8("name")));
   TEST(s8equal(s8("hello"), *(s8 *)kv->val));
 
   char *argv9[] = {"pname", "-p8080"};
-  PREP(struct args a9 = argparse(&store, countof(argv9), argv9, "--port=int --workers=int"));
+  PREP(struct args a9 = argparse(&store, scratch, countof(argv9), argv9, "--port=int --workers=int"));
   PREP(kv = s8vmget(a9.kv, s8("port")));
   TEST(8080 == *(i32 *)kv->val);
 
