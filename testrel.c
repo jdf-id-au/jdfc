@@ -34,8 +34,8 @@ i32 main(void) {
 
   // TODO etc...
 
-  PREP(arena store = alloc_arena(KiB(2)));
-  PREP(arena scratch = alloc_arena(KiB(1)));
+  PREP(arena store = alloc_arena(KiB(2), 0));
+  PREP(arena scratch = alloc_arena(KiB(1), 1));
 
   HEAD("linked list");
   PREP(i32l *ll = i32lappend(&scratch, 0, 42));

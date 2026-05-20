@@ -61,28 +61,30 @@ typedef struct {
   byte *beg; // original start of arena
   byte *cur; // cursor: current start of free space
   byte *end; // allocated end of arena
-  size id : ARENA_ID_BITS;
+  u32 id : ARENA_ID_BITS;
+  b32 scratch : 1; 
 } arena;
 
 arena arenas[1 << ARENA_ID_BITS] = {0}; // global array of arenas; index is arena id
 
-struct rel { // NB 2026-05-02 13:22:42 think bitfield types need to be same; best to keep signed ptr
-  size aid : ARENA_ID_BITS; // allow pointing to parent arena contents
+struct rel {
+  u32 aid : ARENA_ID_BITS; // allow pointing to parent arena contents
   size ptr : RPTR_BITS;
 };
 
 #define REL(t)                                                                 \
   typedef struct rel rel_##t##_t;                                              \
-  rel_##t##_t rel_##t(arena a, void *p) {                                     \
+  rel_##t##_t rel_##t(arena a, void *p) {                                      \
     byte *b = (byte *)p;                                                       \
-   printf("a.beg %p *b %p a.cur %p .aid %d\n", a.beg, b, a.cur,a.id); \
-   printf(".ptr %ld max %p\n", b?b-a.beg+1:0, a.beg + (1L<<RPTR_BITS) -2 ); \
-   assert(a.beg <= b && b < a.cur && b < a.beg + (1L << RPTR_BITS) - 2);  printf("got here\n"); \
-    return (rel_##t##_t){.aid = a.id, .ptr = b ? b - a.beg + 1 : 0};         \
+    /* printf("a.beg %p *b %p a.cur %p .aid %d\n", a.beg, b, a.cur,a.id); */   \
+    /* printf(".ptr %ld max %p\n", b?b-a.beg+1:0, a.beg + (1L<<RPTR_BITS) -2   \
+     * ); */                                                                   \
+    assert(a.beg <= b && (a.scratch ? 1 : b < a.cur) && b < a.beg + (1L << RPTR_BITS) - 2, "invalid rel_<t> call"); \
+    return (rel_##t##_t){.aid = a.id, .ptr = b ? b - a.beg + 1 : 0};           \
   }                                                                            \
   t *abs_##t(rel_##t##_t r) {                                                  \
     if (r.ptr)                                                                 \
-      return (t *)(arenas[r.aid].beg + r.ptr - 1);                            \
+      return (t *)(arenas[r.aid].beg + r.ptr - 1);                             \
     else                                                                       \
       return 0;                                                                \
   }
@@ -148,10 +150,10 @@ struct rel { // NB 2026-05-02 13:22:42 think bitfield types need to be same; bes
   To enable assertions in release builds,
   put UBSan in trap mode with -fsanitize-trap
   and then enable at least -fsanitize=unreachable.
-
-  FIXME would be better with error message...
 */
-#define assert(c) while (!(c)) __builtin_unreachable()
+// TODO 2026-05-19 21:40:22 compiler flag to choose between:
+#define assert(c, ...) while (!(c)) { printf("💥 "); printf(__VA_ARGS__); printf("\n"); __builtin_unreachable(); } // probably not optimised away?
+// #define assert(c, ...) while (!(c)) __builtin_unreachable() // probably optimisable away
 
 // ──────────────────────────────────────────────────────────────── Linked lists
 // TODO 2026-04-21 15:32:15 keep chipping away, watch with horror as api changes
@@ -159,13 +161,13 @@ typedef struct { size next; } node_t; // can be either direction; ignore subsequ
 node_t *offset(node_t *from, size by) { return (node_t *)((byte *)from + by); }
 size ptrdiff(void *from, void *to) { return (byte *)to - (byte *)from; }
 node_t *next(node_t *node) {
-  assert(node);
+  assert(node, "no node for next");
   // NB 2026-05-02 12:54:00 need bounds checking elsewhere
   return node->next ? offset(node, node->next) : 0;
 }
 // No loop detection
 size countfn(node_t *node) {
-  assert(node);
+  assert(node, "no node for count");
   size c = 0;
   for(node_t *cur = node; cur; cur = next(cur)) c++;
   return c;
@@ -174,14 +176,14 @@ size countfn(node_t *node) {
 #define count(n) countfn((node_t *)n)
 // No loop detection
 node_t *nth(node_t *node, size n) {
-  assert(node);
+  assert(node, "no node for nth");
   node_t *ret = node;
   for (size i = 0; i < n && ret; i++, ret = next(ret)); 
   return ret;
   }
 // No loop detection!
 node_t *last(node_t *node) {
-  assert(node);
+  assert(node, "no node for last");
   node_t *prev = 0;
   for(; node; prev = node, node = next(node));
   return prev;
@@ -189,7 +191,7 @@ node_t *last(node_t *node) {
 // Connect two nodes from same arena. Can cause loop! Returns any previous `from` tail.
 // FIXME 2026-05-02 13:03:05 doesn't validate they're in same arena!
 node_t *extend(node_t *from, node_t *to) {
-  assert(from);
+  assert(from, "no node to extend");
   node_t *from_tail = next(from);
   from->next = ptrdiff(from, to);
   return from_tail;
@@ -198,7 +200,7 @@ node_t *extend(node_t *from, node_t *to) {
 // any remaining `from` tail (including if count > available: insert
 // none and return all of `from`).
 node_t *insert(node_t *after, node_t *from, size count) {
-  assert(after);
+  assert(after, "no node after which to insert");
   if (!from || count <= 0) return from;
   node_t *to = nth(from, count - 1);
   if (to) {
@@ -314,7 +316,7 @@ node_t *insert(node_t *after, node_t *from, size count) {
   }                                                                            \
   /* Return possibly-null pointer to kv pair with key match. */                \
   tn *tn##get(tn *head, kt key) {                                              \
-    assert(head);                                                              \
+    assert(head, "no map to get from");                                                      \
     tn *cur = head;                                                            \
     do {                                                                       \
       if (keq(cur->key, key))                                                  \
@@ -826,7 +828,7 @@ size s8write(void *out, s8 s) {
 // Also see s8sprintf.
 i32 s8printf(arena scratch, Writer writer, void *out, const char *format, ...) {
   if (!scratch.beg) return -1;
-  assert(scratch.beg == scratch.cur);
+  assert(scratch.beg == scratch.cur, "scratch buffer cursor not at beginning");
   size avail = available(&scratch);
   va_list args;
   va_start(args, format);
@@ -1034,14 +1036,14 @@ void debytes(i32 fd, void *val, size len) { // too cool for stdio.h printf
 #include <errno.h>
 
 // malloc failure will return zero-capacity arena so its `alloc`s will just fail.
-arena alloc_arena(size cap) {
+arena alloc_arena(size cap, b32 scratch) {
   static u32 arena_id_seq; // TODO 2026-04-29 14:06:56 confirm init 0 1st time and global across threads
-  assert(arena_id_seq < 2<<ARENA_ID_BITS);
+  assert(arena_id_seq < 2<<ARENA_ID_BITS, "arena too big for bits");
   byte* beg = malloc(cap);
   if (beg) {
     // FIXME 2026-05-01 00:04:37 needs to be threadsafe!!
     arenas[arena_id_seq] = (arena){
-      .beg = beg, .cur = beg, .end = beg + cap, .id = arena_id_seq};
+      .beg = beg, .cur = beg, .end = beg + cap, .id = arena_id_seq, .scratch = scratch};
     return arenas[arena_id_seq++];
   }
   else return (arena){0};
@@ -1053,6 +1055,7 @@ b32 free_arena(arena *a) {
   a->beg = 0;
   a->cur = 0;
   a->end = 0;
+  a->scratch = 0;
   free(me); // safe even if null
   // NB 2026-05-02 13:59:49 not resetting id 
   // TODO 2026-05-01 17:59:16 mechanism for removing from arenas global (and notifying errors)?
