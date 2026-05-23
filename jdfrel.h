@@ -87,7 +87,6 @@ struct rel {
       return 0;                                                                \
   }
 
-/* TODO 2026-05-23 19:16:39 may need to wrangle scratch arenas differently to allow resizing, lookup... */
 #define rel(i, t, n) t##_rel(i, new (i, t, n))
 #define ARRAY(tn, t) /* new type name, el type */                              \
   typedef struct {                                                             \
@@ -391,18 +390,21 @@ node_t *insert(node_t *after, node_t *from, size count) {
 
 // ─────────────────────────────────────────────────────────────────────── Arena
 
-// TODO could visualise correctness of padding algorithm
-/*
-  Allocate space within arena. Use via `new` macro.
-  Not designed to be threadsafe! Each thread requires its own arena/s.
-  NB It's somewhat redundant to test for failure of alloc_arena, because the
-  first alloc here would fail if the arena is 0.
-*/
 size capacity(arena_id i) { arena a = arenas[i]; return a.end - a.beg; }
 size used(arena_id i) { arena a = arenas[i]; return a.cur - a.beg; }
 size available(arena_id i) { arena a = arenas[i];  return a.end - a.cur; }
 b32 resize_arena(arena_id i, size cap); // forward declaration
 
+/*
+  Allocate space within arena. Use via `new` macro.
+  Not designed to be threadsafe! Each thread requires its own arena/s.
+  NB It's somewhat redundant to test for failure of alloc_arena, because the
+  first alloc here would fail if the arena is 0.
+
+  Every allocation can cause the arena to resize, so take a relative
+  pointer to anything which could change, before allocating, then
+  convert back to absolute, after.
+*/
 byte *alloc(arena_id i, size objsize, size align, size count, const char *t) {
   arena *a = &arenas[i]; // FIXME 2026-05-23 23:17:19 check up to that number
   if (count <= 0 || align <= 0) return 0;
@@ -862,7 +864,6 @@ i32 s8printf(arena_id i, Writer writer, void *out, const char *format, ...) {
     scratch->cur += (n > avail ? avail : n); // at terminal \0
     return writer(out, (s8){.abs = (u8 *)scratch->beg,
                             .len = used(i)});
-    
   } else return n;
 }
 
@@ -1099,6 +1100,8 @@ b32 free_arena(arena_id i) {
   // TODO 2026-05-01 17:59:16 mechanism for removing from arenas global (and notifying errors)?
   return 1;
 }
+
+// TODO 2026-05-24 01:50:58 ser/de arenas with a little metadata
 
 void osfail(i32 code) {
   _exit(code); // terminate without cleanup https://stackoverflow.com/a/5423108/780743
