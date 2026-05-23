@@ -96,7 +96,7 @@ struct rel {
     size len;                                                                  \
     b32 absolute;                                                              \
   } tn;                                                                        \
-  tn tn##make(arena *a, size len) {                                            \
+  tn make_##tn(arena *a, size len) {                                            \
     t##_rel_t r = rel(a, t, len);                                              \
     if (r.ptr)                                                                 \
       return (tn){.rel = r, .len = len};                                       \
@@ -388,10 +388,16 @@ node_t *insert(node_t *after, node_t *from, size count) {
   NB It's somewhat redundant to test for failure of alloc_arena, because the
   first alloc here would fail if the arena is 0.
 */
+size capacity(arena *a) { return a->end - a->beg; }
+size used(arena *a) { return a->cur - a->beg; }
+size available(arena *a) { return a->end - a->cur; }
+b32 resize_arena(arena *a, size cap); // forward declaration
+
 byte *alloc(arena *a, size objsize, size align, size count, const char *t) {
-  if (!a || count <= 0 || align <= 0) return 0; // why are count and size signed?
-  //printf("Trying to allocate %ti %ss of size %ti\n", count, t, objsize);
-  size avail = a->end - a->cur;
+  if (!a || count <= 0 || align <= 0) return 0;
+  // printf("Trying to allocate %ti %ss of size %ti\n", count, t, objsize);
+  size padding = 0;
+ recalc:
   /*
     Padding is how far the next aligned address is beyond the cursor.
    
@@ -409,15 +415,24 @@ byte *alloc(arena *a, size objsize, size align, size count, const char *t) {
      padding      x            1   0b0001 == -cur & (align-1)
       giving  ----------->.... 0xc 0b1100
    */
-  size padding = -(uptr)a->cur & (align - 1);
+  padding = -(uptr)a->cur & (align - 1);
+  size avail = available(a);
   /*
     Deliberately return null pointer if arena can't allocate requested amount!
     This does propagate annoyingly.
     Distinction between OOM proper and getting killed by (Linux) OOM killer?
   */
   if (count > (avail - padding) / objsize) {
-    fprintf(stderr, "Couldn't allocate %s: count %ti, count available %ti\n", t, count, (avail-padding)/objsize);
-    return 0;
+    size c = capacity(a);
+    printf("resizing from %ti\n", c);
+    if (resize_arena(a, c < PTRDIFF_MAX / 2 ? 2 * capacity(a) : PTRDIFF_MAX)) {
+      goto recalc;
+    } else {
+      // TODO 2026-05-23 18:47:09 more conservative size increment algo?
+      fprintf(stderr, "Couldn't allocate %s: count %ti, count available %ti, capacity %ti\n",
+              t, count, (avail - padding) / objsize, c);
+      return 0;
+    }
   }
   size total = count * objsize;
   byte *p = a->cur + padding;
@@ -425,10 +440,6 @@ byte *alloc(arena *a, size objsize, size align, size count, const char *t) {
   for (size i = 0; i < total; i++) p[i] = 0;
   return p;
 }
-
-size capacity(arena *a) { return a->end - a->beg; }
-size used(arena *a) { return a->cur - a->beg; }
-size available(arena *a) { return a->end - a->cur; }
 
 size KiB(u32 n) { return (1<<10) * n; }
 size MiB(u32 n) { return (1<<20) * n; }
@@ -577,7 +588,7 @@ b32 s8blank(s8 s) {
 
 // Copies buffer, optionally null-terminated for easier interop.
 s8 s8clone(arena *a, s8 s, b32 null_terminate) {
-  s8 c = s8make(a, null_terminate ? s.len + 1 : s.len);
+  s8 c = make_s8(a, null_terminate ? s.len + 1 : s.len);
   if (!c.len) return c;
   copy(s8_array_abs(c), s8_array_abs(s), s.len);
   return c;
@@ -613,7 +624,7 @@ s8pair s8cutu8(s8 s, u8 on) {
 s8 s8concat(arena *a, s8 *ss, size len) {
   size tot = 0;
   for (size i = 0; i < len; i++) tot += ss[i].len;
-  s8 ret = s8make(a, tot);
+  s8 ret = make_s8(a, tot);
   if (!ret.len) return ret;
   u8 *cur = s8_array_abs(ret);
   for (size i = 0; i < len; i++) {
@@ -632,7 +643,7 @@ size s8l_len(s8l *sl) {
 }
 
 s8 s8l_concat(arena *store, s8l *sl) {
-  s8 ret = s8make(store, s8l_len(sl));
+  s8 ret = make_s8(store, s8l_len(sl));
   if (!ret.len) return ret;
   u8 *cur = s8_array_abs(ret);
   s8l *node = sl;
@@ -645,7 +656,7 @@ s8 s8l_concat(arena *store, s8l *sl) {
 */
 
 s8 u8fill(arena *buf, u8 with, size count) {
-  s8 ret = s8make(buf, count);
+  s8 ret = make_s8(buf, count);
   if (!ret.len) return ret;
   u8 *cur = s8_array_abs(ret);
   for (size i = 0; i < count; i++) cur[i] = with;
@@ -983,7 +994,7 @@ struct args argparse(arena *store, arena scratch, int argc, char **argv, char *d
     await_val = 0;
   }
   if (++i < argc) {
-    plainargs rest = plainargsmake(store, argc - i);
+    plainargs rest = make_plainargs(store, argc - i);
     s8 *cur = plainargs_array_abs(rest);
     if (!rest.len) failwith(1, s8_OOM);
     for (int j = 0; j < argc - i; j++) 
@@ -1037,7 +1048,6 @@ arena alloc_arena(usize cap, b32 scratch) {
   static _Atomic u32 arena_id_seq;
   assert(arena_id_seq < MAX_ARENAS, "too many arenas to index");
   assert(cap <= MAX_CAP, "arena too big to address");
-  u32 seq_save = arena_id_seq;
   byte* beg = malloc(cap);
   if (beg) {
     // FIXME 2026-05-01 00:04:37 needs to be threadsafe!!
@@ -1046,6 +1056,23 @@ arena alloc_arena(usize cap, b32 scratch) {
     return arenas[arena_id_seq++];
   }
   else return (arena){0};
+}
+
+b32 resize_arena(arena *a, size cap) {
+  assert(cap > used(a), "can't shrink while full");
+  usize u = used(a);
+  byte *new_memory = realloc(a->beg, cap);
+  if (new_memory) {
+    // FIXME 2026-05-23 18:33:43 needs to be threadsafe!!
+    a->beg = new_memory;
+    a->cur = new_memory + u;
+    a->end = new_memory + cap;
+    return 1;
+  } else {
+    // "If there is not enough memory, the old memory block is not freed and null pointer is returned."
+    fprintf(stderr, "Unable to grow arena\n");
+    return 0;
+  }
 }
 
 b32 free_arena(arena *a) {
