@@ -30,8 +30,8 @@ typedef size_t    usize;
 
 #define alignof(x) (size)_Alignof(x) // casting from size_t
 #define countof(arrayptr) (size)(sizeof(arrayptr) / sizeof(*(arrayptr))) // casting from size_t
-#define new(a, t, n)                                            \
-  (t *)alloc(a, sizeof(t), alignof(t), n, #t) // arena, type, number
+#define new(i, t, n)                                            \
+  (t *)alloc(i, sizeof(t), alignof(t), n, #t) // arena, type, number
 
 /*
   Relative pointers, with respect to host arena (not anything else).
@@ -49,6 +49,8 @@ typedef size_t    usize;
 #define MAX_ARENAS 1 << ARENA_ID_BITS
 #define MAX_CAP (1L << RPTR_BITS) - 1
 
+typedef u32 arena_id;
+
 /*
   Pass "store" arena by reference, and "scratch" by value.
   This effectively resets the scratch *cur pointer on fn return.
@@ -57,27 +59,26 @@ typedef struct {
   byte *beg; // original start of arena
   byte *cur; // cursor: current start of free space
   byte *end; // allocated end of arena
-  u32 id : ARENA_ID_BITS; // index within arenas global
-  b32 scratch : 1; // is it a scratch arena
 } arena;
 
 arena arenas[MAX_ARENAS] = {0}; // global array of arenas; index is arena id
+_Atomic arena_id next_arena = 1; // first (zeroth) arena functions as null
 
 struct rel {
-  u32 aid : ARENA_ID_BITS; // allow pointing to parent arena contents
+  arena_id aid : ARENA_ID_BITS; // allow pointing to parent arena contents
   usize ptr : RPTR_BITS; // byte offset within arena PLUS ONE
 };
 
 #define REL(t)                                                                 \
   typedef struct rel t##_rel_t;                                                \
-  t##_rel_t t##_rel(arena *a, void *p) {                                       \
+  t##_rel_t t##_rel(arena_id i, void *p) {                                     \
+    if (!p)                                                                    \
+      return (t##_rel_t){.aid = i, 0};                                         \
     byte *b = (byte *)p;                                                       \
-    /* doesn't check cursor for scratch arena (FIXME 2026-05-23 16:30:17       \
-     * caused by tn##_array_rel, etc?) */                                      \
-    assert(a->beg <= b && (a->scratch ? 1 : b < a->cur) &&                     \
-               b < a->beg + MAX_CAP,                                           \
+    arena a = arenas[i];                                                       \
+    assert(a.beg <= b && b < a.cur && b < a.beg + MAX_CAP,                     \
            "invalid <t>_rel call");                                            \
-    return (t##_rel_t){.aid = a->id, .ptr = b ? b - a->beg + 1 : 0};           \
+    return (t##_rel_t){.aid = i, .ptr = b - a.beg + 1};                        \
   }                                                                            \
   t *t##_abs(t##_rel_t r) {                                                    \
     if (r.ptr)                                                                 \
@@ -85,8 +86,9 @@ struct rel {
     else                                                                       \
       return 0;                                                                \
   }
+
 /* TODO 2026-05-23 19:16:39 may need to wrangle scratch arenas differently to allow resizing, lookup... */
-#define rel(a, t, n) t##_rel(a, new (a, t, n))
+#define rel(i, t, n) t##_rel(i, new (i, t, n))
 #define ARRAY(tn, t) /* new type name, el type */                              \
   typedef struct {                                                             \
     union {                                                                    \
@@ -96,8 +98,8 @@ struct rel {
     size len;                                                                  \
     b32 absolute;                                                              \
   } tn;                                                                        \
-  tn make_##tn(arena *a, size len) {                                            \
-    t##_rel_t r = rel(a, t, len);                                              \
+  tn make_##tn(arena_id i, size len) {                                         \
+    t##_rel_t r = rel(i, t, len);                                              \
     if (r.ptr)                                                                 \
       return (tn){.rel = r, .len = len};                                       \
     else                                                                       \
@@ -105,7 +107,7 @@ struct rel {
   }                                                                            \
   t##_rel_t tn##_array_rel(tn v, t *p) {                                       \
     assert(!v.absolute, "can't get rel for abs");                              \
-    return t##_rel(&arenas[v.rel.aid], p);                                     \
+    return t##_rel(v.rel.aid, p);                                       \
   }                                                                            \
   t *tn##_array_abs(tn v) { return v.absolute ? v.abs : t##_abs(v.rel); }      \
   t *tn##endof(tn v) { return tn##_array_abs(v) + v.len; }                     \
@@ -230,17 +232,14 @@ node_t *insert(node_t *after, node_t *from, size count) {
     t val;                                                                     \
   };                                                                           \
   tn *tn##_last(tn *node) { return (tn *)last((node_t *)node); }               \
-  tn *tn##_append(arena *a, tn *maybe, t m) {                                  \
-    arena before = *a;                                                         \
-    tn *new_one = new (a, tn, 1);                                              \
-    arena after = *a;                                                          \
+  tn *tn##_append(arena_id i, tn *maybe, t m) {                                \
+    tn##_rel_t maybe_rel = tn##_rel(i, maybe); /* allow new to realloc */      \
+    tn *new_one = new (i, tn, 1);                                              \
     if (!new_one)                                                              \
       return 0;                                                                \
-    tn *cur = maybe;                                                           \
+    tn *cur = maybe = tn##_abs(maybe_rel);                                     \
     new_one->val = m;                                                          \
     if (maybe) {                                                               \
-      if (after.beg != before.beg)                                             \
-        maybe = tn##_abs(tn##_rel(&before, maybe));                            \
       cur = tn##_last(maybe); /* avoid passing early nodes if hot */           \
       cur->next = ptrdiff(cur, new_one);                                       \
       return maybe;                                                            \
@@ -255,7 +254,6 @@ node_t *insert(node_t *after, node_t *from, size count) {
   tn *tn##_insert(tn *after, tn *from, size n) {                               \
     return (tn *)insert((node_t *)after, (node_t *)from, n);                   \
   }
-
 
 /*
   Define new association list type with ...assoc, ...dissoc, ...get.
@@ -277,10 +275,10 @@ node_t *insert(node_t *after, node_t *from, size count) {
   /* Uniquely associate key to value. Caller must ensure kv validity.          \
      Assoc to null head to make new association list.                          \
      Allows null val. Returns null pointer if new fails. */                    \
-  tn *tn##_assoc(arena *a, tn *head, kt key, vt val) {                         \
+  tn *tn##_assoc(arena_id i, tn *head, kt key, vt val) {                       \
     tn *beg = 0;                                                               \
     if (!head) {                                                               \
-      beg = new (a, tn, 1);                                                    \
+      beg = new (i, tn, 1);                                                    \
       if (!beg)                                                                \
         return 0;                                                              \
       beg->key = key;                                                          \
@@ -296,13 +294,13 @@ node_t *insert(node_t *after, node_t *from, size count) {
         return beg;                                                            \
       }                                                                        \
     }                                                                          \
-    arena before = *a;                                                         \
-    cur = new (a, tn, 1);                                                      \
-    arena after = *a;                                                          \
+    tn##_rel_t prev_rel = tn##_rel(i, prev);                                   \
+    tn##_rel_t beg_rel = tn##_rel(i, beg);                                     \
+    cur = new (i, tn, 1);                                                      \
+    prev = tn##_abs(prev_rel);                                                 \
+    beg = tn##_abs(beg_rel);                                                   \
     if (!cur)                                                                  \
       return 0;                                                                \
-    if (after.beg != before.beg)                                               \
-      prev = tn##_abs(tn##_rel(&before, prev));                                \
     prev->next = ptrdiff(prev, cur);                                           \
     cur->key = key;                                                            \
     cur->val = val;                                                            \
@@ -341,10 +339,10 @@ node_t *insert(node_t *after, node_t *from, size count) {
     kt key;                                                                    \
   };                                                                           \
   NEXT(tn)                                                                     \
-  tn *tn##_conj(arena *a, tn *head, kt key) {                                  \
+  tn *tn##_conj(arena_id i, tn *head, kt key) {                                \
     tn *beg = 0;                                                               \
     if (!head) {                                                               \
-      beg = new (a, tn, 1);                                                    \
+      beg = new (i, tn, 1);                                                    \
       if (!beg)                                                                \
         return 0;                                                              \
       beg->key = key;                                                          \
@@ -356,13 +354,11 @@ node_t *insert(node_t *after, node_t *from, size count) {
     for (; cur; prev = cur, cur = tn##_next(cur))                              \
       if (keq(cur->key, key))                                                  \
         return beg;                                                            \
-    arena before = *a;                                                         \
-    cur = new (a, tn, 1);                                                      \
-    arena after = *a;                                                          \
+    tn##_rel_t prev_rel = tn##_rel(i, prev);                                   \
+    cur = new (i, tn, 1);                                                      \
     if (!cur)                                                                  \
       return 0;                                                                \
-    if (after.beg != before.beg)                                               \
-      prev = tn##_abs(tn##_rel(&before, prev));                                \
+    prev = tn##_abs(prev_rel);                                                 \
     prev->next = ptrdiff(prev, cur);                                           \
     cur->key = key;                                                            \
     return beg;                                                                \
@@ -402,13 +398,14 @@ node_t *insert(node_t *after, node_t *from, size count) {
   NB It's somewhat redundant to test for failure of alloc_arena, because the
   first alloc here would fail if the arena is 0.
 */
-size capacity(arena *a) { return a->end - a->beg; }
-size used(arena *a) { return a->cur - a->beg; }
-size available(arena *a) { return a->end - a->cur; }
-b32 resize_arena(arena *a, size cap); // forward declaration
+size capacity(arena_id i) { arena a = arenas[i]; return a.end - a.beg; }
+size used(arena_id i) { arena a = arenas[i]; return a.cur - a.beg; }
+size available(arena_id i) { arena a = arenas[i];  return a.end - a.cur; }
+b32 resize_arena(arena_id i, size cap); // forward declaration
 
-byte *alloc(arena *a, size objsize, size align, size count, const char *t) {
-  if (!a || count <= 0 || align <= 0) return 0;
+byte *alloc(arena_id i, size objsize, size align, size count, const char *t) {
+  arena *a = &arenas[i]; // FIXME 2026-05-23 23:17:19 check up to that number
+  if (count <= 0 || align <= 0) return 0;
   // printf("Trying to allocate %ti %ss of size %ti\n", count, t, objsize);
   size padding = 0;
  recalc:
@@ -430,16 +427,16 @@ byte *alloc(arena *a, size objsize, size align, size count, const char *t) {
       giving  ----------->.... 0xc 0b1100
    */
   padding = -(uptr)a->cur & (align - 1);
-  size avail = available(a);
+  size avail = available(i);
   /*
     Deliberately return null pointer if arena can't allocate requested amount!
     This does propagate annoyingly.
     Distinction between OOM proper and getting killed by (Linux) OOM killer?
   */
   if (count > (avail - padding) / objsize) {
-    size c = capacity(a);
-    printf("resizing from %ti\n", c);
-    if (resize_arena(a, c < PTRDIFF_MAX / 2 ? 2 * capacity(a) : PTRDIFF_MAX)) {
+    size c = capacity(i);
+    printf("resizing arena %d from %ti\n", i, c);
+    if (resize_arena(i, c < PTRDIFF_MAX / 2 ? 2 * capacity(i) : PTRDIFF_MAX)) {
       goto recalc;
     } else {
       // TODO 2026-05-23 18:47:09 more conservative size increment algo?
@@ -560,8 +557,8 @@ s8 s8wrap(const char *cstr, size maxlen) {
 // Return pointer to copy of s in a, one byte longer for terminal
 // zero. Null if allocation fails. May be simpler to do manually with
 // stack-allocated buffer for known-short strings.
-char *s8unwrap(arena *a, s8 s) {
-  u8 *buf = new (a, u8, s.len + 1); // is zeroed
+char *s8unwrap(arena_id i, s8 s) {
+  u8 *buf = new (i, u8, s.len + 1); // is zeroed
   if (!buf) return 0;
   copy(buf, s8_array_abs(s), s.len);
   return (char *)buf;
@@ -601,8 +598,8 @@ b32 s8blank(s8 s) {
 }
 
 // Copies buffer, optionally null-terminated for easier interop.
-s8 s8clone(arena *a, s8 s, b32 null_terminate) {
-  s8 c = make_s8(a, null_terminate ? s.len + 1 : s.len);
+s8 s8clone(arena_id i, s8 s, b32 null_terminate) {
+  s8 c = make_s8(i, null_terminate ? s.len + 1 : s.len);
   if (!c.len) return c;
   copy(s8_array_abs(c), s8_array_abs(s), s.len);
   return c;
@@ -635,10 +632,10 @@ s8pair s8cutu8(s8 s, u8 on) {
 }
 
 // Concatenate array of strings
-s8 s8concat(arena *a, s8 *ss, size len) {
+s8 s8concat(arena_id i, s8 *ss, size len) {
   size tot = 0;
   for (size i = 0; i < len; i++) tot += ss[i].len;
-  s8 ret = make_s8(a, tot);
+  s8 ret = make_s8(i, tot);
   if (!ret.len) return ret;
   u8 *cur = s8_array_abs(ret);
   for (size i = 0; i < len; i++) {
@@ -669,8 +666,8 @@ s8 s8l_concat(arena *store, s8l *sl) {
 }
 */
 
-s8 u8fill(arena *buf, u8 with, size count) {
-  s8 ret = make_s8(buf, count);
+s8 u8fill(arena_id i, u8 with, size count) {
+  s8 ret = make_s8(i, count);
   if (!ret.len) return ret;
   u8 *cur = s8_array_abs(ret);
   for (size i = 0; i < count; i++) cur[i] = with;
@@ -679,10 +676,11 @@ s8 u8fill(arena *buf, u8 with, size count) {
 
 // Does effectively allocate by moving buf.cur, so can fail.
 // Also see s8printf.
-s8 s8sprintf(arena *buf, const char *format, ...) {
+s8 s8sprintf(arena_id i, const char *format, ...) {
+  arena *buf = &arenas[i];
   if (!buf || !buf->cur) return (s8){0};
   byte *start = buf->cur;
-  size avail = available(buf);
+  size avail = available(i);
   va_list args;
   va_start(args, format);
   // returns misleading n which disregards available size!
@@ -693,7 +691,7 @@ s8 s8sprintf(arena *buf, const char *format, ...) {
   if (n > 0) {
     buf->cur += n > avail ? avail : n;
     return (s8) {
-      .rel = u8_rel(buf, start), .len = buf->cur - start
+      .rel = u8_rel(i, start), .len = buf->cur - start
     };
   } else return (s8){0};
 }
@@ -774,13 +772,13 @@ typedef struct {
   queue q;
 } qout;
 
-qout make_qout(arena *a, i32 len) {
+qout make_qout(arena_id i, i32 len) {
   qout nil = (qout){0};
   i32 cap = queue_capacity(len);
   if (!cap) return nil;
-  u8 *buf = new (a, u8, len);
+  u8 *buf = new (i, u8, len);
   if (!buf) return nil;
-  return (qout) {.buf = (s8){.rel = u8_rel(a, buf), .len = len}, .q = 0 } ;
+  return (qout) {.buf = (s8){.rel = u8_rel(i, buf), .len = len}, .q = 0 } ;
 }
 size read_qout(qout *qo, s8 buf) {
   i32 qi = 0;
@@ -818,8 +816,8 @@ typedef struct {
   b32 err;
 } bufout;
 
-bufout make_bufout(arena *a, i32 cap, i32 fd) {
-  u8 *buf = new (a, u8, cap);
+bufout make_bufout(arena_id i, i32 cap, i32 fd) {
+  u8 *buf = new (i, u8, cap);
   if (!buf) return (bufout){0};
   return (bufout){.buf = buf, .cap = cap, .fd = fd};
 }
@@ -849,20 +847,21 @@ size s8write(void *out, s8 s) {
 }
 
 // Also see s8sprintf.
-i32 s8printf(arena scratch, Writer writer, void *out, const char *format, ...) {
-  if (!scratch.beg) return -1;
-  assert(scratch.beg == scratch.cur, "scratch buffer cursor not at beginning");
-  size avail = available(&scratch);
+i32 s8printf(arena_id i, Writer writer, void *out, const char *format, ...) {
+  arena *scratch = &arenas[i];
+  if (!scratch->beg) return -1;
+  assert(scratch->beg == scratch->cur, "scratch buffer cursor not at beginning");
+  size avail = available(i); // TODO 2026-05-23 23:35:59 could resize if needed
   va_list args;
   va_start(args, format);
   // returns misleading n which disregards available size!
   // also disregards terminal \0, as usual
-  i32 n = vsnprintf(scratch.beg, avail, format, args);
+  i32 n = vsnprintf(scratch->beg, avail, format, args);
   va_end(args);
   if (n > 0) {
-    scratch.cur += (n > avail ? avail : n); // at terminal \0
-    return writer(out, (s8){.rel = u8_rel(&scratch, scratch.beg),
-                            .len = scratch.cur - scratch.beg});
+    scratch->cur += (n > avail ? avail : n); // at terminal \0
+    return writer(out, (s8){.abs = (u8 *)scratch->beg,
+                            .len = used(i)});
     
   } else return n;
 }
@@ -914,9 +913,9 @@ struct args {
 // "--port=8080" "--workers=3"
 // "--port 8080" "--workers 3"
 // and puts trailing args (or args after first "--") in .rest
-struct args argparse(arena *store, arena scratch, int argc, char **argv, char *defs) {
+struct args argparse(arena_id store, arena_id scratch, int argc, char **argv, char *defs) {
   argtypes *types = 0;
-  s8pair def = {.tail = s8clone(&scratch, s8wrap(defs, 1024), 0)};
+  s8pair def = {.tail = s8clone(scratch, s8wrap(defs, 1024), 0)};
   s8pair kv = {0};
   while (def.tail.len) {
     s8 remaining = def.tail;
@@ -930,7 +929,7 @@ struct args argparse(arena *store, arena scratch, int argc, char **argv, char *d
     else if (s8equal(s8("str"), kv.tail)) t = STR_ARG;
     else if (s8equal(s8("bool"), kv.tail)) t = BOOL_ARG;
     else failwith(1, s8("Invalid arg type def."));
-    types = argtypes_assoc(&scratch, types, kv.head, t);
+    types = argtypes_assoc(scratch, types, kv.head, t);
   }
   struct args ret = {0};
   b32 await_val = 0;
@@ -972,7 +971,7 @@ struct args argparse(arena *store, arena scratch, int argc, char **argv, char *d
     kv.tail = await_val ? arg : kv.tail; // .head = key, .tail = value
     switch (t) {
     case INT_ARG:
-      i32p = new (&scratch, i32, 1);
+      i32p = new (scratch, i32, 1);
       if (!i32p) failwith(1, s8_OOM);
       kv.tail = s8wrap((char *)kv.tail.abs, 16); // should be null terminated
       char *end = 0;
@@ -992,7 +991,7 @@ struct args argparse(arena *store, arena scratch, int argc, char **argv, char *d
       ret.kv = kvargs_assoc(store, ret.kv, kv.head, b32p);
       break;
     case STR_ARG:
-      s8p = new (&scratch, s8, 1);
+      s8p = new (scratch, s8, 1);
       if (!s8p) failwith(1, s8_OOM);
       if (s8startswith(kv.tail, s8("-"))) failwith(1, s8("Invalid str argument."));
       *s8p = kv.tail;
@@ -1058,30 +1057,29 @@ void debytes(i32 fd, void *val, size len) { // too cool for stdio.h printf
 #include <errno.h>
 
 // malloc failure will return zero-capacity arena so its `alloc`s will just fail.
-arena alloc_arena(usize cap, b32 scratch) {
-  static _Atomic u32 arena_id_seq;
-  assert(arena_id_seq < MAX_ARENAS, "too many arenas to index");
+arena_id alloc_arena(usize cap) {
+  assert(next_arena < MAX_ARENAS, "too many arenas to index");
   assert(cap <= MAX_CAP, "arena too big to address");
   byte* beg = malloc(cap);
   if (beg) {
     // FIXME 2026-05-01 00:04:37 needs to be threadsafe!!
-    arenas[arena_id_seq] = (arena){
-      .beg = beg, .cur = beg, .end = beg + cap, .id = arena_id_seq, .scratch = scratch};
-    return arenas[arena_id_seq++];
+    arenas[next_arena] = (arena){
+      .beg = beg, .cur = beg, .end = beg + cap};
+    return next_arena++;
   }
-  else return (arena){0};
+  else return 0;
 }
 
-b32 resize_arena(arena *a, size cap) {
-  assert(cap > used(a), "can't shrink while full");
-  usize u = used(a);
+b32 resize_arena(arena_id i, size cap) {
+  arena *a = &arenas[i];
+  assert(cap > used(i), "can't shrink while full");
+  usize u = used(i);
   byte *new_memory = realloc(a->beg, cap);
   if (new_memory) {
     // FIXME 2026-05-23 18:33:43 needs to be threadsafe!!
     a->beg = new_memory;
     a->cur = new_memory + u;
     a->end = new_memory + cap;
-    arenas[a->id] = *a;
     return 1;
   } else {
     // "If there is not enough memory, the old memory block is not freed and null pointer is returned."
@@ -1090,13 +1088,12 @@ b32 resize_arena(arena *a, size cap) {
   }
 }
 
-b32 free_arena(arena *a) {
-  if(!a) return 0;
-  byte *me = a->beg;
-  a->beg = 0;
-  a->cur = 0;
-  a->end = 0;
-  a->scratch = 0;
+b32 free_arena(arena_id i) {
+  arena a = arenas[i];
+  byte *me = a.beg;
+  a.beg = 0;
+  a.cur = 0;
+  a.end = 0;
   free(me); // safe even if null
   // NB 2026-05-02 13:59:49 not resetting id 
   // TODO 2026-05-01 17:59:16 mechanism for removing from arenas global (and notifying errors)?
