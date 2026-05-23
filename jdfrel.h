@@ -449,10 +449,7 @@ ARRAY(s8, u8) // s8: Basic UTF-8 string. Not null terminated!
 static const s8 s8_OOM = s8("error: out of memory");
 b32 s8equal(s8, s8);
 REL(s8)
-ARRAY(s8a, s8)
-LIST(s8l, s8)
-MAP_LIST(s8m, s8, s8, s8equal)
-SET_LIST(s8s, s8, s8equal)
+// LIST(s8l, s8)
 
 b32 s8equal(s8 a, s8 b) {
   if (a.len != b.len) return 0;
@@ -626,13 +623,14 @@ s8 s8concat(arena *a, s8 *ss, size len) {
   return ret;
 }
 
+/*
 size s8l_len(s8l *sl) {
   size len = 0;
   s8l *node = sl;
   do { len += node->val.len; } while ((node = s8l_next(node)));
   return len;
 }
-     
+
 s8 s8l_concat(arena *store, s8l *sl) {
   s8 ret = s8make(store, s8l_len(sl));
   if (!ret.len) return ret;
@@ -644,6 +642,7 @@ s8 s8l_concat(arena *store, s8l *sl) {
   } while ((node = s8l_next(node)));
   return ret;
 }
+*/
 
 s8 u8fill(arena *buf, u8 with, size count) {
   s8 ret = s8make(buf, count);
@@ -872,15 +871,14 @@ void failwith(i32 code, s8 msg) {
 
 // ╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴ Arg parsing
 
-MAP_LIST(s8vm, s8, void *, s8equal)
-
-enum arg_type {UNK_ARG, INT_ARG, STR_ARG, BOOL_ARG};
-
-MAP_LIST(s8arg_typem, s8, enum arg_type, s8equal)
+ARRAY(plainargs, s8)
+MAP_LIST(kvargs, s8, void *, s8equal)
+enum argtype {UNK_ARG, INT_ARG, STR_ARG, BOOL_ARG};
+MAP_LIST(argtypes, s8, enum argtype, s8equal)
 
 struct args {
-  s8vm *kv;
-  s8a rest;
+  kvargs *kv;
+  plainargs rest;
 };
 
 // Defs e.g. "--port=int --workers=int" must be in --long-arg=type form.
@@ -892,7 +890,7 @@ struct args {
 // "--port 8080" "--workers 3"
 // and puts trailing args (or args after first "--") in .rest
 struct args argparse(arena *store, arena scratch, int argc, char **argv, char *defs) {
-  s8arg_typem *types = 0;
+  argtypes *types = 0;
   s8pair def = {.tail = s8clone(&scratch, s8wrap(defs, 1024), 0)};
   s8pair kv = {0};
   while (def.tail.len) {
@@ -902,16 +900,16 @@ struct args argparse(arena *store, arena scratch, int argc, char **argv, char *d
     kv = s8cut(def.head, s8("="));
     if (s8startswith(kv.head, s8("--"))) kv.head = s8slice(kv.head, 2, 0);
     else failwith(1, s8("Invalid arg name def."));
-    enum arg_type t = UNK_ARG;
+    enum argtype t = UNK_ARG;
     if (s8equal(s8("int"), kv.tail)) t = INT_ARG;
     else if (s8equal(s8("str"), kv.tail)) t = STR_ARG;
     else if (s8equal(s8("bool"), kv.tail)) t = BOOL_ARG;
     else failwith(1, s8("Invalid arg type def."));
-    types = s8arg_typem_assoc(&scratch, types, kv.head, t);
+    types = argtypes_assoc(&scratch, types, kv.head, t);
   }
   struct args ret = {0};
   b32 await_val = 0;
-  enum arg_type t = UNK_ARG;
+  enum argtype t = UNK_ARG;
   int i = 1;
   for (i = 1; i < argc; i++) {
     s8 arg = s8wrap(argv[i], 256);
@@ -924,17 +922,17 @@ struct args argparse(arena *store, arena scratch, int argc, char **argv, char *d
         if (kv.tail.len) failwith(1, s8("Invalid short arg format (omit '=')."));
         kv.tail = s8slice(kv.head, 2, 0);
         kv.head = s8slice(kv.head, 1, 2);
-        s8arg_typem *cur = types;
+        argtypes *cur = types;
         while (cur) 
           if (s8startswith(cur->key, kv.head)) {
             kv.head = cur->key;
             break;
-          } else cur = s8arg_typem_next(cur);
+          } else cur = argtypes_next(cur);
       } else { // allow absence of kwargs
         i--;
         break;
       }
-      s8arg_typem *kt = s8arg_typem_get(types, kv.head);
+      argtypes *kt = argtypes_get(types, kv.head);
       if (kt) t = kt->val; else t = STR_ARG; // default
       if (!kv.tail.len) {
         if (!(i + 1 == argc && t == BOOL_ARG)) {
@@ -955,7 +953,7 @@ struct args argparse(arena *store, arena scratch, int argc, char **argv, char *d
       char *end = 0;
       *i32p = strtol((char *)kv.tail.abs, &end, 10);
       if (!end) failwith(1, s8("Invalid int argument."));
-      ret.kv = s8vm_assoc(store, ret.kv, kv.head, i32p);
+      ret.kv = kvargs_assoc(store, ret.kv, kv.head, i32p);
       break;
     case BOOL_ARG:
       b32p = new (store, b32, 1); // initialised to 0 i.e. false
@@ -966,14 +964,14 @@ struct args argparse(arena *store, arena scratch, int argc, char **argv, char *d
       else if (s8startswith(kv.tail, s8("-"))) i-- ; // no value, would be next arg relook at this arg next loop
       else
         failwith(1, s8("Invalid bool argument."));
-      ret.kv = s8vm_assoc(store, ret.kv, kv.head, b32p);
+      ret.kv = kvargs_assoc(store, ret.kv, kv.head, b32p);
       break;
     case STR_ARG:
       s8p = new (&scratch, s8, 1);
       if (!s8p) failwith(1, s8_OOM);
       if (s8startswith(kv.tail, s8("-"))) failwith(1, s8("Invalid str argument."));
       *s8p = kv.tail;
-      ret.kv = s8vm_assoc(store, ret.kv, kv.head, s8p);
+      ret.kv = kvargs_assoc(store, ret.kv, kv.head, s8p);
       break;
     default:
       if (s8equal(kv.tail, s8("--"))) {
@@ -985,8 +983,8 @@ struct args argparse(arena *store, arena scratch, int argc, char **argv, char *d
     await_val = 0;
   }
   if (++i < argc) {
-    s8a rest = s8amake(store, argc - i);
-    s8 *cur = s8a_array_abs(rest);
+    plainargs rest = plainargsmake(store, argc - i);
+    s8 *cur = plainargs_array_abs(rest);
     if (!rest.len) failwith(1, s8_OOM);
     for (int j = 0; j < argc - i; j++) 
       cur[j] = s8wrap(argv[i + j], 256);
