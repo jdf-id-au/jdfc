@@ -85,7 +85,7 @@ struct rel {
     else                                                                       \
       return 0;                                                                \
   }
-
+/* TODO 2026-05-23 19:16:39 may need to wrangle scratch arenas differently to allow resizing, lookup... */
 #define rel(a, t, n) t##_rel(a, new (a, t, n))
 #define ARRAY(tn, t) /* new type name, el type */                              \
   typedef struct {                                                             \
@@ -209,9 +209,7 @@ node_t *insert(node_t *after, node_t *from, size count) {
 }
 /*
   Define new linked list type tn, element type t. t can be typename *
-  for pointer (i.e. reference list). FIXME 2026-05-02 13:44:10
-  complicated because needs to be relative pointer; TODO 2026-05-02
-  13:44:50 just specify as rel_##t ?
+  for pointer (i.e. reference list).
 
   <tn>append appends node with value `m` to node `maybe`.
   If `maybe` doesn't exist, append starts a new list.
@@ -233,15 +231,21 @@ node_t *insert(node_t *after, node_t *from, size count) {
   };                                                                           \
   tn *tn##_last(tn *node) { return (tn *)last((node_t *)node); }               \
   tn *tn##_append(arena *a, tn *maybe, t m) {                                  \
-    tn *cur = new (a, tn, 1);                                                  \
-    if (!cur)                                                                  \
+    arena before = *a;                                                         \
+    tn *new_one = new (a, tn, 1);                                              \
+    arena after = *a;                                                          \
+    if (!new_one)                                                              \
       return 0;                                                                \
-    cur->val = m;                                                              \
+    tn *cur = maybe;                                                           \
+    new_one->val = m;                                                          \
     if (maybe) {                                                               \
-      maybe = tn##_last(maybe); /* avoid passing early nodes if hot */         \
-      maybe->next = ptrdiff(maybe, cur);                                       \
+      if (after.beg != before.beg)                                             \
+        maybe = tn##_abs(tn##_rel(&before, maybe));                            \
+      cur = tn##_last(maybe); /* avoid passing early nodes if hot */           \
+      cur->next = ptrdiff(cur, new_one);                                       \
+      return maybe;                                                            \
     }                                                                          \
-    return cur;                                                                \
+    return new_one;                                                            \
   }                                                                            \
   NEXT(tn)                                                                     \
   tn *tn##_nth(tn *node, size n) { return (tn *)nth((node_t *)node, n); }      \
@@ -251,6 +255,7 @@ node_t *insert(node_t *after, node_t *from, size count) {
   tn *tn##_insert(tn *after, tn *from, size n) {                               \
     return (tn *)insert((node_t *)after, (node_t *)from, n);                   \
   }
+
 
 /*
   Define new association list type with ...assoc, ...dissoc, ...get.
@@ -291,9 +296,13 @@ node_t *insert(node_t *after, node_t *from, size count) {
         return beg;                                                            \
       }                                                                        \
     }                                                                          \
+    arena before = *a;                                                         \
     cur = new (a, tn, 1);                                                      \
+    arena after = *a;                                                          \
     if (!cur)                                                                  \
       return 0;                                                                \
+    if (after.beg != before.beg)                                               \
+      prev = tn##_abs(tn##_rel(&before, prev));                                \
     prev->next = ptrdiff(prev, cur);                                           \
     cur->key = key;                                                            \
     cur->val = val;                                                            \
@@ -326,6 +335,7 @@ node_t *insert(node_t *after, node_t *from, size count) {
 // Barely worth it vs MAP_LIST with ignored vt. Make sure to use `disj`s returned head!
 #define SET_LIST(tn, kt, keq)                                                  \
   typedef struct tn tn;                                                        \
+  REL(tn)                                                                      \
   struct tn {                                                                  \
     size next;                                                                 \
     kt key;                                                                    \
@@ -346,9 +356,13 @@ node_t *insert(node_t *after, node_t *from, size count) {
     for (; cur; prev = cur, cur = tn##_next(cur))                              \
       if (keq(cur->key, key))                                                  \
         return beg;                                                            \
+    arena before = *a;                                                         \
     cur = new (a, tn, 1);                                                      \
+    arena after = *a;                                                          \
     if (!cur)                                                                  \
       return 0;                                                                \
+    if (after.beg != before.beg)                                               \
+      prev = tn##_abs(tn##_rel(&before, prev));                                \
     prev->next = ptrdiff(prev, cur);                                           \
     cur->key = key;                                                            \
     return beg;                                                                \
@@ -1067,6 +1081,7 @@ b32 resize_arena(arena *a, size cap) {
     a->beg = new_memory;
     a->cur = new_memory + u;
     a->end = new_memory + cap;
+    arenas[a->id] = *a;
     return 1;
   } else {
     // "If there is not enough memory, the old memory block is not freed and null pointer is returned."

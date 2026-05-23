@@ -35,12 +35,12 @@ i32 main(void) {
 
   // TODO etc...
 
-  PREP(arena store = alloc_arena(KiB(2), 0));
-  PREP(arena scratch = alloc_arena(KiB(1), 1));
+  PREP(arena store = alloc_arena(2, 0)); // stress test resize_arena
+  PREP(arena scratch = alloc_arena(2, 1));
 
   HEAD("linked list");
   PREP(i32l *ll = i32l_append(&scratch, 0, 42));
-  PREP(i32l_append(&scratch, ll, 84));
+  PREP(ll = i32l_append(&scratch, ll, 84));
   TEST(ll->val == 42);
   TEST(i32l_next(ll)->val == 84);
   TEST(i32l_nth(ll, 0)->val == 42);
