@@ -38,31 +38,31 @@ i32 main(void) {
   PREP(arena scratch = alloc_arena(KiB(1), 1));
 
   HEAD("linked list");
-  PREP(i32l *ll = i32lappend(&scratch, 0, 42));
-  PREP(i32lappend(&scratch, ll, 84));
+  PREP(i32l *ll = i32l_append(&scratch, 0, 42));
+  PREP(i32l_append(&scratch, ll, 84));
   TEST(ll->val == 42);
-  TEST(i32lnext(ll)->val == 84);
-  TEST(i32lnth(ll, 0)->val == 42);
+  TEST(i32l_next(ll)->val == 84);
+  TEST(i32l_nth(ll, 0)->val == 42);
   TEST(count(ll) == 2);
   
   HEAD("map (assocation) list");
-  PREP(i32s8 *m = i32s8assoc(&scratch, 0, 42, s8("meaning of life")));
-  TEST(s8equal(i32s8get(m, 42)->val, s8("meaning of life")));
-  PREP(i32s8assoc(&scratch, m, 84, s8("moar")));
+  PREP(i32s8 *m = i32s8_assoc(&scratch, 0, 42, s8("meaning of life")));
+  TEST(s8equal(i32s8_get(m, 42)->val, s8("meaning of life")));
+  PREP(i32s8_assoc(&scratch, m, 84, s8("moar")));
   TEST(count(m) == 2);
-  PREP(m = i32s8dissoc(m, 42));
-  TEST(!i32s8get(m, 42));
-  TEST(i32s8get(m, 84));
-  TEST(!i32s8dissoc(m, 84));
+  PREP(m = i32s8_dissoc(m, 42));
+  TEST(!i32s8_get(m, 42));
+  TEST(i32s8_get(m, 84));
+  TEST(!i32s8_dissoc(m, 84));
 
   HEAD("set list");
-  PREP(i32s *is = i32sconj(&scratch, 0, 42));
-  TEST(i32shas(is, 42));
-  TEST(!i32shas(is, 84));
+  PREP(i32s *is = i32s_conj(&scratch, 0, 42));
+  TEST(i32s_has(is, 42));
+  TEST(!i32s_has(is, 84));
 
-  PREP(s8s *ss = s8sconj(&scratch, 0, s8("hello")));
-  TEST(s8sconj(&scratch, ss, s8("there")));
-  TEST(s8shas(ss, s8("hello")));
+  PREP(s8s *ss = s8s_conj(&scratch, 0, s8("hello")));
+  TEST(s8s_conj(&scratch, ss, s8("there")));
+  TEST(s8s_has(ss, s8("hello")));
   
   printf("sizeof(s8s) %ti, scratch usage %ti B \n",
          sizeof(s8s), used(&scratch));
@@ -73,48 +73,48 @@ i32 main(void) {
   PREP(struct args a = argparse(&store, scratch, countof(argv), argv,
                                 "--port=int --workers=int"));
   s8vm *kv = 0;
-  PREP(kv = s8vmget(a.kv, s8("port")));
+  PREP(kv = s8vm_get(a.kv, s8("port")));
   TEST(8080 == *(i32 *)kv->val);
-  PREP(kv = s8vmget(a.kv, s8("workers")));
+  PREP(kv = s8vm_get(a.kv, s8("workers")));
   TEST(2 == *(i32 *)kv->val);
-  TEST(s8equal(s8("other"), *aabs_s8a(a.rest)));
+  TEST(s8equal(s8("other"), *s8a_array_abs(a.rest)));
   
   char *argv2[] = {"pname", "--port=8080", "--workers=2", "other"};
   PREP(struct args a2 = argparse(&store, scratch, countof(argv2), argv2, "--port=int --workers=int"));
-  TEST(s8equal(s8("other"), *aabs_s8a(a2.rest)));
+  TEST(s8equal(s8("other"), *s8a_array_abs(a2.rest)));
   
   char *argv3[] = {"pname", "other"};
   PREP(struct args a3 = argparse(&store, scratch, countof(argv3), argv3, "--port=int --workers=int"));
-  TEST(s8equal(s8("other"), *aabs_s8a(a3.rest)));
+  TEST(s8equal(s8("other"), *s8a_array_abs(a3.rest)));
 
   char *argv4[] = {"pname", "--name", "thing"};
   PREP(struct args a4 = argparse(&store, scratch, countof(argv4), argv4, "--name=str"));
-  PREP(kv = s8vmget(a4.kv, s8("name")));
+  PREP(kv = s8vm_get(a4.kv, s8("name")));
   TEST(s8equal(s8("thing"), *(s8 *)kv->val));
   
   char *argv5[] = {"pname", "--yes"};
   PREP(struct args a5 = argparse(&store, scratch, countof(argv5), argv5, "--yes=bool"));
-  PREP(kv = s8vmget(a5.kv, s8("yes")));
+  PREP(kv = s8vm_get(a5.kv, s8("yes")));
   TEST(*(b32 *)kv->val);
 
   char *argv6[] = {"pname", "-y"};
   PREP(struct args a6 = argparse(&store, scratch, countof(argv6), argv6, "--yes=bool"));
-  PREP(kv = s8vmget(a6.kv, s8("yes")));
+  PREP(kv = s8vm_get(a6.kv, s8("yes")));
   TEST(*(b32 *)kv->val);
 
   char *argv7[] = {"pname", "-nhello"};
   PREP(struct args a7 = argparse(&store, scratch, countof(argv7), argv7, "--name=str"));
-  PREP(kv = s8vmget(a7.kv, s8("name")));
+  PREP(kv = s8vm_get(a7.kv, s8("name")));
   TEST(s8equal(s8("hello"), *(s8 *)kv->val));
 
   char *argv8[] = {"pname", "-n", "hello"};
   PREP(struct args a8 = argparse(&store, scratch, countof(argv8), argv8, "--name=str"));
-  PREP(kv = s8vmget(a8.kv, s8("name")));
+  PREP(kv = s8vm_get(a8.kv, s8("name")));
   TEST(s8equal(s8("hello"), *(s8 *)kv->val));
 
   char *argv9[] = {"pname", "-p8080"};
   PREP(struct args a9 = argparse(&store, scratch, countof(argv9), argv9, "--port=int --workers=int"));
-  PREP(kv = s8vmget(a9.kv, s8("port")));
+  PREP(kv = s8vm_get(a9.kv, s8("port")));
   TEST(8080 == *(i32 *)kv->val);
 
   return REPORT();

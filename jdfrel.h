@@ -96,7 +96,7 @@ struct rel {
     size len;                                                                  \
     b32 absolute;                                                              \
   } tn;                                                                        \
-  tn tn##_array_make(arena *a, size len) {                                     \
+  tn tn##make(arena *a, size len) {                                            \
     t##_rel_t r = rel(a, t, len);                                              \
     if (r.ptr)                                                                 \
       return (tn){.rel = r, .len = len};                                       \
@@ -104,12 +104,13 @@ struct rel {
       return (tn){0};                                                          \
   }                                                                            \
   t##_rel_t tn##_array_rel(tn v, t *p) {                                       \
-    return v.absolute ? (t##_rel_t){0} : t##_rel(&arenas[v.rel.aid], p);       \
+    assert(!v.absolute, "can't get rel for abs");                              \
+    return t##_rel(&arenas[v.rel.aid], p);                                     \
   }                                                                            \
   t *tn##_array_abs(tn v) { return v.absolute ? v.abs : t##_abs(v.rel); }      \
-  t *tn##_endof(tn v) { return tn##_array_abs(v) + v.len; }                    \
+  t *tn##endof(tn v) { return tn##_array_abs(v) + v.len; }                     \
   /* Slice forward using pointers */                                           \
-  tn tn##_span(tn src, t *beg, t *end) {                                       \
+  tn tn##span(tn src, t *beg, t *end) {                                        \
     t *src_beg = tn##_array_abs(src);                                          \
     if (beg >= src_beg && end <= src_beg + src.len && end > beg)               \
       return src.absolute                                                      \
@@ -119,7 +120,7 @@ struct rel {
   }                                                                            \
   /*  Slice forward using clamped offsets, which may be positive or negative   \
       (i.e. from start or end, respectively) */                                \
-  tn tn##_slice(tn src, size from, size to) {                                  \
+  tn tn##slice(tn src, size from, size to) {                                   \
     tn s = src;                                                                \
     size f = (from < 0) ? src.len + from : from;                               \
     size t = (to > 0) ? to : src.len + to;                                     \
@@ -140,20 +141,7 @@ struct rel {
     else                                                                       \
       s.len = 0; /* refuse to slice backwards */                               \
     return s;                                                                  \
-  }                                                                            \
-  const static struct { /* pseudonamespace_ https://godbolt.org/z/xYo189x8r */ \
-    tn (*make)(arena *, size);                                                 \
-    t##_rel_t (*rel)(tn, t *);                                                 \
-    t *(*abs)(tn);                                                             \
-    t *(*endof)(tn);                                                           \
-    tn (*span)(tn, t *, t *);                                                  \
-    tn (*slice)(tn, size, size);                                               \
-  } tn##_ = {.make = tn##_array_make,                                          \
-             .rel = tn##_array_rel,                                            \
-             .abs = tn##_array_abs,                                            \
-             .endof = tn##_endof,                                              \
-             .span = tn##_span,                                                \
-             .slice = tn##_slice};
+  }
 
 /*
   To enable assertions in release builds,
@@ -262,20 +250,7 @@ node_t *insert(node_t *after, node_t *from, size count) {
   }                                                                            \
   tn *tn##_insert(tn *after, tn *from, size n) {                               \
     return (tn *)insert((node_t *)after, (node_t *)from, n);                   \
-  }                                                                            \
-  const static struct {                                                        \
-    tn *(*last)(tn *);                                                         \
-    tn *(*append)(arena *, tn *, t);                                           \
-    tn *(*next)(tn *);                                                         \
-    tn *(*nth)(tn *, size);                                                    \
-    tn *(*extend)(tn *, tn *);                                                 \
-    tn *(*insert)(tn *, tn *, size);                                           \
-  } tn##_ = {.last = tn##_last,                                                \
-             .append = tn##_append,                                            \
-             .next = tn##_next,                                                \
-             .nth = tn##_nth,                                                  \
-             .extend = tn##_extend,                                            \
-             .insert = tn##_insert};
+  }
 
 /*
   Define new association list type with ...assoc, ...dissoc, ...get.
@@ -346,16 +321,7 @@ node_t *insert(node_t *after, node_t *from, size count) {
         return cur;                                                            \
     } while ((cur = tn##_next(cur)));                                          \
     return 0;                                                                  \
-  }                                                                            \
-  const static struct {                                                        \
-    tn *(*next)(tn *);                                                         \
-    tn *(*assoc)(arena *, tn *, kt, vt);                                       \
-    tn *(*dissoc)(tn *, kt);                                                   \
-    tn *(*get)(tn *, kt);                                                      \
-  } tn##_ = {.next = tn##_next,                                                \
-             .assoc = tn##_assoc,                                              \
-             .dissoc = tn##_dissoc,                                            \
-             .get = tn##_get};
+  }
 
 // Barely worth it vs MAP_LIST with ignored vt. Make sure to use `disj`s returned head!
 #define SET_LIST(tn, kt, keq)                                                  \
@@ -411,16 +377,7 @@ node_t *insert(node_t *after, node_t *from, size count) {
         return cur;                                                            \
     } while ((cur = tn##_next(cur)));                                          \
     return 0;                                                                  \
-  }                                                                            \
-  const static struct {                                                        \
-    tn *(*next)(tn *);                                                         \
-    tn *(*conj)(arena *, tn *, kt);                                            \
-    tn *(*disj)(tn *, kt);                                                     \
-    tn *(*has)(tn *, kt);                                                      \
-  } tn##_ = {.next = tn##_next,                                                \
-             .conj = tn##_conj,                                                \
-             .disj = tn##_disj,                                                \
-             .has = tn##_has};
+  }
 
 // ─────────────────────────────────────────────────────────────────────── Arena
 
@@ -499,14 +456,14 @@ SET_LIST(s8s, s8, s8equal)
 
 b32 s8equal(s8 a, s8 b) {
   if (a.len != b.len) return 0;
-  u8 *acur = s8_.abs(a), *bcur = s8_.abs(b);
+  u8 *acur = s8_array_abs(a), *bcur = s8_array_abs(b);
   for (size i = 0; i < a.len ; i++) if (acur[i] != bcur[i]) return 0;
   return 1;
 }
 
 size s8cmp(s8 a, s8 b) {
   size len = (a.len < b.len) ? a.len : b.len;
-  u8 *acur = s8_.abs(a), *bcur = s8_.abs(b);
+  u8 *acur = s8_array_abs(a), *bcur = s8_array_abs(b);
   for (size i = 0; i < len; i++) {
     size d = acur[i] - bcur[i];
     if (d) return d;
@@ -517,7 +474,7 @@ size s8cmp(s8 a, s8 b) {
 // Why `size`? TODO visualise hashification of input
 size s8hash(s8 s) {
   u64 h = 0x100;
-  u8 *scur = s8_.abs(s);
+  u8 *scur = s8_array_abs(s);
   for (size i = 0; i < s.len; i++) {
     h ^= scur[i];
     h *= 1111111111111111111u; // nineteen ones
@@ -527,7 +484,7 @@ size s8hash(s8 s) {
 
 // Find string
 u8 *s8find(s8 haystack, s8 needle) {
-  u8 *hcur = s8_.abs(haystack), *ncur = s8_.abs(needle);
+  u8 *hcur = s8_array_abs(haystack), *ncur = s8_array_abs(needle);
   if (!hcur || !ncur) return 0;
   u8 *found = 0;
   u8 *he = hcur + haystack.len;
@@ -552,7 +509,7 @@ u8 *s8find(s8 haystack, s8 needle) {
 
 // Find char
 u8 *s8findu8(s8 haystack, u8 needle) {
-  u8 *hcur = s8_.abs(haystack);
+  u8 *hcur = s8_array_abs(haystack);
   if (!hcur) return 0; // allow \0 needle
   u8 *end = hcur + haystack.len;
   for (u8 *h = hcur; h < end; h++)
@@ -562,11 +519,11 @@ u8 *s8findu8(s8 haystack, u8 needle) {
 }
 
 b32 s8startswith(s8 s, s8 with) {
-  return s8equal(s8_.slice(s, 0, with.len), with);
+  return s8equal(s8slice(s, 0, with.len), with);
 }
 
 b32 s8endswith(s8 s, s8 with) {
-  return s8equal(s8_.slice(s, -with.len, 0), with);
+  return s8equal(s8slice(s, -with.len, 0), with);
 }
 
 // Wrap decayed C string
@@ -584,7 +541,7 @@ s8 s8wrap(const char *cstr, size maxlen) {
 char *s8unwrap(arena *a, s8 s) {
   u8 *buf = new (a, u8, s.len + 1); // is zeroed
   if (!buf) return 0;
-  copy(buf, s8_.abs(s), s.len);
+  copy(buf, s8_array_abs(s), s.len);
   return (char *)buf;
 }
 
@@ -604,17 +561,17 @@ b32 whitespace(u8 c) { // too cool for ctype.h isspace
 }
 
 s8 s8trim(s8 src) {
-  u8 *scur = s8_.abs(src);
+  u8 *scur = s8_array_abs(src);
   u8 *beg = scur;
   u8 *end = scur + src.len;
   while (end > beg && whitespace(*(end - 1))) end--;
   while (beg < end && whitespace(*beg)) beg++;
-  return s8_.span(src, beg, end);
+  return s8span(src, beg, end);
 }
 
 /* Is s only whitespace? */
 b32 s8blank(s8 s) {
-  u8 *scur = s8_.abs(s);
+  u8 *scur = s8_array_abs(s);
   for (size i = 0; i < s.len; i++)
     if (!whitespace(scur[i]))
       return 0;
@@ -623,9 +580,9 @@ b32 s8blank(s8 s) {
 
 // Copies buffer, optionally null-terminated for easier interop.
 s8 s8clone(arena *a, s8 s, b32 null_terminate) {
-  s8 c = s8_.make(a, null_terminate ? s.len + 1 : s.len);
+  s8 c = s8make(a, null_terminate ? s.len + 1 : s.len);
   if (!c.len) return c;
-  copy(s8_.abs(c), s8_.abs(s), s.len);
+  copy(s8_array_abs(c), s8_array_abs(s), s.len);
   return c;
 }
 
@@ -639,8 +596,8 @@ s8pair s8cut(s8 s, s8 on) {
   u8 *found = s8find(s, on);
   if (!found) return (s8pair){0};
   return (s8pair) {
-    .head = s8_.span(s, s8_.abs(s), found),
-    .tail = s8_.span(s, found + on.len, s8_.endof(s)),
+    .head = s8span(s, s8_array_abs(s), found),
+    .tail = s8span(s, found + on.len, s8endof(s)),
     .ok = 1
   };
 }
@@ -649,8 +606,8 @@ s8pair s8cutu8(s8 s, u8 on) {
   u8 *found = s8findu8(s, on);
   if (!found) return (s8pair){0};
   return (s8pair) {
-    .head = s8_.span(s, s8_.abs(s), found),
-    .tail = s8_.span(s, found + 1, s8_.endof(s)),
+    .head = s8span(s, s8_array_abs(s), found),
+    .tail = s8span(s, found + 1, s8endof(s)),
     .ok = 1
   };
 }
@@ -659,39 +616,39 @@ s8pair s8cutu8(s8 s, u8 on) {
 s8 s8concat(arena *a, s8 *ss, size len) {
   size tot = 0;
   for (size i = 0; i < len; i++) tot += ss[i].len;
-  s8 ret = s8_.make(a, tot);
+  s8 ret = s8make(a, tot);
   if (!ret.len) return ret;
-  u8 *cur = s8_.abs(ret);
+  u8 *cur = s8_array_abs(ret);
   for (size i = 0; i < len; i++) {
-    copy(cur, s8_.abs(ss[i]), ss[i].len);
+    copy(cur, s8_array_abs(ss[i]), ss[i].len);
     cur += ss[i].len;
   }
   return ret;
 }
 
-size s8llen(s8l *sl) {
+size s8l_len(s8l *sl) {
   size len = 0;
   s8l *node = sl;
-  do { len += node->val.len; } while ((node = s8l_.next(node)));
+  do { len += node->val.len; } while ((node = s8l_next(node)));
   return len;
 }
      
-s8 s8lconcat(arena *store, s8l *sl) {
-  s8 ret = s8_.make(store, s8llen(sl));
+s8 s8l_concat(arena *store, s8l *sl) {
+  s8 ret = s8make(store, s8l_len(sl));
   if (!ret.len) return ret;
-  u8 *cur = s8_.abs(ret);
+  u8 *cur = s8_array_abs(ret);
   s8l *node = sl;
   do {
-    copy(cur, s8_.abs(sl->val), sl->val.len);
+    copy(cur, s8_array_abs(sl->val), sl->val.len);
     cur += sl->val.len;
-  } while ((node = s8l_.next(node)));
+  } while ((node = s8l_next(node)));
   return ret;
 }
 
 s8 u8fill(arena *buf, u8 with, size count) {
-  s8 ret = s8_.make(buf, count);
+  s8 ret = s8make(buf, count);
   if (!ret.len) return ret;
-  u8 *cur = s8_.abs(ret);
+  u8 *cur = s8_array_abs(ret);
   for (size i = 0; i < count; i++) cur[i] = with;
   return ret;
 }
@@ -804,7 +761,7 @@ qout make_qout(arena *a, i32 len) {
 size read_qout(qout *qo, s8 buf) {
   i32 qi = 0;
   size bi = 0;
-  u8 *abuf = s8_.abs(buf), *qbuf = s8_.abs(qo->buf);
+  u8 *abuf = s8_array_abs(buf), *qbuf = s8_array_abs(qo->buf);
   while ((qi = queue_pop(&qo->q, qo->buf.len))) { // where .len is queue capacity
     if (qi < 0) break; // empty
     abuf[bi++] = qbuf[qi];
@@ -815,7 +772,7 @@ size read_qout(qout *qo, s8 buf) {
 size write_qout(qout *qo, u8 *buf, size maxlen) {
   i32 qi = 0;
   i32 bi = 0;
-  u8 *qbuf = s8_.abs(qo->buf);
+  u8 *qbuf = s8_array_abs(qo->buf);
   while (1) {
     qi = queue_push(&qo->q, qo->buf.len); // where .len is queue capacity
     if (qi < 0 || bi >= maxlen) break;
@@ -851,8 +808,8 @@ typedef size (*Writer)(void *out, s8 s);
 size s8write(void *out, s8 s) {
   bufout *b = (bufout *)out;
   if (!b->buf || !s.len) return 0;
-  u8 *buf = s8_.abs(s);
-  u8 *end = s8_.endof(s);
+  u8 *buf = s8_array_abs(s);
+  u8 *end = s8endof(s);
   size total_copied = 0;
   while (!b->err && (buf < end)) {
     i32 avail = b->cap - b->len; // TODO learn about size -> i32
@@ -896,7 +853,7 @@ void flush(bufout *b) {
     }
 }
 
-void s8writefd(i32 fd, s8 s) {oswrite(fd, s8_.abs(s), s.len);}
+void s8writefd(i32 fd, s8 s) {oswrite(fd, s8_array_abs(s), s.len);}
 
 // Unbuffered
 void s8log(i32 fd, s8 s) {
@@ -950,7 +907,7 @@ struct args argparse(arena *store, arena scratch, int argc, char **argv, char *d
     else if (s8equal(s8("str"), kv.tail)) t = STR_ARG;
     else if (s8equal(s8("bool"), kv.tail)) t = BOOL_ARG;
     else failwith(1, s8("Invalid arg type def."));
-    types = s8arg_typem_.assoc(&scratch, types, kv.head, t);
+    types = s8arg_typem_assoc(&scratch, types, kv.head, t);
   }
   struct args ret = {0};
   b32 await_val = 0;
@@ -972,12 +929,12 @@ struct args argparse(arena *store, arena scratch, int argc, char **argv, char *d
           if (s8startswith(cur->key, kv.head)) {
             kv.head = cur->key;
             break;
-          } else cur = s8arg_typemnext(cur);
+          } else cur = s8arg_typem_next(cur);
       } else { // allow absence of kwargs
         i--;
         break;
       }
-      s8arg_typem *kt = s8arg_typemget(types, kv.head);
+      s8arg_typem *kt = s8arg_typem_get(types, kv.head);
       if (kt) t = kt->val; else t = STR_ARG; // default
       if (!kv.tail.len) {
         if (!(i + 1 == argc && t == BOOL_ARG)) {
@@ -998,7 +955,7 @@ struct args argparse(arena *store, arena scratch, int argc, char **argv, char *d
       char *end = 0;
       *i32p = strtol((char *)kv.tail.abs, &end, 10);
       if (!end) failwith(1, s8("Invalid int argument."));
-      ret.kv = s8vmassoc(store, ret.kv, kv.head, i32p);
+      ret.kv = s8vm_assoc(store, ret.kv, kv.head, i32p);
       break;
     case BOOL_ARG:
       b32p = new (store, b32, 1); // initialised to 0 i.e. false
@@ -1009,14 +966,14 @@ struct args argparse(arena *store, arena scratch, int argc, char **argv, char *d
       else if (s8startswith(kv.tail, s8("-"))) i-- ; // no value, would be next arg relook at this arg next loop
       else
         failwith(1, s8("Invalid bool argument."));
-      ret.kv = s8vmassoc(store, ret.kv, kv.head, b32p);
+      ret.kv = s8vm_assoc(store, ret.kv, kv.head, b32p);
       break;
     case STR_ARG:
       s8p = new (&scratch, s8, 1);
       if (!s8p) failwith(1, s8_OOM);
       if (s8startswith(kv.tail, s8("-"))) failwith(1, s8("Invalid str argument."));
       *s8p = kv.tail;
-      ret.kv = s8vmassoc(store, ret.kv, kv.head, s8p);
+      ret.kv = s8vm_assoc(store, ret.kv, kv.head, s8p);
       break;
     default:
       if (s8equal(kv.tail, s8("--"))) {
@@ -1028,8 +985,8 @@ struct args argparse(arena *store, arena scratch, int argc, char **argv, char *d
     await_val = 0;
   }
   if (++i < argc) {
-    s8a rest = make_s8a(store, argc - i);
-    s8 *cur = s8_.absa(rest);
+    s8a rest = s8amake(store, argc - i);
+    s8 *cur = s8a_array_abs(rest);
     if (!rest.len) failwith(1, s8_OOM);
     for (int j = 0; j < argc - i; j++) 
       cur[j] = s8wrap(argv[i + j], 256);
