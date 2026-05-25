@@ -883,11 +883,26 @@ ARRAY(plainargs, s8)
 MAP_LIST(kvargs, s8, void *, s8equal)
 enum argtype {UNK_ARG, INT_ARG, STR_ARG, BOOL_ARG};
 MAP_LIST(argtypes, s8, enum argtype, s8equal)
-
+  
 struct args {
   kvargs *kv;
   plainargs rest;
 };
+
+s8 *str_arg(struct args a, char *k) {
+  kvargs *kv = kvargs_get(a.kv, s8wrap(k, 64));
+  return kv ? (s8 *)kv->val : 0;
+}
+
+b32 *bool_arg(struct args a, char *k) {
+  kvargs *kv = kvargs_get(a.kv, s8wrap(k, 64));
+  return kv ? (b32 *)kv->val : 0;
+}
+
+i32 *int_arg(struct args a, char *k) {
+  kvargs *kv = kvargs_get(a.kv, s8wrap(k, 64));
+  return kv ? (i32 *)kv->val : 0; 
+}
 
 // Defs e.g. "--port=int --workers=int" must be in --long-arg=type form.
 // Initials are promoted to short arg name (first wins).
