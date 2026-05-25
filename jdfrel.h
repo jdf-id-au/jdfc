@@ -44,8 +44,8 @@ typedef size_t    usize;
  */
 
 /*
-  Pass "store" arena by reference, and "scratch" by value.
-  This effectively resets the scratch *cur pointer on fn return.
+  In contrast to non-rel implemntation, need to pass "scratch" by
+  reference to accommodate dynamic resize.
 */
 typedef struct arena arena;
 struct arena {
@@ -73,10 +73,7 @@ struct rel {
     return (t##_rel_t){.arena = a, .ptr = b - a->beg + 1};                     \
   }                                                                            \
   t *t##_abs(t##_rel_t r) {                                                    \
-    if (r.ptr)                                                                 \
-      return (t *)(r.arena->beg + r.ptr - 1);                                  \
-    else                                                                       \
-      return 0;                                                                \
+    return r.ptr ? (t *)(r.arena->beg + r.ptr - 1) : 0;                        \
   }
 
 #define rel(a, t, n) t##_rel(a, new (a, t, n))
@@ -91,10 +88,7 @@ struct rel {
   } tn;                                                                        \
   tn make_##tn(arena *a, size len) {                                           \
     t##_rel_t r = rel(a, t, len);                                              \
-    if (r.ptr)                                                                 \
-      return (tn){.rel = r, .len = len};                                       \
-    else                                                                       \
-      return (tn){0};                                                          \
+    return r.ptr ? (tn){.rel = r, .len = len} : (tn){0};                       \
   }                                                                            \
   t##_rel_t tn##_array_rel(tn v, t *p) {                                       \
     assert(!v.absolute, "can't get rel for abs");                              \
@@ -898,12 +892,12 @@ struct args {
 // Defs e.g. "--port=int --workers=int" must be in --long-arg=type form.
 // Initials are promoted to short arg name (first wins).
 // They will allow any combination of styles:
-// "-p8080 -w3" // TODO
-// "-p 8080 -w 3" // TODO
+// "-p8080 -w3"
+// "-p 8080 -w 3"
 // "--port=8080" "--workers=3"
 // "--port 8080" "--workers 3"
 // and puts trailing args (or args after first "--") in .rest
-struct args argparse(arena *store, arena *scratch, int argc, char **argv, char *defs) {
+struct args argparse(arena *store, arena *scratch, char *defs, int argc, char **argv) {
   argtypes *types = 0;
   s8pair def = {.tail = s8clone(scratch, s8wrap(defs, 1024), 0)};
   s8pair kv = {0};
