@@ -32,9 +32,9 @@ REL(Server)
 
 typedef struct client Client;
 REL(Client)
-typedef arena *Client_handle; // see NB in accept_client
-REL(Client_handle)
-ARRAY(Clients, Client_handle)
+
+REL(arena)
+ARRAY(arenas, arena)
 
 typedef struct { // impl after jdf.h bufout
   u8_rel_t buf;
@@ -61,8 +61,8 @@ enum mode {
 
 typedef struct client {
   Server *server;
-  arena store;
-  arena scratch;
+  arena_rel_t store; // points into Server.client_stores
+  arena_rel_t scratch;
   size store_reset; // after initialisation, before work; only slightly breaks arena concept
   struct sockaddr_in address;
   char ip[INET_ADDRSTRLEN];
@@ -182,7 +182,7 @@ typedef struct { // allocated in Server arena
   queue q;
 } Work; // Concurrent queue (single consumer because mutex)
 
-typedef struct server {
+typedef struct server { // must not move
   Config config;
   i32 socket;
   struct sockaddr_in address;
@@ -197,7 +197,8 @@ typedef struct server {
   // https://randu.org/tutorials/threads/
   pthread_cond_t work_waiting;
   pthread_mutex_t work_waiting_lock; // just required for cond
-  Clients clients;
+  arenas client_stores;
+  arenas client_scratches;
   size nclients; // should always match `clients` occpancy
 } Server;
 
@@ -348,13 +349,7 @@ Product make_product(arena *client_arena, i32 len, size chunk_size) {
   i32 cap = queue_capacity(len);
   if (!cap)
     return nil;
-  Chunks chunks = make_Chunks(client_arena, len); // FIXME 2026-05-26 23:04:39
-                                       // fails first go with UAF
-                                       // because of resize (on same
-                                       // thread wtf); maybe something
-                                       // to do with Client being
-                                       // stored in its own arena?
-  // Chunks chunks = make_Chunks(a->parent, len); // interestingly this doesn't fix it
+  Chunks chunks = make_Chunks(client_arena, len);
   if (!chunks.len) return nil;
   u8 *buf = new (client_arena, u8, len * chunk_size);
   if (!buf)
@@ -542,59 +537,94 @@ void serialise_response(Workshop *shop, Response res) {
     else finishc(out, READ);
     printf("📣 %i\n", res.status);
   }
-  client->store.cur = client->store.beg + client->store_reset;
+  *arena_abs(client->store)->cur = *arena_abs(client->store)->beg + client->store_reset;
   reset_scratch(scratch);
 }
 
-// TODO 2025-10-01 07:36:32 could work up into general SET_ARRAY macro
-b32 add_client(Server *server, Client_handle client) {
+Client *client_from_arena(arena *a) {
+  return a ? (Client *)a->beg : 0; // Client must be fist alloc!
+}
+
+// NB 2026-05-27 08:40:41 shouldn't race because on main thread?
+b32 add_client(Server *server, arena client_store, arena client_scratch) {
   server->nclients++;
-  Client_handle *available = 0; // first zero value (caused by remove_client)
-  for (size i = 0; i < server->clients.len; i++) {
-    Client_handle cur = Clients_array_abs(server->clients)[i];
-    if (cur == client) return 0; // already there
-    else if (!cur && !available) available = &cur; // but keep scanning
+  arenas *to = &server->client_stores;
+  arena *client_store_in_server = 0;
+  Client *client = 0;
+  u32 success = 0;
+  for (size i = 0; i < to->len; i++) {
+    arena *cur = &arenas_array_abs(*to)[i];
+    if (!cur->beg) { // available slot
+      *cur = client_store;
+      client_store_in_server = cur;
+      client = client_from_arena(client_store_in_server); // Client must be first alloc
+      if (!client) break;
+      client->store = arena_rel(&server->store, client_store_in_server);
+      success = 1;
+      break;
+    }
   }
-  if (available) {
-    *available = client;
-    return 1;
+  if (!success) goto add_fail;
+  success = 0;
+  to = &server->client_scratches;
+  for (size i = 0; i < to->len; i++) {
+    arena *cur = &arenas_array_abs(*to)[i];
+    if (!cur->beg) {
+      *cur = client_scratch;
+      client->scratch = arena_rel(&server->store, cur);
+      success = 1;
+      break;
+    }
   }
-  fprintf(stderr, "Unable to track client!\n");
+  if (!success) goto add_fail;
+  return 1;
+add_fail:
+  fprintf(stderr, "Unable to add client!\n");
   return 0;
 }
 
-b32 remove_client(Server *server, Client_handle client) {
+// FIXME 2026-05-27 08:43:13 this could race? safe because only removing?
+b32 remove_client(Server *server, Client *client) {
   server->nclients--;
+  b32 success = 0;
   // Always scans whole array.
-  for (size i = 0; i < server->clients.len; i++) {
-    Client_handle cur = Clients_array_abs(server->clients)[i];
-    if (cur != client) continue;
-    cur = 0;
-    return 1;
+  arenas *from = &server->client_scratches;
+  for (size i = 0; i < from->len; i++) {
+    arena *cur = &arenas_array_abs(*from)[i];
+    if (cur != arena_abs(client->scratch)) continue;
+    success = free_arena(cur);
+    break;
   }
+  if (!success) goto remove_fail;
+  success = 0;
+  from = &server->client_stores;
+  for (size i = 0; i < from->len; i++) {
+    arena *cur = &arenas_array_abs(*from)[i];
+    if (cur != arena_abs(client->store)) continue;
+    success = free_arena(cur);
+    break;
+  }
+  if (!success) goto remove_fail;
+  return 1;
+remove_fail:
+  fprintf(stderr, "Unable to remove client!\n");
   return 0;
-}
-
-i32 count_clients(Server *server) {
-  i32 n = 0;
-  for (size i = 0; i < server->clients.len; i++) if (Clients_array_abs(server->clients)[i]) n++;
-  return n;
 }
 
 void client_cleanup_basics(arena *store, arena *scratch, i32 fd) {
   close(fd);
-  free_arena(scratch); // needs to be freed first because *client itself is within client->store span
-  free_arena(store);
+  if (scratch) free_arena(scratch); // needs to be freed first because *client itself is within client->store span
+  if (store) free_arena(store);
 }
 
 void cleanup_client(EV_P_ ev_io *w) {
   Client *client = (Client *)w->data;
   Server *server = client->server;
-  remove_client(server, &client->store);
+  remove_client(server, client);
   // https://metacpan.org/dist/EV/view/libev/ev.pod#ev_TYPE_stop-(loop,-ev_TYPE-*watcher)
   ev_io_stop(EV_A_ &client->read_io);
   ev_io_stop(EV_A_ &client->write_io);
-  client_cleanup_basics(&client->store, &client->scratch, w->fd);
+  client_cleanup_basics(0, 0, w->fd);
 }
 
 // returns previous state; not enjoyable to implement
@@ -668,7 +698,7 @@ void unavailable(i32 sock, char *msg) {
  */
 void write_client(EV_P_ ev_io *w, i32 events) {
   Client *client = (Client *)w->data;
-  arena *scratch = &client->scratch; 
+  arena *scratch = arena_abs(client->scratch);  
   Product *p = &client->deliver;
 
   i32 idx = queue_pop(&p->q, p->chunks.len); // ╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴ Queue access
@@ -748,8 +778,8 @@ void read_client(EV_P_ ev_io *w, i32 events) {
   Client *client = (Client *)w->data;
   // using scratch arena as a buffer here, instead of local array
   // printf("client scratch usage should be 0: %ti\n", used(&client->scratch));
-  ssize_t bytes_read = read(w->fd, client->scratch.beg, available(&client->scratch));
-  client->scratch.cur = client->scratch.beg + bytes_read;
+  ssize_t bytes_read = read(w->fd, arena_abs(client->scratch)->beg, available(arena_abs(client->scratch)));
+  *arena_abs(client->scratch)->cur = *arena_abs(client->scratch)->beg + bytes_read;
   if (bytes_read == 0) { // client closed connection
     // printf("Zero bytes read from %s:%d, cleaning up\n", client->ip, client->port);
     cleanup_client(EV_A_ w);
@@ -763,19 +793,21 @@ void read_client(EV_P_ ev_io *w, i32 events) {
   } else {
     // TODO handle large read, e.g. stream to arena until finished or excessive,
     // then handle? For now, store (copy) request in client store arena.
-    s8 src = (s8){.abs = (u8 *)client->scratch.beg, .len = client->scratch.cur - client->scratch.beg, .absolute = 1};
-    s8 raw = s8clone(&client->store, src, 0);
+    s8 src = (s8){.abs = (u8 *)arena_abs(client->scratch)->beg,
+                  .len = used(arena_abs(client->scratch)),
+                  .absolute = 1};
+    s8 raw = s8clone(arena_abs(client->store), src, 0);
     if (!raw.len) {
       unavailable(w->fd, "store raw request");
       cleanup_client(EV_A_ w);
       return;
     }
     // s8arenaprintf(&client->scratch, "🔔 %s\n");
-    client->scratch.cur = client->scratch.beg; // Reset!
-    Request req = parse_request(&client->store, &client->scratch, raw);
-    char *uri = s8unwrap(&client->scratch, req.uri);
+    *arena_abs(client->scratch)->cur = *arena_abs(client->scratch)->beg; // Reset!
+    Request req = parse_request(arena_abs(client->store), arena_abs(client->scratch), raw);
+    char *uri = s8unwrap(arena_abs(client->scratch), req.uri);
     if (uri) printf("🔔 %s from %s:%d\n", uri, client->ip, client->port);
-    req.client = Client_rel(&client->store, client);
+    req.client = Client_rel(arena_abs(client->store), client);
     if (!enqueue_request(req)) {
       unavailable(w->fd, "enqueue job"); // effectively backpressure
       cleanup_client(EV_A_ w);
@@ -816,7 +848,7 @@ void accept_client(EV_P_ ev_io *w, i32 events) {
     arena client_store = alloc_arena(server->config.client_mem, &server->store);
     arena client_scratch = alloc_arena(server->config.client_mem, &server->scratch); // NB 2026-05-26 13:53:55 parent concept less helpful for scratch
     // https://metacpan.org/dist/EV/view/libev/ev.pod#ASSOCIATING-CUSTOM-DATA-WITH-A-WATCHER
-    // NB 2026-05-26 21:04:34 stored in its own arena; must be first alloc! to allow server tracking
+    // NB 2026-05-26 21:04:34 must be first alloc! to allow server tracking
     Client *client = new (&client_store, Client, 1);
     if (!client) {
       unavailable(new_socket, "allocate client");
@@ -824,8 +856,6 @@ void accept_client(EV_P_ ev_io *w, i32 events) {
       return;
     }
     client->server = server;
-    client->store = client_store; // for passing by reference; NB storing its own containing arena!
-    client->scratch = client_scratch; // for passing by value
     client->address = server->address; // because struct apparently reused
     copy((u8 *)client->ip, (u8 *)client_ip, sizeof client_ip); // conveniences
     client->port = client_port;
@@ -847,15 +877,15 @@ void accept_client(EV_P_ ev_io *w, i32 events) {
 
     // ╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴ delivery queue
     // TODO 2025-09-30 09:04:44 make len configurable
-    Product deliver = make_product(&client->store, 32, server->config.chunk_size);
+    Product deliver = make_product(&client_store, 32, server->config.chunk_size);
     if (deliver.chunks.len) client->deliver = deliver;
     else {
       unavailable(new_socket, "allocate out queue");
-      client_cleanup_basics(&client->store, &client->scratch, new_socket);
+      client_cleanup_basics(&client_store, &client_scratch, new_socket);
       return;
     }
-    client->store_reset = used(&client->store);
-    add_client(server, &client->store);
+    client->store_reset = used(&client_store);
+    add_client(server, client_store, client_scratch);
   }
 }
 
@@ -991,13 +1021,20 @@ void launch(Server *server) {
   server->work_waiting = (pthread_cond_t)PTHREAD_COND_INITIALIZER;
   pthread_mutex_init(&server->work_waiting_lock, 0);
   // ╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴ Client tracking
-  Clients track = make_Clients(&server->store, server->config.clients); 
-  if (!track.len) {
-    fprintf(stderr, "💣 Failed to allocate client tracking array for %d clients\n",
+  arenas stores = make_arenas(&server->store, server->config.clients); 
+  if (!stores.len) {
+    fprintf(stderr, "💣 Failed to allocate client store tracking array for %d clients\n",
             server->config.clients);
     exit(1);
   }
-  server->clients = track;
+  server->client_stores = stores;
+  arenas scratches = make_arenas(&server->store, server->config.clients);
+  if (!scratches.len) {
+    fprintf(stderr, "💣 Failed to allocate client scratch tracking array for %d clients\n",
+            server->config.clients);
+    exit(1);
+  }
+  server->client_scratches = scratches;
   // ──────────────────────────────────────────────────────────────────── Launch
   ipstr(server_, server->address);
   copy((u8 *)server->ip, (u8 *)server_ip, sizeof server_ip); // convenience

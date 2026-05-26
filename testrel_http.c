@@ -41,7 +41,7 @@ Response handler(arena *store, arena *scratch, Request req) {
       "<body>Using %ti/%ti B for server, %ti/%ti B for this client %s:%d"
       "<h1>Workshops</h1>",
       used(&client->server->store), capacity(&client->server->store),
-      used(&client->store), capacity(&client->store), client->ip, client->port);
+      used(arena_abs(client->store)), capacity(arena_abs(client->store)), client->ip, client->port);
   
   assert(body.len, "failed to construct body");
   res.body = s8l_rel(store, s8l_append(store, s8l_abs(res.body), body));
@@ -76,19 +76,17 @@ Response sse_handler(arena *store, arena *scratch, Request req) {
 Response send_handler(arena *store, arena *scratch, Request req) {
   Client *client = Client_abs(req.client);
   Server *server = client->server;
-  for (size i = 0; i < server->clients.len; i++) {
-    Client_handle c = Clients_array_abs(server->clients)[i];
-    if (!c) continue;
-    // printf("%td %s %s:%d\n", i, c->mode==SERVER_SENT_EVENTS ? "📡" : "📣",
-    // dst_ip, dst_port);
-    Client *cur = ((Client *)(((arena *)c)->beg));
+  for (size i = 0; i < server->client_stores.len; i++) {
+    arena *a = &arenas_array_abs(server->client_stores)[i];
+    if (!a) continue;
+    Client *cur = client_from_arena(a);
     if (cur->mode == SERVER_SENT_EVENTS) {
-      s8 msg = s8sprintf(c, // recipient's arena!
+      s8 msg = s8sprintf(a, // recipient's arena!
                           "event: message\ndata: hello from %s:%d to %s:%d\n\n",
                           client->ip, client->port, cur->ip, cur->port);
       if (!msg.len) return (Response){.status = SERVICE_UNAVAILABLE};
       b32 stat = enqueue_request((Request){
-          .client = Client_rel(c, cur),
+          .client = Client_rel(a, cur),
           .is_update = 1, // destination
           .update = msg,
           .from = req.client});
