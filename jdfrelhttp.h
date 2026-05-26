@@ -343,21 +343,26 @@ Request parse_request(arena *store, arena *scratch, s8 raw) {
 }
 
 // Run on main thread (by Client in client arena)
-Product make_product(arena *a, i32 len, size chunk_size) {
+Product make_product(arena *client_arena, i32 len, size chunk_size) {
   Product nil = (Product){0};
   i32 cap = queue_capacity(len);
   if (!cap)
     return nil;
-  Chunks chunks = make_Chunks(a, len); // FIXME 2026-05-26 23:04:39 fails first go with UAF because of resize (on same thread wtf)
+  Chunks chunks = make_Chunks(client_arena, len); // FIXME 2026-05-26 23:04:39
+                                       // fails first go with UAF
+                                       // because of resize (on same
+                                       // thread wtf); maybe something
+                                       // to do with Client being
+                                       // stored in its own arena?
   // Chunks chunks = make_Chunks(a->parent, len); // interestingly this doesn't fix it
   if (!chunks.len) return nil;
-  u8 *buf = new (a, u8, len * chunk_size);
+  u8 *buf = new (client_arena, u8, len * chunk_size);
   if (!buf)
     return nil;
   Chunk *cb = Chunks_array_abs(chunks);
   for (size i = 0; i < len; i++) {
     cb[i] = (Chunk) {
-      .buf = u8_rel(a, &buf[i * chunk_size]),
+      .buf = u8_rel(client_arena, &buf[i * chunk_size]),
       .cap = chunk_size
     };
   }
@@ -819,7 +824,7 @@ void accept_client(EV_P_ ev_io *w, i32 events) {
       return;
     }
     client->server = server;
-    client->store = client_store; // for passing by reference
+    client->store = client_store; // for passing by reference; NB storing its own containing arena!
     client->scratch = client_scratch; // for passing by value
     client->address = server->address; // because struct apparently reused
     copy((u8 *)client->ip, (u8 *)client_ip, sizeof client_ip); // conveniences
