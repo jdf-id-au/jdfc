@@ -60,7 +60,7 @@ typedef struct client {
   Server_rel_t server;
   arena store;
   arena scratch;
-  struct rel store_reset; // after initialisation, before work; only slightly breaks arena concept
+  u8_rel_t store_reset; // after initialisation, before work; only slightly breaks arena concept
   struct sockaddr_in address;
   char ip[INET_ADDRSTRLEN];
   i32 port;
@@ -167,7 +167,7 @@ typedef struct {
   Server_rel_t server;
   arena store;
   arena scratch;
-  struct rel store_reset; // after initialisation, before work; only slightly breaks arena concept
+  u8_rel_t store_reset; // after initialisation, before work; only slightly breaks arena concept
   pthread_t thread;
   ev_io write_io;
   Chunk pending; // under construction, before copy to Product->chunks
@@ -372,8 +372,11 @@ size arena_printf(arena *a, const char *format) {
 
 s8m *s8m_assoc_clonev(arena *store, s8m *head, s8 k, s8 v) {
   s8m *already = s8m_get(head, k);
-  if (already && s8equal(already->val, v)) return head;
+  if (already && s8equal(already->val, v))
+    return head;
+  s8m_rel_t head_rel = s8m_rel(store, head);
   s8 vc = s8clone(store, v, 0);
+  head = s8m_abs(head_rel);
   if (vc.len) {
     s8m *ret = s8m_assoc(store, head, k, vc);
     if (ret) return ret;
@@ -390,7 +393,7 @@ void add_header(arena *store, Response *res, enum header h, s8 v) {
     fprintf(stderr, "Tried to add_header to null Response.\n");
     return;
   }
-  res->headers = s8m_assoc_clonev(store, res->headers, spell_header[h], v);
+  res->headers = s8m_rel(store, s8m_assoc_clonev(store, s8m_abs(res->headers), spell_header[h], v));
 }
 
 // TODO 2025-10-01 17:49:58 optimal return type?
@@ -418,14 +421,15 @@ void add_headers(arena *store, arena *scratch, Response *res) {
     add_header(store, res, CONTENT_TYPE, describe_content_type[res->type]);
   if (res->type == EVENT_STREAM) return;
 
-  s8 v = s8sprintf(scratch, "%ti", res->body ? s8l_len(res->body) : 0);
+  s8l *body = s8l_abs(res->body);
+  s8 v = s8sprintf(scratch, "%ti", body ? s8l_len(body) : 0);
   if (v.len) add_header(store, res, CONTENT_LENGTH, v);
   else fprintf(stderr, "Error setting Content-Length\n");
   reset_scratch(scratch);
 }
 
 b32 flushc(Chunk *workshop_pending) {
-  Client *dest = workshop_pending->dest;
+  Client *dest = Client_abs(workshop_pending->dest);
   if (!dest) {
     fprintf(stderr, "💣 Tried to flush to uninitialised destination\n");
     return 0;
@@ -442,10 +446,10 @@ b32 flushc(Chunk *workshop_pending) {
   }
   // workshop_pending->buf is preallocated in Workshop arena by `launch`
   Chunk *client_deliver = &Chunks_array_abs(d->chunks)[idx];
-  u8 *buf = client_deliver->buf; // preallocated in Client arena by `make_product`
+  u8_rel_t buf = client_deliver->buf; // preallocated in Client arena by `make_product`
   *client_deliver = *workshop_pending; // copy all fields but clobbers buf pointer
   client_deliver->buf = buf; // correct buf pointer
-  copy(client_deliver->buf, workshop_pending->buf, workshop_pending->len);
+  copy(u8_abs(client_deliver->buf), u8_abs(workshop_pending->buf), workshop_pending->len);
   queue_push_commit(&d->q); //  ╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴
 
   // Reset chunk for reuse! FIXME 2025-09-30 15:15:06 Error-prone
@@ -459,7 +463,7 @@ b32 flushc(Chunk *workshop_pending) {
 size s8writec(void *out, s8 s) { // impl after s8write
   Chunk *c = (Chunk *)out; // see Writer
   // Write s to p consecutive p->chunks. Caller's responsibilty to flush at EOM (via finishc).
-  if (!c->buf) {
+  if (!u8_abs(c->buf)) {
     fprintf(stderr, "💣 Tried to write to uninitialised chunk\n");
     return 0;
   }
@@ -473,7 +477,7 @@ size s8writec(void *out, s8 s) { // impl after s8write
   while (buf < end) {
     i32 avail = c->cap - c->len;
     i32 count = (avail < end - buf) ? avail : (i32)(end - buf);
-    copy(c->buf + c->len, buf, count);
+    copy(u8_abs(c->buf) + c->len, buf, count);
     buf += count;
     c->len += count;
     total_copied += count;
@@ -496,17 +500,18 @@ void finishc(Chunk *c, enum direction then) {
 void serialise_response(Workshop *shop, Response res) {
   arena *store = &shop->store;
   arena *scratch = &shop->scratch;
+  Client *client = Client_abs(res.client);
   Chunk *out = &shop->pending;
   if (res.is_update) {
     s8writec(out, res.update);
     finishc(out, WRITE); // TODO 2025-09-30 11:41:06 READWRITE if websocket...
 #ifndef QUIET
-    printf("📡 %td B to %s:%d\n", res.update.len, res.client->ip, res.client->port);
+    printf("📡 %td B to %s:%d\n", res.update.len, client->ip, client->port);
 #endif
   } else {
     s8 crlf = s8("\r\n");
     add_headers(store, scratch, &res); // reassigning to pass-by-value parameter
-    s8m *header = res.headers;
+    s8m *header = s8m_abs(res.headers);
     s8printf(scratch, s8writec, out, "HTTP/1.1 %i %s\r\n",
              res.status, spell_http_status[res.status]);
     while (header) { // grug approve
@@ -517,27 +522,28 @@ void serialise_response(Workshop *shop, Response res) {
       header = s8m_next(header);
     }
     s8writec(out, crlf);
-    for (s8l *node = res.body; node; node = s8l_next(node))
+    for (s8l *node = s8l_abs(res.body); node; node = s8l_next(node))
       s8writec(out, node->val);
 
     // TODO 2025-10-01 18:50:58 BOTH at appropriate point in websocket handshake
     if (res.type == EVENT_STREAM) {
-      res.client->mode = SERVER_SENT_EVENTS;
+      client->mode = SERVER_SENT_EVENTS;
       finishc(out, WRITE);
     }
     else finishc(out, READ);
     printf("📣 %i\n", res.status);
   }
-  res.client->store.cur = res.client->store_reset;
+  client->store.cur = (byte *)u8_abs(client->store_reset);
   reset_scratch(scratch);
 }
 
 // TODO 2025-10-01 07:36:32 could work up into general SET_ARRAY macro
 b32 add_client(Server *server, Client *client) {
   server->nclients++;
+  // FIXME 2026-05-26 18:44:10 think through client tracking in REL land...
   Client **available = 0; // first zero value (caused by remove_client)
-  Client **end = Clientptrsendof(server->clients);
-  for (Client **cur = Clientptrs_array_abs(server->clients); cur < end; cur++) {
+  Client **end = Clientsendof(server->clients);
+  for (Client **cur = Clients_array_abs(server->clients); cur < end; cur++) {
     if (*cur == client) return 0; // already there
     else if (!*cur && !available) available = cur; // but keep scanning
   }
