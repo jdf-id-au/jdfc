@@ -110,9 +110,9 @@ i32 nworkers(void);
     .interface = INADDR_ANY,                    \
     .rcvtimeo = 5,                              \
     .sndtimeo = 5,                              \
-    .server_mem = MiB(1),                       \
-    .client_mem = KiB(256),                     \
-    .worker_mem = MiB(1),                       \
+    .server_mem = KiB(1),                       \
+    .client_mem = KiB(1),                     \
+    .worker_mem = KiB(1),                       \
     .clients = 1024,                            \
     .workers = nworkers(),                      \
     .chunk_size = KiB(4)
@@ -998,14 +998,14 @@ void launch(Server *server) {
   server->port = server_port;
   printf("👂 Listening on %s:%d using %td threads for up to %d clients.\n",
          server->ip, server->port, workers, server->config.clients);
-  printf("🧠 Internal memory usage will be %td-%td MiB.\n", // excludes libraries' allocs
-      // TODO 2025-10-02 01:47:17 could configure individually... after profiling
-      (server->config.server_mem * 2 // store, scratch
-          + server->config.client_mem * 2 * 0
-          + server->config.worker_mem * 2 * server->config.workers) / MiB(1),
-         (server->config.server_mem * 3
-          + server->config.client_mem * 2 * server->config.clients
-          + server->config.worker_mem * 2 * server->config.workers) / MiB(1));
+  //printf("🧠 Internal memory usage will be %td-%td MiB.\n", // excludes libraries' allocs
+          //    // TODO 2025-10-02 01:47:17 could configure individually... after profiling
+          //    (server->config.server_mem * 2 // store, scratch
+        //        + server->config.client_mem * 2 * 0
+        //        + server->config.worker_mem * 2 * server->config.workers) / MiB(1),
+          //       (server->config.server_mem * 3
+           //        + server->config.client_mem * 2 * server->config.clients
+           //        + server->config.worker_mem * 2 * server->config.workers) / MiB(1));
   
   server->loop = ev_loop_new(0);
   set_non_blocking(server->socket);

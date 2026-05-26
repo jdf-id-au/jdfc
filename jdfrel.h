@@ -422,7 +422,7 @@ byte *alloc(arena *a, size objsize, size align, size count, const char *t) {
   */
   if (count > (avail - padding) / objsize) {
     size c = capacity(a);
-    //printf("resizing arena %p from %ti\n", (void *)a, c);
+    printf("resizing arena %p from %ti\n", (void *)a, c);
     if (resize_arena(a, c < PTRDIFF_MAX / 2 ? 2 * c : PTRDIFF_MAX)) {
       goto recalc;
     } else {
