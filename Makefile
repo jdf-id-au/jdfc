@@ -9,6 +9,11 @@ CFLAGS=-std=c17 -g3 \
 -pedantic -Wall -Wextra \
 -fPIC -fsanitize=address,undefined
 
+clean:
+	rm testrel_http
+
+all: testrel_http
+
 test: test.c jdf.h
 	time cc $(CFLAGS) $< -o $@
 	$(PREAMBLE) ./$@
@@ -20,12 +25,12 @@ testrel: testrel.c jdfrel.h
 test_http: test_http.c jdf.h jdfhttp.h http_codes.h
 	time cc $(CFLAGS) -Wno-unused-parameter -Wno-switch -lev -lpthread $< -o $@
 	du -sh $@
-	$(PREAMBLE) ./$@ -p 8081
+	#$(PREAMBLE) ./$@ -p 8081
 
 testrel_http: testrel_http.c jdfrel.h jdfrelhttp.h http_codes.h
-	time cc $(CFLAGS) -Wno-unused-parameter -Wno-switch -lev -lpthread $< -o $@
+	cc $(CFLAGS) -Wno-unused-parameter -Wno-switch -lev -lpthread $< -o $@
 	du -sh $@
-	$(PREAMBLE) ./$@ -p 8081
+	#$(PREAMBLE) ./$@ -p 8081
 
 test_date: test_date.c jdf.h jdfdate.h dates.h
 	time cc $(CFLAGS) $< -o $@

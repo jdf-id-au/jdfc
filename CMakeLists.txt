@@ -1,6 +1,0 @@
-cmake_minimum_required(VERSION 3.30.0)
-project(jdfc C)
-add_executable(test_http test_http.c jdf.h jdfhttp.h)
-target_link_libraries(test_http PRIVATE pthread ev)
-add_executable(test test.c jdf.h)
-add_executable(testrel testrel.c jdfrel.h)

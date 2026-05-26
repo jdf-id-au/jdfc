@@ -27,18 +27,60 @@ void dumbp(s8 s) {
   fflush(0); // flush all open output streams
 }
 
-typedef struct server Server; // forward decl for Request and Workshop
-typedef struct client Client; // forward decl for Request
+typedef struct server Server;
+REL(Server)
+
+typedef struct client Client;
+REL(Client)
+
+typedef struct { // impl after jdf.h bufout
+  u8_rel_t buf;
+  size len;
+  size cap;
+  enum direction then;
+  b32 finished; // 1 = end of current message
+  Client_rel_t dest; // for workshop.pending's benefit
+} Chunk;
+REL(Chunk)
+ARRAY(Chunks, Chunk)
+
+typedef struct product { // allocated in Client arena
+  Chunks chunks;
+  queue q;
+} Product; // Concurrent queue (single consumer)
+
+enum mode {
+  REQUEST_RESPONSE,
+  SERVER_SENT_EVENTS,
+  // TRANSFER_ENCODING_CHUNKED, // then back to NORMAL when finished?
+  //  WEBSOCKET
+};
+
+typedef struct client {
+  Server_rel_t server;
+  arena store;
+  arena scratch;
+  struct rel store_reset; // after initialisation, before work; only slightly breaks arena concept
+  struct sockaddr_in address;
+  char ip[INET_ADDRSTRLEN];
+  i32 port;
+  ev_io read_io;
+  ev_io write_io;
+  Product deliver;
+  enum mode mode;
+} Client; // Server's resources for serving one client // TODO 2025-09-29 22:24:48 rename to Connection ?
+ARRAY(Clients, Client)
 
 MAP_LIST(s8m, s8, s8, s8equal)
 
 typedef struct {
-  Client *client;
+  Client_rel_t client;
   b32 is_update;
   union {
     struct {
       s8 update; // e.g. message for SSE to send through, next transfer chunk to send through, websocket input (eventually)
-      Client *from; // provide for all SSE, and WS (if not initiated by same client)
+      // FIXME 2026-05-26 17:51:33 can't do non-ancestor REL; ordinary pointer doesn't survive resize_arena
+      Client_rel_t from; // provide for all SSE, and WS (if not initiated by same client)
     };
     struct {
       s8 raw;
@@ -46,25 +88,27 @@ typedef struct {
       enum http_method method;
       s8 uri;
       s8 protocol;
-      void *params; // optional pointer-to-struct of parsed params
-      s8m *headers;
-      s8m *cookies;
+      struct rel params; // optional pointer-to-struct of parsed params
+      s8m_rel_t headers;
+      s8m_rel_t cookies;
       s8 body;
     };
   };
 } Request;
+REL(Request)
+ARRAY(Requests, Request)
 
 typedef struct {
-  Client *client;
+  Client_rel_t client;
   b32 is_update;
   union {
     s8 update; // e.g. message for SSE to send, next transfer chunk, websocket output (eventually)
     struct {
       enum http_status status;
       enum content_type type;
-      s8m *headers; // does not accommodate repeat keys, which are permitted by http spec https://stackoverflow.com/a/4371395/780743
-      s8m *cookies;
-      s8l *body;
+      s8m_rel_t headers; // does not accommodate repeat keys, which are permitted by http spec https://stackoverflow.com/a/4371395/780743
+      s8m_rel_t cookies;
+      s8l_rel_t body;
     };
   };
 } Response;
@@ -111,7 +155,7 @@ i32 nworkers(void);
     .rcvtimeo = 5,                              \
     .sndtimeo = 5,                              \
     .server_mem = KiB(1),                       \
-    .client_mem = KiB(1),                     \
+    .client_mem = KiB(1)  ,                     \
     .worker_mem = KiB(1),                       \
     .clients = 1024,                            \
     .workers = nworkers(),                      \
@@ -119,30 +163,17 @@ i32 nworkers(void);
 
 typedef struct product Product; // forward decl
 
-typedef struct { // impl after jdf.h bufout
-  u8 *buf;
-  size len;
-  size cap;
-  enum direction then;
-  b32 finished; // 1 = end of current message
-  Client *dest; // for workshop.pending's benefit
-} Chunk;
-
 typedef struct {
-  Server *server;
+  Server_rel_t server;
   arena store;
   arena scratch;
-  byte *store_reset; // after initialisation, before work; only slightly breaks arena concept
+  struct rel store_reset; // after initialisation, before work; only slightly breaks arena concept
   pthread_t thread;
   ev_io write_io;
   Chunk pending; // under construction, before copy to Product->chunks
 } Workshop; // Resources for one worker!
-
-REL(Chunk) ARRAY(Chunks, Chunk)
-REL(Workshop) ARRAY(Workshops, Workshop)
-REL(Request) ARRAY(Requests, Request)
-typedef Client *Clientptr;
-REL(Clientptr) ARRAY(Clientptrs, Clientptr)
+REL(Workshop)
+ARRAY(Workshops, Workshop)
   
 typedef struct { // allocated in Server arena
   Requests requests;
@@ -164,35 +195,9 @@ typedef struct server {
   // https://randu.org/tutorials/threads/
   pthread_cond_t work_waiting;
   pthread_mutex_t work_waiting_lock; // just required for cond
-  Clientptrs clients;
+  Clients clients;
   size nclients; // should always match `clients` occpancy
 } Server;
-
-typedef struct product { // allocated in Client arena
-  Chunks chunks;
-  queue q;
-} Product; // Concurrent queue (single consumer)
-
-enum mode {
-  REQUEST_RESPONSE,
-  SERVER_SENT_EVENTS,
-  // TRANSFER_ENCODING_CHUNKED, // then back to NORMAL when finished?
-  //  WEBSOCKET
-};
-  
-typedef struct client {
-  Server *server;
-  arena store;
-  arena scratch;
-  byte *store_reset; // after initialisation, before work; only slightly breaks arena concept
-  struct sockaddr_in address;
-  char ip[INET_ADDRSTRLEN];
-  i32 port;
-  ev_io read_io;
-  ev_io write_io;
-  Product deliver;
-  enum mode mode;
-} Client; // Server's resources for serving one client // TODO 2025-09-29 22:24:48 rename to Connection ?
 
 // ────────────────────────────────────────────────────────────────────── Server
 #define ipstr(stem, addr)                                               \
@@ -235,26 +240,7 @@ Server make_server_fn(Handler h, Config c) {
 // Slightly misleading name because launch does most of resource alloc.
 #define make_server(h, ...) make_server_fn(h, (Config){DEFAULT_CONFIG, __VA_ARGS__})
 
-#ifdef _WIN32
-#include <sysinfoapi.h>
-i32 nproc(void) {
-  SYSTEM_INFO sysinfo;
-  GetSystemInfo(&sysinfo);
-  return sysinfo.dwNumberOfProcessors;
-}
-//#elif __APPLE__
-//#include <sys/sysctl.h>
-//i32 nproc(void) {
-  //  i32 v = 0;
-  //  usize len = 1;
-  //  if (!sysctlbyname("hw.logicalcpu", &v, &len, 0, 0)) // 0 is success return v;
-     //    perror("Couldn't get system information");
-  //  return v;
-  //}
-//#elif __linux
-#else
 i32 nproc(void) { return sysconf(_SC_NPROCESSORS_ONLN); }
-#endif
 
 i32 nworkers(void) {
   i32 np = nproc();
@@ -329,7 +315,7 @@ Request parse_request(arena *store, arena *scratch, s8 raw) {
       fprintf(stderr, "💣 OOM saving headers \n");
       ReqErr(SERVICE_UNAVAILABLE);
     }
-    req.headers = headers;
+    req.headers = s8m_rel(store, headers);
   }
 
   s8m *cookies = {0};
@@ -348,7 +334,7 @@ Request parse_request(arena *store, arena *scratch, s8 raw) {
         fprintf(stderr, "💣 OOM saving cookies \n");
         ReqErr(SERVICE_UNAVAILABLE);
       }
-      req.cookies = cookies;
+      req.cookies = s8m_rel(store, cookies);
     }
   }
   return req;
@@ -367,7 +353,7 @@ Product make_product(arena *a, i32 len, size chunk_size) {
   Chunk *cb = Chunks_array_abs(chunks);
   for (size i = 0; i < len; i++) {
     cb[i] = (Chunk) {
-      .buf = &buf[i * chunk_size],
+      .buf = u8_rel(a, &buf[i * chunk_size]),
       .cap = chunk_size
     };
   }

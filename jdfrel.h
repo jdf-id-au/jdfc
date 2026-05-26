@@ -1068,6 +1068,7 @@ b32 resize_arena(arena *a, size cap) {
   assert(cap > used(a), "can't shrink while full");
   usize u = used(a);
   byte *new_memory = realloc(a->beg, cap);
+  //printf("a: %p, beg: %p, new: %p\n", a, a->beg, new_memory);
   if (new_memory) {
     // FIXME 2026-05-23 18:33:43 needs to be threadsafe!!
     a->beg = new_memory;
@@ -1082,6 +1083,7 @@ b32 resize_arena(arena *a, size cap) {
 }
 
 b32 free_arena(arena *a) {
+  //printf("freeing arena %p\n", (void *a);
   byte *me = a->beg;
   a->beg = 0;
   a->cur = 0;
