@@ -296,7 +296,7 @@ i32 set_timeout(int sockfd, int which, int seconds) {
 
 // Store raw request, "parse" into zero-copy s8s.
 // TODO 2025-10-03 12:48:25 maybe divert body elsewhere for large requests, deal with separately...
-Request parse_request(arena *store, arena scratch, s8 raw) {
+Request parse_request(arena *store, arena *scratch, s8 raw) {
   Request req = {.raw = raw};
   // https://developer.mozilla.org/en-US/docs/Web/HTTP/Guides/Messages
   s8pair line = s8cutu8(raw, '\n'); // .head is next line, .tail is rest
@@ -567,7 +567,7 @@ b32 remove_client(Server *server, Client *client) {
   server->nclients--;
   Client **end = Clientptrsendof(server->clients);
   // Always scans whole array.
-  for (Client **cur = server->clients.buf; cur < end; cur++) {
+  for (Client **cur = Clientptrs_array_abs(server->clients); cur < end; cur++) {
     if (*cur != client) continue;
     *cur = 0;
     return 1;
@@ -774,7 +774,7 @@ void read_client(EV_P_ ev_io *w, i32 events) {
     }
     // s8arenaprintf(&client->scratch, "🔔 %s\n");
     client->scratch.cur = client->scratch.beg; // Reset!
-    Request req = parse_request(&client->store, client->scratch, raw);
+    Request req = parse_request(&client->store, &client->scratch, raw);
     char *uri = s8unwrap(&client->scratch, req.uri);
     if (uri) printf("🔔 %s from %s:%d\n", uri, client->ip, client->port);
     req.client = client;
@@ -906,7 +906,7 @@ void *worker(Workshop *workshop) { // ──────────────
     // client->deliver queue simultaneously. Pipelining is prevented
     // by half-duplex `client_set_direction`. Writer is on main thread
     // so libev can deal with delays writing.
-    res = server->handler(&workshop->store, workshop->scratch, req);
+    res = server->handler(&workshop->store, &workshop->scratch, req);
     if (!res.client) res.client = client;
     workshop->pending.dest = client;
     serialise_response(workshop, res);
@@ -965,7 +965,7 @@ void launch(Server *server) {
     };
     workshops[i].store_reset = workshops[i].store.cur;
   }
-  Workshops_array_abs(server->workshops) = workshops;
+  server->workshops.rel = Workshop_rel(&server->store, workshops); 
   size workers = 0;
   for (size i = 0; i < nw; i++)
     if (!(rc = pthread_create(&(workshops[i].thread), 0, (Worker)worker,
