@@ -458,7 +458,7 @@ ARRAY(s8, u8) // s8: Basic UTF-8 string. Not null terminated!
 static const s8 s8_OOM = s8("error: out of memory");
 b32 s8equal(s8, s8);
 REL(s8)
-// LIST(s8l, s8)
+LIST(s8l, s8)
 
 b32 s8equal(s8 a, s8 b) {
   if (a.len != b.len) return 0;
@@ -632,7 +632,6 @@ s8 s8concat(arena *a, s8 *ss, size len) {
   return ret;
 }
 
-/*
 size s8l_len(s8l *sl) {
   size len = 0;
   s8l *node = sl;
@@ -651,7 +650,6 @@ s8 s8l_concat(arena *store, s8l *sl) {
   } while ((node = s8l_next(node)));
   return ret;
 }
-*/
 
 s8 u8fill(arena *a, u8 with, size count) {
   s8 ret = make_s8(a, count);
@@ -940,7 +938,10 @@ struct args argparse(arena *store, arena *scratch, char *defs, int argc, char **
       kv = s8cut(arg, s8("="));
       kv = kv.head.len ? kv : (s8pair){.head = arg};
       if (s8equal(kv.head, s8("--"))) break; // with i set
-      if (s8startswith(kv.head, s8("--"))) kv.head = s8slice(kv.head, 2, 0);
+      if (s8startswith(kv.head, s8("--"))) {
+        // TODO 2026-05-26 12:07:50 support "--port 8080"
+        kv.head = s8slice(kv.head, 2, 0);
+      }
       else if (s8startswith(kv.head, s8("-"))) {
         if (kv.tail.len) failwith(1, s8("Invalid short arg format (omit '=')."));
         kv.tail = s8slice(kv.head, 2, 0);
@@ -1089,6 +1090,10 @@ b32 free_arena(arena *a) {
   // NB 2026-05-02 13:59:49 not resetting id 
   // TODO 2026-05-01 17:59:16 mechanism for removing from arenas global (and notifying errors)?
   return 1;
+}
+
+byte *reset_scratch(arena *a) { // NB 2026-05-26 13:53:00 breaks arena concept a bit, only when exiting scope
+  return (a->cur = a->beg);
 }
 
 // TODO 2026-05-24 01:50:58 ser/de arenas with a little metadata
