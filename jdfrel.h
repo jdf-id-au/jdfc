@@ -384,12 +384,16 @@ b32 resize_arena(arena *a, size cap); // forward declaration
 /*
   Allocate space within arena. Use via `new` macro.
   Not designed to be threadsafe! Each thread requires its own arena/s.
-  NB It's somewhat redundant to test for failure of alloc_arena, because the
-  first alloc here would fail if the arena is 0.
+
+  TODO 2026-05-26 20:34:45 contemplate thread allocating on ancestor
+  arena not owned by that thread...!
 
   Every allocation can cause the arena to resize, so take a relative
   pointer to anything which could change, before allocating, then
-  convert back to absolute, after. TODO 2026-05-24 22:01:52 macro nonsense for this? https://github.com/cormacc/va_args_iterators/blob/master/pp_iter.h
+  convert back to absolute, after.
+
+  TODO 2026-05-24 22:01:52 macro nonsense for this?
+  https://github.com/cormacc/va_args_iterators/blob/master/pp_iter.h
 */
 byte *alloc(arena *a, size objsize, size align, size count, const char *t) {
   if (count <= 0 || align <= 0) return 0;

@@ -32,6 +32,9 @@ REL(Server)
 
 typedef struct client Client;
 REL(Client)
+typedef arena *Client_handle; // see NB in accept_client
+REL(Client_handle)
+ARRAY(Clients, Client_handle)
 
 typedef struct { // impl after jdf.h bufout
   u8_rel_t buf;
@@ -57,7 +60,7 @@ enum mode {
 };
 
 typedef struct client {
-  Server_rel_t server;
+  Server *server;
   arena store;
   arena scratch;
   u8_rel_t store_reset; // after initialisation, before work; only slightly breaks arena concept
@@ -69,7 +72,6 @@ typedef struct client {
   Product deliver;
   enum mode mode;
 } Client; // Server's resources for serving one client // TODO 2025-09-29 22:24:48 rename to Connection ?
-ARRAY(Clients, Client)
 
 MAP_LIST(s8m, s8, s8, s8equal)
 
@@ -164,7 +166,7 @@ i32 nworkers(void);
 typedef struct product Product; // forward decl
 
 typedef struct {
-  Server_rel_t server;
+  Server *server; // stack allocated, no need for rel shenanigans
   arena store;
   arena scratch;
   u8_rel_t store_reset; // after initialisation, before work; only slightly breaks arena concept
@@ -538,14 +540,13 @@ void serialise_response(Workshop *shop, Response res) {
 }
 
 // TODO 2025-10-01 07:36:32 could work up into general SET_ARRAY macro
-b32 add_client(Server *server, Client *client) {
+b32 add_client(Server *server, Client_handle client) {
   server->nclients++;
-  // FIXME 2026-05-26 18:44:10 think through client tracking in REL land...
-  Client **available = 0; // first zero value (caused by remove_client)
-  Client **end = Clientsendof(server->clients);
-  for (Client **cur = Clients_array_abs(server->clients); cur < end; cur++) {
-    if (*cur == client) return 0; // already there
-    else if (!*cur && !available) available = cur; // but keep scanning
+  Client_handle *available = 0; // first zero value (caused by remove_client)
+  for (size i = 0; i < server->clients.len; i++) {
+    Client_handle cur = Clients_array_abs(server->clients)[i];
+    if (cur == client) return 0; // already there
+    else if (!cur && !available) available = &cur; // but keep scanning
   }
   if (available) {
     *available = client;
@@ -555,23 +556,21 @@ b32 add_client(Server *server, Client *client) {
   return 0;
 }
 
-b32 remove_client(Server *server, Client *client) {
+b32 remove_client(Server *server, Client_handle client) {
   server->nclients--;
-  Client **end = Clientptrsendof(server->clients);
   // Always scans whole array.
-  for (Client **cur = Clientptrs_array_abs(server->clients); cur < end; cur++) {
-    if (*cur != client) continue;
-    *cur = 0;
+  for (size i = 0; i < server->clients.len; i++) {
+    Client_handle cur = Clients_array_abs(server->clients)[i];
+    if (cur != client) continue;
+    cur = 0;
     return 1;
   }
   return 0;
 }
 
 i32 count_clients(Server *server) {
-  Client **end = Clientptrsendof(server->clients);
   i32 n = 0;
-  for (Client **cur = Clientptrs_array_abs(server->clients); cur < end; cur++) 
-    if (*cur) n++;
+  for (size i = 0; i < server->clients.len; i++) if (Clients_array_abs(server->clients)[i]) n++;
   return n;
 }
 
@@ -584,7 +583,7 @@ void client_cleanup_basics(arena *store, arena *scratch, i32 fd) {
 void cleanup_client(EV_P_ ev_io *w) {
   Client *client = (Client *)w->data;
   Server *server = client->server;
-  remove_client(server, client);
+  remove_client(server, &client->store);
   // https://metacpan.org/dist/EV/view/libev/ev.pod#ev_TYPE_stop-(loop,-ev_TYPE-*watcher)
   ev_io_stop(EV_A_ &client->read_io);
   ev_io_stop(EV_A_ &client->write_io);
@@ -677,7 +676,7 @@ void write_client(EV_P_ ev_io *w, i32 events) {
     cleanup_client(EV_A_ w);
     return;
   }
-  copy(buf, c.buf, c.len); // defensive copy, would be hard to debug if winged it
+  copy(buf, u8_abs(c.buf), c.len); // defensive copy, would be hard to debug if winged it
   queue_pop_commit(&p->q); // ╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴
 
   size total_bytes_written = 0;
@@ -726,7 +725,7 @@ void write_client(EV_P_ ev_io *w, i32 events) {
 }
 
 b32 enqueue_request(Request req) {
-  Server *server = req.client->server;
+  Server *server = Client_abs(req.client)->server;
   i32 idx = queue_push(&server->work.q, server->work.requests.len);
   //printf("queue_push position %i\n", idx);
   if (idx < 0) return 0; // queue full
@@ -769,7 +768,7 @@ void read_client(EV_P_ ev_io *w, i32 events) {
     Request req = parse_request(&client->store, &client->scratch, raw);
     char *uri = s8unwrap(&client->scratch, req.uri);
     if (uri) printf("🔔 %s from %s:%d\n", uri, client->ip, client->port);
-    req.client = client;
+    req.client = Client_rel(&client->store, client);
     if (!enqueue_request(req)) {
       unavailable(w->fd, "enqueue job"); // effectively backpressure
       cleanup_client(EV_A_ w);
@@ -810,6 +809,7 @@ void accept_client(EV_P_ ev_io *w, i32 events) {
     arena client_store = alloc_arena(server->config.client_mem, &server->store);
     arena client_scratch = alloc_arena(server->config.client_mem, &server->scratch); // NB 2026-05-26 13:53:55 parent concept less helpful for scratch
     // https://metacpan.org/dist/EV/view/libev/ev.pod#ASSOCIATING-CUSTOM-DATA-WITH-A-WATCHER
+    // NB 2026-05-26 21:04:34 stored in its own arena; must be first alloc! to allow server tracking
     Client *client = new (&client_store, Client, 1);
     if (!client) {
       unavailable(new_socket, "allocate client");
@@ -847,8 +847,8 @@ void accept_client(EV_P_ ev_io *w, i32 events) {
       client_cleanup_basics(&client->store, &client->scratch, new_socket);
       return;
     }
-    client->store_reset = client->store.cur;
-    add_client(server, client);
+    client->store_reset = u8_rel(&client->store, client->store.cur);
+    add_client(server, &client->store);
   }
 }
 
@@ -871,7 +871,7 @@ void *worker(Workshop *workshop) { // ──────────────
     req = Requests_array_abs(server->work.requests)[qi];
     queue_pop_commit(&server->work.q);
     pthread_mutex_unlock(&server->work_waiting_lock); // ╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴
-    Client *client = req.client;
+    Client *client = Client_abs(req.client);
     Response res = {0};
     if (!req.is_update) {
       switch (req.error) {
@@ -899,11 +899,11 @@ void *worker(Workshop *workshop) { // ──────────────
     // by half-duplex `client_set_direction`. Writer is on main thread
     // so libev can deal with delays writing.
     res = server->handler(&workshop->store, &workshop->scratch, req);
-    if (!res.client) res.client = client;
-    workshop->pending.dest = client;
+    if (!Client_abs(res.client)) res.client = Client_rel(&workshop->store, client);
+    workshop->pending.dest = res.client;
     serialise_response(workshop, res);
   reset_store:
-    workshop->store.cur = workshop->store_reset;
+    workshop->store.cur = (byte *)u8_abs(workshop->store_reset);
   }
 }
 
@@ -952,10 +952,10 @@ void launch(Server *server) {
       exit(1);
     }
     workshops[i].pending = (Chunk) {
-      .buf = buf,
+      .buf = u8_rel(&workshops[i].store, buf),
       .cap = server->config.chunk_size
     };
-    workshops[i].store_reset = workshops[i].store.cur;
+    workshops[i].store_reset = Workshop_rel(&workshops[i].store, workshops[i].store.cur);
   }
   server->workshops.rel = Workshop_rel(&server->store, workshops); 
   size workers = 0;
@@ -977,7 +977,7 @@ void launch(Server *server) {
   server->work_waiting = (pthread_cond_t)PTHREAD_COND_INITIALIZER;
   pthread_mutex_init(&server->work_waiting_lock, 0);
   // ╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴ Client tracking
-  Clientptrs track = make_Clientptrs(&server->store, server->config.clients); 
+  Clients track = make_Clients(&server->store, server->config.clients); 
   if (!track.len) {
     fprintf(stderr, "💣 Failed to allocate client tracking array for %d clients\n",
             server->config.clients);

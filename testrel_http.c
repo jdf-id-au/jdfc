@@ -30,6 +30,7 @@
 
 Response handler(arena *store, arena *scratch, Request req) {
   Response res = (Response){.type = HTML};
+  Client *client = Client_abs(req.client);
   s8 body = s8sprintf(
       store,
       "<!doctype html>"
@@ -39,13 +40,13 @@ Response handler(arena *store, arena *scratch, Request req) {
       "</head>"
       "<body>Using %ti/%ti B for server, %ti/%ti B for this client %s:%d"
       "<h1>Workshops</h1>",
-      used(&req.client->server->store), capacity(&req.client->server->store),
-      used(&req.client->store), capacity(&req.client->store), req.client->ip, req.client->port);
+      used(&client->server->store), capacity(&client->server->store),
+      used(&client->store), capacity(&client->store), client->ip, client->port);
   
   assert(body.len, "failed to construct body");
-  res.body = s8l_append(store, res.body, body);
-  s8l *cur = res.body;
-  Workshops *ws = &req.client->server->workshops;
+  res.body = s8l_rel(store, s8l_append(store, s8l_abs(res.body), body));
+  s8l *cur = s8l_abs(res.body);
+  Workshops *ws = &Client_abs(req.client)->server->workshops;
   
   print(s8("<table><thead><th>Used</th><th>Available</th></thead><tbody>"));
 
@@ -57,7 +58,7 @@ Response handler(arena *store, arena *scratch, Request req) {
   }
   print(s8("</tbody></table></body></html>"));
   if (!body.len) {
-    res.body = 0;
+    res.body = s8l_rel(store, 0);
     res.status = INTERNAL_SERVER_ERROR; 
   }
   else res.status = OK;
