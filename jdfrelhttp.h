@@ -384,7 +384,7 @@ size arena_printf(arena *a, const char *format) {
   return printf(format, a->beg);
 }
 
-s8m *s8massoc_clonev(arena *store, s8m *head, s8 k, s8 v) {
+s8m *s8m_assoc_clonev(arena *store, s8m *head, s8 k, s8 v) {
   s8m *already = s8m_get(head, k);
   if (already && s8equal(already->val, v)) return head;
   s8 vc = s8clone(store, v, 0);
@@ -404,12 +404,12 @@ void add_header(arena *store, Response *res, enum header h, s8 v) {
     fprintf(stderr, "Tried to add_header to null Response.\n");
     return;
   }
-  res->headers = s8massoc_clonev(store, res->headers, spell_header[h], v);
+  res->headers = s8m_assoc_clonev(store, res->headers, spell_header[h], v);
 }
 
 // TODO 2025-10-01 17:49:58 optimal return type?
 // Generally headers should be set in handlers.
-void add_headers(arena *store, arena scratch, Response *res) {
+void add_headers(arena *store, arena *scratch, Response *res) {
   if (!res) {
     fprintf(stderr, "Tried to add_headers to null Response.\n");
     return;
@@ -432,9 +432,10 @@ void add_headers(arena *store, arena scratch, Response *res) {
     add_header(store, res, CONTENT_TYPE, describe_content_type[res->type]);
   if (res->type == EVENT_STREAM) return;
 
-  s8 v = s8sprintf(&scratch, "%ti", res->body ? s8l_len(res->body) : 0);
+  s8 v = s8sprintf(scratch, "%ti", res->body ? s8l_len(res->body) : 0);
   if (v.len) add_header(store, res, CONTENT_LENGTH, v);
   else fprintf(stderr, "Error setting Content-Length\n");
+  reset_scratch(scratch);
 }
 
 b32 flushc(Chunk *workshop_pending) {
@@ -508,7 +509,7 @@ void finishc(Chunk *c, enum direction then) {
 */
 void serialise_response(Workshop *shop, Response res) {
   arena *store = &shop->store;
-  arena scratch = shop->scratch;
+  arena *scratch = &shop->scratch;
   Chunk *out = &shop->pending;
   if (res.is_update) {
     s8writec(out, res.update);
@@ -520,7 +521,7 @@ void serialise_response(Workshop *shop, Response res) {
     s8 crlf = s8("\r\n");
     add_headers(store, scratch, &res); // reassigning to pass-by-value parameter
     s8m *header = res.headers;
-    s8printf(&scratch, s8writec, out, "HTTP/1.1 %i %s\r\n",
+    s8printf(scratch, s8writec, out, "HTTP/1.1 %i %s\r\n",
              res.status, spell_http_status[res.status]);
     while (header) { // grug approve
       s8writec(out, header->key);
@@ -542,6 +543,7 @@ void serialise_response(Workshop *shop, Response res) {
     printf("📣 %i\n", res.status);
   }
   res.client->store.cur = res.client->store_reset;
+  reset_scratch(scratch);
 }
 
 // TODO 2025-10-01 07:36:32 could work up into general SET_ARRAY macro
@@ -668,7 +670,7 @@ void unavailable(i32 sock, char *msg) {
  */
 void write_client(EV_P_ ev_io *w, i32 events) {
   Client *client = (Client *)w->data;
-  arena scratch = client->scratch; 
+  arena *scratch = &client->scratch; 
   Product *p = &client->deliver;
 
   i32 idx = queue_pop(&p->q, p->chunks.len); // ╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴ Queue access
@@ -677,7 +679,7 @@ void write_client(EV_P_ ev_io *w, i32 events) {
     return;
   }
   Chunk c = Chunks_array_abs(p->chunks)[idx]; // c.dest is irrelevant here
-  u8 *buf = new (&scratch, u8, client->server->config.chunk_size);
+  u8 *buf = new (scratch, u8, client->server->config.chunk_size);
   if (!buf) {
     unavailable(w->fd, "allocate out buffer");
     cleanup_client(EV_A_ w);
@@ -728,6 +730,7 @@ void write_client(EV_P_ ev_io *w, i32 events) {
   snprintf(note, sizeof note, "write_client %s:%d %s", client->ip, client->port,
            client->mode==SERVER_SENT_EVENTS ? "📡" : "📣");
   client_set_direction(EV_A_ w, c.then, note);
+  reset_scratch(scratch);
 }
 
 b32 enqueue_request(Request req) {
