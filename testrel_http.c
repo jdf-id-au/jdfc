@@ -74,19 +74,21 @@ Response sse_handler(arena *store, arena *scratch, Request req) {
 }
 
 Response send_handler(arena *store, arena *scratch, Request req) {
-  Client *client = req.client;
-  Server *server = req.client->server;
+  Client *client = Client_abs(req.client);
+  Server *server = client->server;
   for (size i = 0; i < server->clients.len; i++) {
-    Client *c = Clientptrs_array_abs(server->clients)[i];
+    Client_handle c = Clients_array_abs(server->clients)[i];
     if (!c) continue;
-    //printf("%td %s %s:%d\n", i, c->mode==SERVER_SENT_EVENTS ? "📡" : "📣", dst_ip, dst_port);
-    if (c && c->mode == SERVER_SENT_EVENTS) {
-      s8 msg = s8sprintf(&c->store, // recipient's arena!
+    // printf("%td %s %s:%d\n", i, c->mode==SERVER_SENT_EVENTS ? "📡" : "📣",
+    // dst_ip, dst_port);
+    Client *cur = ((Client *)(((arena *)c)->beg));
+    if (cur->mode == SERVER_SENT_EVENTS) {
+      s8 msg = s8sprintf(c, // recipient's arena!
                           "event: message\ndata: hello from %s:%d to %s:%d\n\n",
-                          client->ip, client->port, c->ip, c->port);
+                          client->ip, client->port, cur->ip, cur->port);
       if (!msg.len) return (Response){.status = SERVICE_UNAVAILABLE};
       b32 stat = enqueue_request((Request){
-          .client = c,
+          .client = Client_rel(c, cur),
           .is_update = 1, // destination
           .update = msg,
           .from = req.client});
@@ -112,7 +114,7 @@ s8 view_sse = s8("<!doctype html>\n"
 Response receive_handler(arena *store, arena *scratch, Request req) {
   return (Response) {
     .status = OK, .type = HTML,
-    .body = s8l_append(store, 0, view_sse) 
+    .body = s8l_rel(store, s8l_append(store, 0, view_sse)) 
   };
 }
 
@@ -134,7 +136,7 @@ Response router(arena *store, arena *scratch, Request req) {
       if (routes[i].parser) {
         void *params = routes[i].parser(store, scratch, req.uri);
         if (!params) continue; // NB 2026-04-21 13:19:23 parser also needs to handle uri match
-        req.params = params;
+        req.params = (struct rel){.arena = store, .ptr = (byte *)params - store->beg + 1}; // FIXME 2026-05-26 22:10:04 fragile
         return h(store, scratch, req);
       } else if (s8equal(req.uri, routes[i].uri))
         return h(store, scratch, req);
