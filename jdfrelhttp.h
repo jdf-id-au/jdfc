@@ -342,12 +342,14 @@ Request parse_request(arena *store, arena *scratch, s8 raw) {
   return req;
 }
 
-// Run on main thread (by Client)
+// Run on main thread (by Client in client arena)
 Product make_product(arena *a, i32 len, size chunk_size) {
   Product nil = (Product){0};
   i32 cap = queue_capacity(len);
-  if (!cap) return nil;
-  Chunks chunks = make_Chunks(a, len);
+  if (!cap)
+    return nil;
+  Chunks chunks = make_Chunks(a, len); // FIXME 2026-05-26 23:04:39 fails first go with UAF because of resize (on same thread wtf)
+  // Chunks chunks = make_Chunks(a->parent, len); // interestingly this doesn't fix it
   if (!chunks.len) return nil;
   u8 *buf = new (a, u8, len * chunk_size);
   if (!buf)

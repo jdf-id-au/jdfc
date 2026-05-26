@@ -62,6 +62,7 @@ struct rel {
 
 #define MAX_CAP PTRDIFF_MAX - 1
 
+// TODO 2026-05-26 23:09:52 look down parent arenas if can't rel locally
 #define REL(t)                                                                 \
   typedef struct rel t##_rel_t;                                                \
   t##_rel_t t##_rel(arena *a, void *p) {                                       \
