@@ -63,7 +63,7 @@ typedef struct client {
   Server *server;
   arena store;
   arena scratch;
-  u8_rel_t store_reset; // after initialisation, before work; only slightly breaks arena concept
+  size store_reset; // after initialisation, before work; only slightly breaks arena concept
   struct sockaddr_in address;
   char ip[INET_ADDRSTRLEN];
   i32 port;
@@ -169,7 +169,7 @@ typedef struct {
   Server *server; // stack allocated, no need for rel shenanigans
   arena store;
   arena scratch;
-  u8_rel_t store_reset; // after initialisation, before work; only slightly breaks arena concept
+  size store_reset; // after initialisation, before work; only slightly breaks arena concept
   pthread_t thread;
   ev_io write_io;
   Chunk pending; // under construction, before copy to Product->chunks
@@ -535,7 +535,7 @@ void serialise_response(Workshop *shop, Response res) {
     else finishc(out, READ);
     printf("📣 %i\n", res.status);
   }
-  client->store.cur = (byte *)u8_abs(client->store_reset);
+  client->store.cur = client->store.beg + client->store_reset;
   reset_scratch(scratch);
 }
 
@@ -847,12 +847,15 @@ void accept_client(EV_P_ ev_io *w, i32 events) {
       client_cleanup_basics(&client->store, &client->scratch, new_socket);
       return;
     }
-    client->store_reset = u8_rel(&client->store, client->store.cur);
+    client->store_reset = used(&client->store);
     add_client(server, &client->store);
   }
 }
 
-void *worker(Workshop *workshop) { // ─────────────────────────────────── Worker
+Server global_server = {0}; // FIXME 2026-05-26 22:52:59 temporary global copout
+
+void *worker(void *workshop_offset) { // ─────────────────────────────────── Worker
+  Workshop *workshop = (Workshop *)(global_server.store.beg + (size)workshop_offset);
   Server *server = workshop->server;
   i32 qi = 0;
   Request req = {0};
@@ -903,7 +906,7 @@ void *worker(Workshop *workshop) { // ──────────────
     workshop->pending.dest = res.client;
     serialise_response(workshop, res);
   reset_store:
-    workshop->store.cur = (byte *)u8_abs(workshop->store_reset);
+    workshop->store.cur = workshop->store.beg + workshop->store_reset;
   }
 }
 
@@ -955,19 +958,23 @@ void launch(Server *server) {
       .buf = u8_rel(&workshops[i].store, buf),
       .cap = server->config.chunk_size
     };
-    workshops[i].store_reset = Workshop_rel(&workshops[i].store, workshops[i].store.cur);
+    workshops[i].store_reset = used(&workshops[i].store);
   }
   server->workshops.rel = Workshop_rel(&server->store, workshops); 
   size workers = 0;
-  for (size i = 0; i < nw; i++)
+  for (size i = 0; i < nw; i++) {
     if (!(rc = pthread_create(&(workshops[i].thread), 0, (Worker)worker,
-                              &workshops[i]))) {
+                              // 2026-05-26 22:49:25 FIXME ugh how to pass rel
+                              // to Workshop without making server global
+                              (void*)((byte *)&workshops[i] - server->store.beg)
+                              ))) {
       server->workshops.len = ++workers;
     } else {
       fprintf(stderr, "Unable to create thread %td: %i\n", i, rc);
       if (i == 0) exit(1);
       break;
     }
+  }
   Work work = make_work(&server->store, 32);
   if (!work.requests.len) {
     fprintf(stderr, "💣 Failed to make work queue\n");
