@@ -398,7 +398,7 @@ b32 resize_arena(arena *a, size cap); // forward declaration
 */
 byte *alloc(arena *a, size objsize, size align, size count, const char *t) {
   if (count <= 0 || align <= 0) return 0;
-  printf("%p:%p Trying to allocate %ti %ss of size %ti\n", (void *)a, (void *)a->beg, count, t, objsize);
+  printf("%p:%p [ %s ]s of size %ti x %ti\n", (void *)a, (void *)a->beg, t, objsize, count);
   size padding = 0;
  recalc:
   /*
@@ -420,15 +420,24 @@ byte *alloc(arena *a, size objsize, size align, size count, const char *t) {
    */
   padding = -(uptr)a->cur & (align - 1);
   size avail = available(a);
+  size usd = used(a);
   /*
     Deliberately return null pointer if arena can't allocate requested amount!
     This does propagate annoyingly.
     Distinction between OOM proper and getting killed by (Linux) OOM killer?
   */
   if (count > (avail - padding) / objsize) {
+    size needed = (count * objsize) + usd + padding;
     size c = capacity(a);
-    DEBUG("%p resizing arena from %ti\n", (void *)a, c); // FIXME 2026-05-27 12:00:53 more than double in one go if needed!
-    if (resize_arena(a, c < PTRDIFF_MAX / 2 ? 2 * c : PTRDIFF_MAX)) {
+    size asking = c;
+    for (size thinking = asking; thinking < PTRDIFF_MAX; thinking *= 2) {
+      if (thinking > needed) {
+        asking = thinking;
+        break;
+      }
+    }
+    DEBUG("%p resizing arena from %ti to %ti\n", (void *)a, c, asking); // FIXME 2026-05-27 12:00:53 more than double in one go if needed!
+    if (resize_arena(a, asking)) {
       goto recalc;
     } else {
       // TODO 2026-05-23 18:47:09 more conservative size increment algo?
@@ -1065,7 +1074,7 @@ void debytes(i32 fd, void *val, size len) { // too cool for stdio.h printf
 arena alloc_arena(usize cap, arena *parent) {
   assert(cap <= MAX_CAP, "arena too big to address");
   byte *beg = malloc(cap);
-  DEBUG("allocated %tuB at %p for arena with parent %p\n", cap, (void *)beg, (void *)parent);
+  DEBUG(":%p allocated %tuB for arena with parent %p\n", (void *)beg, cap, (void *)parent);
   if (beg) return (arena){.beg = beg, .cur = beg, .end = beg + cap, .parent = parent};
   else return (arena){0};
 }

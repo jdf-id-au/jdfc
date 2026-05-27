@@ -51,9 +51,9 @@ Response handler(arena *store, arena *scratch, Request req) {
   print(s8("<table><thead><th>Used</th><th>Available</th></thead><tbody>"));
 
   for (size i = 0; i < ws->len; i++) {
-    s8 row =
-      s8sprintf(store, "<tr><td>%ti</td><td>%ti</td></tr>",
-                used(&Workshops_array_abs(*ws)[i].store), available(&Workshops_array_abs(*ws)[i].store));
+    s8 row = s8sprintf(store, "<tr><td>%ti</td><td>%ti</td></tr>",
+                       used(&Workshops_array_abs(*ws)[i].store),
+                       available(&Workshops_array_abs(*ws)[i].store));
     if (row.len) print(row);
   }
   print(s8("</tbody></table></body></html>"));

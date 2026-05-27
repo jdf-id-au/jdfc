@@ -990,44 +990,7 @@ void launch(Server *server) {
   server->scratch = alloc_arena(server->config.server_mem, 0);
   if (!server->store.beg || !server->scratch.beg)
     fprintf(stderr, "💣 Failed to allocate %td KB server arenas.", server->config.server_mem/KiB(1));
-  // ╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴ Workers  
-  i32 nw = server->config.workers;
-  i32 rc = 0;
-  Workshop *workshops = new (&server->store, Workshop, nw);
-  if (!workshops) {
-    fprintf(stderr, "💣 Failed to allocate %d workshops\n", nw);
-    exit(1);
-  }
-  for (size i = 0; i < nw; i++) {
-    workshops[i].server = server;
-    workshops[i].store = alloc_arena(server->config.worker_mem, &server->store);
-    workshops[i].scratch = alloc_arena(server->config.worker_mem, &server->scratch);
-    u8 *buf = new (&workshops[i].store, u8, server->config.chunk_size);
-    if (!buf) {
-      fprintf(stderr, "💣 Failed to allocate workshop %td pending buffer\n", i);
-      exit(1);
-    }
-    workshops[i].pending = (Chunk) {
-      .buf = u8_rel(&workshops[i].store, buf),
-      .cap = server->config.chunk_size
-    };
-    workshops[i].store_reset = used(&workshops[i].store);
-  }
-  server->workshops.rel = Workshop_rel(&server->store, workshops); 
-  size workers = 0;
-  for (size i = 0; i < nw; i++) {
-    if (!(rc = pthread_create(&(workshops[i].thread), 0, (Worker)worker,
-                              // 2026-05-26 22:49:25 FIXME ugh how to pass rel
-                              // to Workshop without making server global
-                              (void*)((byte *)&workshops[i] - server->store.beg)
-                              ))) {
-      server->workshops.len = ++workers;
-    } else {
-      fprintf(stderr, "Unable to create thread %td: %i\n", i, rc);
-      if (i == 0) exit(1);
-      break;
-    }
-  }
+  // ╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴ Resources
   Work work = make_work(&server->store, 32);
   if (!work.requests.len) {
     fprintf(stderr, "💣 Failed to make work queue\n");
@@ -1051,6 +1014,44 @@ void launch(Server *server) {
     exit(1);
   }
   server->client_scratches = scratches;
+  // ╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴ Workshops
+  i32 nw = server->config.workers;
+  Workshop *workshops = new (&server->store, Workshop, nw);
+  if (!workshops) {
+    fprintf(stderr, "💣 Failed to allocate %d workshops\n", nw);
+    exit(1);
+  }
+  for (size i = 0; i < nw; i++) {
+    workshops[i].server = server;
+    workshops[i].store = alloc_arena(server->config.worker_mem, &server->store);
+    workshops[i].scratch = alloc_arena(server->config.worker_mem, &server->scratch);
+    u8 *buf = new (&workshops[i].store, u8, server->config.chunk_size);
+    if (!buf) {
+      fprintf(stderr, "💣 Failed to allocate workshop %td pending buffer\n", i);
+      exit(1);
+    }
+    workshops[i].pending = (Chunk) {
+      .buf = u8_rel(&workshops[i].store, buf),
+      .cap = server->config.chunk_size
+    };
+    workshops[i].store_reset = used(&workshops[i].store);
+  }
+  server->workshops.rel = Workshop_rel(&server->store, workshops); 
+  size workers = 0;
+  i32 rc = 0;
+  for (size i = 0; i < nw; i++) {
+    if (!(rc = pthread_create(&(workshops[i].thread), 0, (Worker)worker,
+                              // 2026-05-26 22:49:25 FIXME ugh how to pass rel
+                              // to Workshop without making server global
+                              (void*)((byte *)&workshops[i] - server->store.beg)
+                              ))) {
+      server->workshops.len = ++workers;
+    } else {
+      fprintf(stderr, "Unable to create thread %td: %i\n", i, rc);
+      if (i == 0) exit(1);
+      break;
+    }
+  }
   // ──────────────────────────────────────────────────────────────────── Launch
   ipstr(server_, server->address);
   copy((u8 *)server->ip, (u8 *)server_ip, sizeof server_ip); // convenience
