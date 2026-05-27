@@ -381,7 +381,7 @@ size arena_printf(arena *a, const char *format) {
 }
 
 s8m *s8m_assoc_clonev(arena *store, s8m *head, s8 k, s8 v) {
-  s8m *already = s8m_get(head, k);
+  s8m *already = head ? s8m_get(head, k) : 0;
   if (already && s8equal(already->val, v))
     return head;
   s8m_rel_t head_rel = s8m_rel(store, head);
@@ -444,7 +444,7 @@ b32 flushc(Chunk *workshop_pending) {
     fprintf(stderr, "💣 Tried to flush to uninitialised destination\n");
     return 0;
   }
-  Product *d = &dest->deliver;
+  Product *d = &dest->deliver; // FIXME 2026-05-27 22:17:58 garbage
   i32 idx = 0; // also see write_qout for queue semantics
 
   idx = queue_push(&d->q, d->chunks.len); // ╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴ Queue access
@@ -456,6 +456,7 @@ b32 flushc(Chunk *workshop_pending) {
   }
   // workshop_pending->buf is preallocated in Workshop arena by `launch`
   Chunk *client_deliver = &Chunks_array_abs(d->chunks)[idx];
+  // FIXME 2026-05-27 22:42:13 something lost in rel-translation here
   u8_rel_t buf = client_deliver->buf; // preallocated in Client arena by `make_product`
   *client_deliver = *workshop_pending; // copy all fields but clobbers buf pointer
   client_deliver->buf = buf; // correct buf pointer
@@ -500,6 +501,7 @@ void finishc(Chunk *c, enum direction then) {
   c->finished = 1;
   c->then = then;
   //printf("flushed with %d\n", then);
+  DEBUG("finishing %p\n", (void *)c);
   flushc(c);
 }
 
@@ -522,8 +524,9 @@ void serialise_response(Workshop *shop, Response res) {
     s8 crlf = s8("\r\n");
     add_headers(store, scratch, &res); // reassigning to pass-by-value parameter
     s8m *header = s8m_abs(res.headers);
+    //printf("HTTP/1.1 %i %s\r\n", res.status, s8_array_abs(spell_http_status[res.status]));
     s8printf(scratch, s8writec, out, "HTTP/1.1 %i %s\r\n",
-             res.status, spell_http_status[res.status]);
+             res.status, s8_array_abs(spell_http_status[res.status]));
     while (header) { // grug approve
       s8writec(out, header->key);
       s8writec(out, s8(": "));
@@ -543,7 +546,7 @@ void serialise_response(Workshop *shop, Response res) {
     else finishc(out, READ);
     printf("📣 %i\n", res.status);
   }
-  *arena_abs(client->store)->cur = *arena_abs(client->store)->beg + client->store_reset;
+  arena_abs(client->store)->cur = arena_abs(client->store)->beg + client->store_reset;
   reset_scratch(scratch);
 }
 
@@ -843,10 +846,8 @@ void accept_client(EV_P_ ev_io *w, i32 events) {
                           (socklen_t *)&addrlen);
   if (new_socket < 0) perror("Socket connection failed");
   else {
-
     // NB server->address seemingly changed from server to client between `bind` and `accept`
     ipstr(client_, server->address);
-
     if (server->nclients > server->config.clients) {
       printf("⛔ Rejected connection from %s:%d\n", client_ip, client_port);
       write(new_socket, s8_array_abs(UNAVAILABLE), UNAVAILABLE.len);
@@ -955,7 +956,8 @@ void *worker(void *workshop_offset) { // ─────────────
     // by half-duplex `client_set_direction`. Writer is on main thread
     // so libev can deal with delays writing.
     res = server->handler(&workshop->store, &workshop->scratch, req);
-    if (!Client_abs(res.client)) res.client = Client_rel(&workshop->store, client);
+    // FIXME 2026-05-27 22:56 this is probably causing the garbage dest in flushc
+    if (!Client_abs(res.client)) res.client = Client_rel(arena_abs(client->store), client);
     workshop->pending.dest = res.client;
     serialise_response(workshop, res);
   reset_store:

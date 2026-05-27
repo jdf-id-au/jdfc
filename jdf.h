@@ -760,6 +760,7 @@ i32 s8printf(arena scratch, Writer writer, void *out, const char *format, ...) {
   va_start(args, format);
   // returns misleading n which disregards available size!
   // also disregards terminal \0, as usual
+  // FIXME 2026-05-27 21:44:16 possibly working by luck because s8 starts with *buf
   i32 n = vsnprintf(scratch.beg, avail, format, args);
   va_end(args);
   if (n > 0) {

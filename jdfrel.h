@@ -398,7 +398,7 @@ b32 resize_arena(arena *a, size cap); // forward declaration
 */
 byte *alloc(arena *a, size objsize, size align, size count, const char *t) {
   if (count <= 0 || align <= 0) return 0;
-  printf("%p:%p [ %s ]s of size %ti x %ti\n", (void *)a, (void *)a->beg, t, objsize, count);
+  printf("%p:%p [ %s ] of size %ti x %ti\n", (void *)a, (void *)a->beg, t, objsize, count);
   size padding = 0;
  recalc:
   /*
@@ -858,7 +858,8 @@ i32 s8printf(arena *scratch, Writer writer, void *out, const char *format, ...) 
   if (n > 0) {
     scratch->cur += (n > avail ? avail : n); // at terminal \0
     return writer(out, (s8){.abs = (u8 *)scratch->beg,
-                            .len = used(scratch)});
+                            .len = used(scratch),
+                            .absolute = 1});
   } else return n;
 }
 
