@@ -240,6 +240,10 @@ Server make_server_fn(Handler h, Config c) {
   return server;
 }
 
+Client *client_from_arena(arena *a) {
+  return a ? (Client *)a->beg : 0; // Client must be fist alloc!
+}
+
 // Slightly misleading name because launch does most of resource alloc.
 #define make_server(h, ...) make_server_fn(h, (Config){DEFAULT_CONFIG, __VA_ARGS__})
 
@@ -349,7 +353,9 @@ Product make_product(arena *client_arena, i32 len, size chunk_size) {
   i32 cap = queue_capacity(len);
   if (!cap)
     return nil;
+  //printf("client before %p -> ", (void *)client_from_arena(client_arena));
   Chunks chunks = make_Chunks(client_arena, len);
+  //printf("%p\n", (void *)client_from_arena(client_arena));
   if (!chunks.len) return nil;
   u8 *buf = new (client_arena, u8, len * chunk_size);
   if (!buf)
@@ -541,12 +547,8 @@ void serialise_response(Workshop *shop, Response res) {
   reset_scratch(scratch);
 }
 
-Client *client_from_arena(arena *a) {
-  return a ? (Client *)a->beg : 0; // Client must be fist alloc!
-}
-
 // NB 2026-05-27 08:40:41 shouldn't race because on main thread?
-b32 add_client(Server *server, arena client_store, arena client_scratch) {
+arena *add_client(Server *server, arena client_store, arena client_scratch) {
   server->nclients++;
   arenas *to = &server->client_stores;
   arena *client_store_in_server = 0;
@@ -576,8 +578,10 @@ b32 add_client(Server *server, arena client_store, arena client_scratch) {
       break;
     }
   }
-  if (!success) goto add_fail;
-  return 1;
+  if (!success)
+    goto add_fail;
+  DEBUG("%p:%p added client\n", (void *)client_store_in_server, (void *)client_store_in_server->beg);
+  return client_store_in_server;
 add_fail:
   fprintf(stderr, "Unable to add client!\n");
   return 0;
@@ -587,11 +591,15 @@ add_fail:
 b32 remove_client(Server *server, Client *client) {
   server->nclients--;
   b32 success = 0;
+  arena *freed_scratch = {0};
+  arena *freed_store = {0};
+  byte *freed_store_beg = 0;
   // Always scans whole array.
   arenas *from = &server->client_scratches;
   for (size i = 0; i < from->len; i++) {
     arena *cur = &arenas_array_abs(*from)[i];
     if (cur != arena_abs(client->scratch)) continue;
+    freed_scratch = cur;
     success = free_arena(cur);
     break;
   }
@@ -601,10 +609,13 @@ b32 remove_client(Server *server, Client *client) {
   for (size i = 0; i < from->len; i++) {
     arena *cur = &arenas_array_abs(*from)[i];
     if (cur != arena_abs(client->store)) continue;
+    freed_store = cur;
+    freed_store_beg = cur->beg;
     success = free_arena(cur);
     break;
   }
   if (!success) goto remove_fail;
+  DEBUG("%p:%p removing client\n", (void *)freed_store, (void *)freed_store_beg);
   return 1;
 remove_fail:
   fprintf(stderr, "Unable to remove client!\n");
@@ -618,7 +629,7 @@ void client_cleanup_basics(arena *store, arena *scratch, i32 fd) {
 }
 
 void cleanup_client(EV_P_ ev_io *w) {
-  Client *client = (Client *)w->data;
+  Client *client = client_from_arena((arena *)w->data);
   Server *server = client->server;
   remove_client(server, client);
   // https://metacpan.org/dist/EV/view/libev/ev.pod#ev_TYPE_stop-(loop,-ev_TYPE-*watcher)
@@ -629,7 +640,7 @@ void cleanup_client(EV_P_ ev_io *w) {
 
 // returns previous state; not enjoyable to implement
 enum direction client_set_direction(EV_P_ ev_io *w, enum direction next, char *note) {
-  Client *client = (Client *)w->data;
+  Client *client = client_from_arena((arena *)w->data);
   ev_io *read_io = &client->read_io;
   ev_io *write_io = &client->write_io;
   enum direction previous;
@@ -697,7 +708,7 @@ void unavailable(i32 sock, char *msg) {
   Runs on main thread.
  */
 void write_client(EV_P_ ev_io *w, i32 events) {
-  Client *client = (Client *)w->data;
+  Client *client = client_from_arena((arena *)w->data);
   arena *scratch = arena_abs(client->scratch);  
   Product *p = &client->deliver;
 
@@ -774,12 +785,15 @@ b32 enqueue_request(Request req) {
   return 1;
 }
 
+//__attribute__((no_sanitize_address)) // hmm
 void read_client(EV_P_ ev_io *w, i32 events) {
-  Client *client = (Client *)w->data;
+  DEBUG("%p", w->data); // FIXME 2026-05-27 11:58:40 argh stale ?? assume not asan misfire
+  DEBUG(":%p read_client\n",(void *)((arena *)w->data)->beg); // FIXME 2026-05-27 10:55:37 something seems to be moving ??Server.client_stores before we get here?!
+  Client *client = client_from_arena((arena *)w->data);
   // using scratch arena as a buffer here, instead of local array
   // printf("client scratch usage should be 0: %ti\n", used(&client->scratch));
   ssize_t bytes_read = read(w->fd, arena_abs(client->scratch)->beg, available(arena_abs(client->scratch)));
-  *arena_abs(client->scratch)->cur = *arena_abs(client->scratch)->beg + bytes_read;
+  arena_abs(client->scratch)->cur = arena_abs(client->scratch)->beg + bytes_read;
   if (bytes_read == 0) { // client closed connection
     // printf("Zero bytes read from %s:%d, cleaning up\n", client->ip, client->port);
     cleanup_client(EV_A_ w);
@@ -803,7 +817,7 @@ void read_client(EV_P_ ev_io *w, i32 events) {
       return;
     }
     // s8arenaprintf(&client->scratch, "🔔 %s\n");
-    *arena_abs(client->scratch)->cur = *arena_abs(client->scratch)->beg; // Reset!
+    arena_abs(client->scratch)->cur = arena_abs(client->scratch)->beg; // Reset!
     Request req = parse_request(arena_abs(client->store), arena_abs(client->scratch), raw);
     char *uri = s8unwrap(arena_abs(client->scratch), req.uri);
     if (uri) printf("🔔 %s from %s:%d\n", uri, client->ip, client->port);
@@ -859,15 +873,27 @@ void accept_client(EV_P_ ev_io *w, i32 events) {
     client->address = server->address; // because struct apparently reused
     copy((u8 *)client->ip, (u8 *)client_ip, sizeof client_ip); // conveniences
     client->port = client_port;
-    
+    // ╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴ delivery queue
+    // TODO 2025-09-30 09:04:44 make len configurable
+    Product deliver = make_product(&client_store, 32, server->config.chunk_size);
+    client = client_from_arena(&client_store);
+    if (deliver.chunks.len) client->deliver = deliver;
+    else {
+      unavailable(new_socket, "allocate out queue");
+      cleanup_client(EV_A_ &client->read_io);
+      return;
+    }
+    arena *client_store_in_server = add_client(server, client_store, client_scratch);
+    // ╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴ event setup
     ev_io_init(&client->read_io, read_client, new_socket, EV_READ);
-    client->read_io.data = client; // I'm a woozie (see libev doc)
-
+    // FIXME 2026-05-27 10:03:14 pointer moves when resized
+    client->read_io.data = client_store_in_server; // I'm a woozie (see libev doc)
+    DEBUG("%p:%p accept_client\n", (void *)client_store_in_server, (void *)client_store_in_server->beg);
     // This is started and stopped conditionally on whether there is data to
     // write, to prevent excessive activation...
     // https://buildmage.com/blog/libev-tutorial-and-wrapper
     ev_io_init(&client->write_io, write_client, new_socket, EV_WRITE);
-    client->write_io.data = client;
+    client->write_io.data = client_store_in_server;
     // ...so deliberately not starting here.
 
     char note[128];
@@ -875,17 +901,7 @@ void accept_client(EV_P_ ev_io *w, i32 events) {
              client->mode==SERVER_SENT_EVENTS ? "📡" : "📣");
     client_set_direction(EV_A_ &client->read_io, READ, note);
 
-    // ╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴ delivery queue
-    // TODO 2025-09-30 09:04:44 make len configurable
-    Product deliver = make_product(&client_store, 32, server->config.chunk_size);
-    if (deliver.chunks.len) client->deliver = deliver;
-    else {
-      unavailable(new_socket, "allocate out queue");
-      client_cleanup_basics(&client_store, &client_scratch, new_socket);
-      return;
-    }
-    client->store_reset = used(&client_store);
-    add_client(server, client_store, client_scratch);
+    client->store_reset = used(client_store_in_server);
   }
 }
 

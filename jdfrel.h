@@ -32,7 +32,7 @@ typedef size_t    usize;
 #define countof(arrayptr) (size)(sizeof(arrayptr) / sizeof(*(arrayptr))) // casting from size_t
 #define new(a, t, n)                                            \
   (t *)alloc(a, sizeof(t), alignof(t), n, #t) // arena, type, number
-
+#define DEBUG(...) printf(__VA_ARGS__);
 /*
   Relative pointers, with respect to host arena (not anything else).
   Should allow areana resizing and maybe serialisation. NB +1 keeps
@@ -398,7 +398,7 @@ b32 resize_arena(arena *a, size cap); // forward declaration
 */
 byte *alloc(arena *a, size objsize, size align, size count, const char *t) {
   if (count <= 0 || align <= 0) return 0;
-  // printf("Trying to allocate %ti %ss of size %ti\n", count, t, objsize);
+  printf("%p:%p Trying to allocate %ti %ss of size %ti\n", (void *)a, (void *)a->beg, count, t, objsize);
   size padding = 0;
  recalc:
   /*
@@ -427,7 +427,7 @@ byte *alloc(arena *a, size objsize, size align, size count, const char *t) {
   */
   if (count > (avail - padding) / objsize) {
     size c = capacity(a);
-    printf("resizing arena %p from %ti\n", (void *)a, c);
+    DEBUG("%p resizing arena from %ti\n", (void *)a, c); // FIXME 2026-05-27 12:00:53 more than double in one go if needed!
     if (resize_arena(a, c < PTRDIFF_MAX / 2 ? 2 * c : PTRDIFF_MAX)) {
       goto recalc;
     } else {
@@ -1064,7 +1064,8 @@ void debytes(i32 fd, void *val, size len) { // too cool for stdio.h printf
 // malloc failure will return zero-capacity arena so its `alloc`s will just fail.
 arena alloc_arena(usize cap, arena *parent) {
   assert(cap <= MAX_CAP, "arena too big to address");
-  byte* beg = malloc(cap);
+  byte *beg = malloc(cap);
+  DEBUG("allocated %tuB at %p for arena with parent %p\n", cap, (void *)beg, (void *)parent);
   if (beg) return (arena){.beg = beg, .cur = beg, .end = beg + cap, .parent = parent};
   else return (arena){0};
 }
@@ -1074,6 +1075,7 @@ b32 resize_arena(arena *a, size cap) {
   usize u = used(a);
   byte *new_memory = realloc(a->beg, cap);
   //printf("a: %p, beg: %p, new: %p\n", a, a->beg, new_memory);
+  DEBUG("%p:%p->%p reallocated %tuB with parent %p\n", (void *)a, (void *)a->beg, (void *)new_memory, cap, (void *)a->parent);
   if (new_memory) {
     // FIXME 2026-05-23 18:33:43 needs to be threadsafe!!
     a->beg = new_memory;
