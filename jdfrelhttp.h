@@ -241,7 +241,7 @@ Server make_server_fn(Handler h, Config c) {
 }
 
 Client *client_from_arena(arena *a) {
-  return a ? (Client *)a->beg : 0; // Client must be fist alloc!
+  return a ? (Client *)a->beg : 0; // Client must be first alloc!
 }
 
 // Slightly misleading name because launch does most of resource alloc.
@@ -455,6 +455,7 @@ b32 flushc(Chunk *workshop_pending) {
     return 0;
   }
   // workshop_pending->buf is preallocated in Workshop arena by `launch`
+  // FIXME 2026-06-01 22:52:15 probably garbage
   Chunk *client_deliver = &Chunks_array_abs(d->chunks)[idx];
   // FIXME 2026-05-27 22:42:13 something lost in rel-translation here
   u8_rel_t buf = client_deliver->buf; // preallocated in Client arena by `make_product`
@@ -594,7 +595,6 @@ add_fail:
 b32 remove_client(Server *server, Client *client) {
   server->nclients--;
   b32 success = 0;
-  arena *freed_scratch = {0};
   arena *freed_store = {0};
   byte *freed_store_beg = 0;
   // Always scans whole array.
@@ -602,7 +602,6 @@ b32 remove_client(Server *server, Client *client) {
   for (size i = 0; i < from->len; i++) {
     arena *cur = &arenas_array_abs(*from)[i];
     if (cur != arena_abs(client->scratch)) continue;
-    freed_scratch = cur;
     success = free_arena(cur);
     break;
   }
@@ -956,7 +955,7 @@ void *worker(void *workshop_offset) { // ─────────────
     // by half-duplex `client_set_direction`. Writer is on main thread
     // so libev can deal with delays writing.
     res = server->handler(&workshop->store, &workshop->scratch, req);
-    // FIXME 2026-05-27 22:56 this is probably causing the garbage dest in flushc
+    // FIXME 2026-05-27 22:56 this is probably transmittingd the garbage dest in flushc
     if (!Client_abs(res.client)) res.client = Client_rel(arena_abs(client->store), client);
     workshop->pending.dest = res.client;
     serialise_response(workshop, res);
@@ -967,11 +966,11 @@ void *worker(void *workshop_offset) { // ─────────────
 
 typedef void *(*Worker)(void *);
 
-Work make_work(arena *a, i32 len) {
+Work make_work(arena *server_store, i32 len) {
   Work nil = (Work){0};
   i32 cap = queue_capacity(len);
   if (!cap) return nil;
-  Requests requests = make_Requests(a, len);
+  Requests requests = make_Requests(server_store, len);
   if (!requests.len) return nil;
   return (Work) { .requests = requests, .q = 0 };
 }
@@ -1002,50 +1001,49 @@ void launch(Server *server) {
   server->work_waiting = (pthread_cond_t)PTHREAD_COND_INITIALIZER;
   pthread_mutex_init(&server->work_waiting_lock, 0);
   // ╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴ Client tracking
-  arenas stores = make_arenas(&server->store, server->config.clients); 
-  if (!stores.len) {
+  server->client_stores = make_arenas(&server->store, server->config.clients); 
+  if (!server->client_stores.len) {
     fprintf(stderr, "💣 Failed to allocate client store tracking array for %d clients\n",
             server->config.clients);
     exit(1);
   }
-  server->client_stores = stores;
-  arenas scratches = make_arenas(&server->store, server->config.clients);
-  if (!scratches.len) {
+  server->client_scratches = make_arenas(&server->store, server->config.clients);
+  if (!server->client_scratches.len) {
     fprintf(stderr, "💣 Failed to allocate client scratch tracking array for %d clients\n",
             server->config.clients);
     exit(1);
   }
-  server->client_scratches = scratches;
   // ╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴ Workshops
   i32 nw = server->config.workers;
-  Workshop *workshops = new (&server->store, Workshop, nw);
-  if (!workshops) {
+  server->workshops = make_Workshops(&server->store, nw);
+  if (!server->workshops.len) {
     fprintf(stderr, "💣 Failed to allocate %d workshops\n", nw);
     exit(1);
   }
   for (size i = 0; i < nw; i++) {
-    workshops[i].server = server;
-    workshops[i].store = alloc_arena(server->config.worker_mem, &server->store);
-    workshops[i].scratch = alloc_arena(server->config.worker_mem, &server->scratch);
-    u8 *buf = new (&workshops[i].store, u8, server->config.chunk_size);
+    Workshop *w = &Workshops_array_abs(server->workshops)[i];
+    w->server = server;
+    w->store = alloc_arena(server->config.worker_mem, &server->store);
+    w->scratch = alloc_arena(server->config.worker_mem, &server->scratch);
+    u8 *buf = new (&w->store, u8, server->config.chunk_size);
     if (!buf) {
       fprintf(stderr, "💣 Failed to allocate workshop %td pending buffer\n", i);
       exit(1);
     }
-    workshops[i].pending = (Chunk) {
-      .buf = u8_rel(&workshops[i].store, buf),
+    w->pending = (Chunk) {
+      .buf = u8_rel(&w->store, buf),
       .cap = server->config.chunk_size
     };
-    workshops[i].store_reset = used(&workshops[i].store);
+    w->store_reset = used(&w->store);
   }
-  server->workshops.rel = Workshop_rel(&server->store, workshops); 
   size workers = 0;
   i32 rc = 0;
   for (size i = 0; i < nw; i++) {
-    if (!(rc = pthread_create(&(workshops[i].thread), 0, (Worker)worker,
+    Workshop *w = &Workshops_array_abs(server->workshops)[i];
+    if (!(rc = pthread_create(&(w->thread), 0, (Worker)worker,
                               // 2026-05-26 22:49:25 FIXME ugh how to pass rel
                               // to Workshop without making server global
-                              (void*)((byte *)&workshops[i] - server->store.beg)
+                              (void*)((byte *)w - server->store.beg)
                               ))) {
       server->workshops.len = ++workers;
     } else {
@@ -1060,14 +1058,6 @@ void launch(Server *server) {
   server->port = server_port;
   printf("👂 Listening on %s:%d using %td threads for up to %d clients.\n",
          server->ip, server->port, workers, server->config.clients);
-  //printf("🧠 Internal memory usage will be %td-%td MiB.\n", // excludes libraries' allocs
-          //    // TODO 2025-10-02 01:47:17 could configure individually... after profiling
-          //    (server->config.server_mem * 2 // store, scratch
-        //        + server->config.client_mem * 2 * 0
-        //        + server->config.worker_mem * 2 * server->config.workers) / MiB(1),
-          //       (server->config.server_mem * 3
-           //        + server->config.client_mem * 2 * server->config.clients
-           //        + server->config.worker_mem * 2 * server->config.workers) / MiB(1));
   
   server->loop = ev_loop_new(0);
   set_non_blocking(server->socket);
