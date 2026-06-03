@@ -80,6 +80,7 @@ Response send_handler(arena *store, arena *scratch, Request req) {
     arena *a = &arenas_array_abs(server->client_stores)[i];
     if (!a) continue;
     Client *cur = client_from_arena(a);
+    if (!cur) continue;
     if (cur->mode == SERVER_SENT_EVENTS) {
       s8 msg = s8sprintf(a, // recipient's arena!
                           "event: message\ndata: hello from %s:%d to %s:%d\n\n",

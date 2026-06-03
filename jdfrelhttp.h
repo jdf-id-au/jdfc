@@ -241,7 +241,7 @@ Server make_server_fn(Handler h, Config c) {
 }
 
 Client *client_from_arena(arena *a) {
-  return a ? (Client *)a->beg : 0; // Client must be first alloc!
+  return (a && a->beg) ? (Client *)a->beg : 0; // Client must be first alloc!
 }
 
 // Slightly misleading name because launch does most of resource alloc.
@@ -633,6 +633,7 @@ void client_cleanup_basics(arena *store, arena *scratch, i32 fd) {
 
 void cleanup_client(EV_P_ ev_io *w) {
   Client *client = client_from_arena((arena *)w->data);
+  if (!client) return;
   Server *server = client->server;
   remove_client(server, client);
   // https://metacpan.org/dist/EV/view/libev/ev.pod#ev_TYPE_stop-(loop,-ev_TYPE-*watcher)
