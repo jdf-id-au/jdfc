@@ -821,10 +821,13 @@ void read_client(EV_P_ ev_io *w, i32 events) {
     }
     // s8arenaprintf(&client->scratch, "🔔 %s\n");
     arena_abs(client->scratch)->cur = arena_abs(client->scratch)->beg; // Reset!
-    Request req = parse_request(arena_abs(client->store), arena_abs(client->scratch), raw);
-    char *uri = s8unwrap(arena_abs(client->scratch), req.uri);
+    arena *client_store = arena_abs(client->store);
+    arena *client_scratch = arena_abs(client->scratch);
+    Request req = parse_request(client_store, client_scratch, raw); // NB 2026-06-03 22:15:58 can move client pointer and therefore invalidate client->store (even though it's in the server arena!)
+    char *uri = s8unwrap(client_scratch, req.uri);
     if (uri) printf("🔔 %s from %s:%d\n", uri, client->ip, client->port);
-    req.client = Client_rel(arena_abs(client->store), client); // NB 2026-06-03 22:09:33 found it? this would be stale client pointer
+    client = client_from_arena(client_store); // recover correct pointer
+    req.client = Client_rel(client_store, client);
     if (!enqueue_request(req)) {
       unavailable(w->fd, "enqueue job"); // effectively backpressure
       cleanup_client(EV_A_ w);
