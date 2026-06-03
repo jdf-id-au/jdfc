@@ -361,10 +361,11 @@ Product make_product(arena *client_arena, i32 len, size chunk_size) {
   if (!buf)
     return nil;
   Chunk *cb = Chunks_array_abs(chunks);
+  Client_rel_t client = Client_rel(client_arena, client_from_arena(client_arena));
   for (size i = 0; i < len; i++) {
     cb[i] = (Chunk) {
-      .buf = u8_rel(client_arena, &buf[i * chunk_size]),
-      .cap = chunk_size
+      .buf = u8_rel(client_arena, &buf[i * chunk_size]), .cap = chunk_size,
+      //.dest = client
     };
   }
   return (Product) { .chunks = chunks, .q = 0 };
@@ -823,7 +824,7 @@ void read_client(EV_P_ ev_io *w, i32 events) {
     Request req = parse_request(arena_abs(client->store), arena_abs(client->scratch), raw);
     char *uri = s8unwrap(arena_abs(client->scratch), req.uri);
     if (uri) printf("🔔 %s from %s:%d\n", uri, client->ip, client->port);
-    req.client = Client_rel(arena_abs(client->store), client);
+    req.client = Client_rel(arena_abs(client->store), client); // NB 2026-06-03 22:09:33 found it? this would be stale client pointer
     if (!enqueue_request(req)) {
       unavailable(w->fd, "enqueue job"); // effectively backpressure
       cleanup_client(EV_A_ w);
@@ -905,10 +906,7 @@ void accept_client(EV_P_ ev_io *w, i32 events) {
   }
 }
 
-Server global_server = {0}; // FIXME 2026-05-26 22:52:59 temporary global copout
-
-void *worker(void *workshop_offset) { // ─────────────────────────────────── Worker
-  Workshop *workshop = (Workshop *)(global_server.store.beg + (size)workshop_offset);
+void *worker(Workshop *workshop) { // ─────────────────────────────────── Worker
   Server *server = workshop->server;
   i32 qi = 0;
   Request req = {0};
@@ -955,8 +953,8 @@ void *worker(void *workshop_offset) { // ─────────────
     // by half-duplex `client_set_direction`. Writer is on main thread
     // so libev can deal with delays writing.
     res = server->handler(&workshop->store, &workshop->scratch, req);
-    // FIXME 2026-05-27 22:56 this is probably transmittingd the garbage dest in flushc
-    if (!Client_abs(res.client)) res.client = Client_rel(arena_abs(client->store), client);
+    // FIXME 2026-05-27 22:56 this is probably transmitting the garbage dest in flushc
+    if (!Client_abs(res.client)) res.client = req.client;
     workshop->pending.dest = res.client;
     serialise_response(workshop, res);
   reset_store:
@@ -992,12 +990,11 @@ void launch(Server *server) {
   if (!server->store.beg || !server->scratch.beg)
     fprintf(stderr, "💣 Failed to allocate %td KB server arenas.", server->config.server_mem/KiB(1));
   // ╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴ Resources
-  Work work = make_work(&server->store, 32);
-  if (!work.requests.len) {
+  server->work = make_work(&server->store, 32);
+  if (!server->work.requests.len) {
     fprintf(stderr, "💣 Failed to make work queue\n");
     exit(1);
   }
-  server->work = work;
   server->work_waiting = (pthread_cond_t)PTHREAD_COND_INITIALIZER;
   pthread_mutex_init(&server->work_waiting_lock, 0);
   // ╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴ Client tracking
@@ -1039,12 +1036,8 @@ void launch(Server *server) {
   size workers = 0;
   i32 rc = 0;
   for (size i = 0; i < nw; i++) {
-    Workshop *w = &Workshops_array_abs(server->workshops)[i];
-    if (!(rc = pthread_create(&(w->thread), 0, (Worker)worker,
-                              // 2026-05-26 22:49:25 FIXME ugh how to pass rel
-                              // to Workshop without making server global
-                              (void*)((byte *)w - server->store.beg)
-                              ))) {
+    Workshop *w = &Workshops_array_abs(server->workshops)[i]; // NB 2026-06-03 21:53:43 must not realloc server arena after this!
+    if (!(rc = pthread_create(&(w->thread), 0, (Worker)worker, w))) {
       server->workshops.len = ++workers;
     } else {
       fprintf(stderr, "Unable to create thread %td: %i\n", i, rc);

@@ -159,9 +159,7 @@ i32 main(int argc, char **argv) {
     fprintf(stderr, "Please specify a port");
     return 1;
   }
-  // Server server = make_server(router, .port = *port);
-  global_server = make_server(router, .port = *port);
-  // launch(&server);
-  launch(&global_server);
+  Server server = make_server(router, .port = *port);
+  launch(&server);
   return 0;
 }
