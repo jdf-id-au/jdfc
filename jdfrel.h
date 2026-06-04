@@ -1,7 +1,6 @@
 /*
   Rework jdf.h for relative pointers (indices within arena) to ease
-  arena resizing and maybe serialisation. Also drop win32. Watch with
-  horror as api changes.
+  arena resizing and maybe serialisation. Also drop win32. Changes API.
 */
 
 #ifndef jdf_h
@@ -32,27 +31,26 @@ typedef size_t    usize;
 #define countof(arrayptr) (size)(sizeof(arrayptr) / sizeof(*(arrayptr))) // casting from size_t
 #define new(a, t, n)                                            \
   (t *)alloc(a, sizeof(t), alignof(t), n, #t) // arena, type, number
-#define DEBUG(...) printf(__VA_ARGS__);
+#define DEBUG(...) fprintf(stderr, __VA_ARGS__);
 /*
   Relative pointers, with respect to host arena (not anything else).
-  Should allow areana resizing and maybe serialisation. NB +1 keeps
+  Allows arena resizing and maybe serialisation. NB +1 keeps
   meaning of 0 as null.
 
   Operate on normal pointers, store relative pointers.
 
-  TODO 2026-05-23 14:36:38 think about dynamic resizing in threaded context
- */
-
-/*
-  In contrast to non-rel implemntation, need to pass "scratch" by
+  Also see `alloc` comments.
+  
+  In contrast to non-rel implementation, need to pass "scratch" by
   reference to accommodate dynamic resize.
 */
 typedef struct arena arena;
 struct arena {
-  byte *beg; // original start of arena
-  byte *cur; // cursor: current start of free space
-  byte *end; // allocated end of arena
-  arena *parent; // line of ancestors whose contents are fair game for a rel ptr
+  byte *beg; // start of allocated memory
+  byte *cur; // cursor: start of free space
+  byte *end; // end of allocated memory
+  // TODO 2026-06-04 19:50:05 check when calculating rel:
+  arena *parent; // line of ancestors whose contents are fair game for a rel ptr 
 };
 
 struct rel {
@@ -62,7 +60,6 @@ struct rel {
 
 #define MAX_CAP PTRDIFF_MAX - 1
 
-// TODO 2026-05-26 23:09:52 look down parent arenas if can't rel locally
 #define REL(t)                                                                 \
   typedef struct rel t##_rel_t;                                                \
   t##_rel_t t##_rel(arena *a, void *p) {                                       \
@@ -141,7 +138,7 @@ struct rel {
 // #define assert(c, ...) while (!(c)) __builtin_unreachable() // probably optimisable away
 
 // ──────────────────────────────────────────────────────────────── Linked lists
-typedef struct { size next; } node_t; // can be either direction; ignore subsequent fields (TODO 2026-05-02 12:48:43 prove not reordered???); 0 indicates none, not self
+typedef struct { size next; } node_t; // can be either direction; ignore subsequent fields; 0 indicates none, not self
 node_t *offset(node_t *from, size by) { return (node_t *)((byte *)from + by); }
 size ptrdiff(void *from, void *to) { return (byte *)to - (byte *)from; }
 node_t *next(node_t *node) {
@@ -196,12 +193,12 @@ node_t *insert(node_t *after, node_t *from, size count) {
   } else return from;
 }
 /*
-  Define new linked list type tn, element type t. t can be typename *
-  for pointer (i.e. reference list).
+  Define new linked list type tn, element type t. t can be a (typedef'd)
+  pointer, making a reference list.
 
-  <tn>append appends node with value `m` to node `maybe`.
-  If `maybe` doesn't exist, append starts a new list.
-  If `maybe` already has a ->next, append follows it to the end.
+  <tn>_append appends node with value `m` to node `maybe`.
+  If `maybe` doesn't exist, starts a new list.
+  If `maybe` already has a ->next, follows it to the end.
   Does not prevent inclusion of stack-allocated values in heap-allocated list!
 */
 
@@ -386,15 +383,9 @@ b32 resize_arena(arena *a, size cap); // forward declaration
   Allocate space within arena. Use via `new` macro.
   Not designed to be threadsafe! Each thread requires its own arena/s.
 
-  TODO 2026-05-26 20:34:45 contemplate thread allocating on ancestor
-  arena not owned by that thread...!
-
   Every allocation can cause the arena to resize, so take a relative
   pointer to anything which could change, before allocating, then
   convert back to absolute, after.
-
-  TODO 2026-05-24 22:01:52 macro nonsense for this?
-  https://github.com/cormacc/va_args_iterators/blob/master/pp_iter.h
 */
 byte *alloc(arena *a, size objsize, size align, size count, const char *t) {
   if (count <= 0 || align <= 0) return 0;
@@ -430,13 +421,14 @@ byte *alloc(arena *a, size objsize, size align, size count, const char *t) {
     size needed = (count * objsize) + usd + padding;
     size c = capacity(a);
     size asking = c;
+    // grug approve
     for (size thinking = asking; thinking < PTRDIFF_MAX; thinking *= 2) {
       if (thinking > needed) {
         asking = thinking;
         break;
       }
     }
-    DEBUG("%p resizing arena from %ti to %ti\n", (void *)a, c, asking); // FIXME 2026-05-27 12:00:53 more than double in one go if needed!
+    DEBUG("%p resizing arena from %ti to %ti\n", (void *)a, c, asking);
     if (resize_arena(a, asking)) {
       goto recalc;
     } else {
@@ -470,7 +462,6 @@ REL(u8)
 ARRAY(s8, u8) // s8: Basic UTF-8 string. Not null terminated!
 #define s8(s) (s8){.abs = (u8 *)s, .len = countof(s) - 1, .absolute = 1}
 static const s8 s8_OOM = s8("error: out of memory");
-b32 s8equal(s8, s8);
 REL(s8)
 LIST(s8l, s8)
 
@@ -883,12 +874,13 @@ void s8log(i32 fd, s8 s) {
 
 // ──────────────────────────────────────────────────────────── Operating System
 
-void osfail(i32 code);
+ // terminate without cleanup https://stackoverflow.com/a/5423108/780743
 
-void failwith(i32 code, s8 msg) {
-  s8log(2, msg);
-  osfail(code);
-}
+#define failwith(code, ...)                                                    \
+  do {                                                                         \
+    fprintf(stderr, __VA_ARGS__);                                              \
+    _Exit(code);                                                               \
+  } while (0)
 
 // ╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴ Arg parsing
 
@@ -914,8 +906,10 @@ b32 *bool_arg(struct args a, char *k) {
 
 i32 *int_arg(struct args a, char *k) {
   kvargs *kv = kvargs_get(a.kv, s8wrap(k, 64));
-  return kv ? (i32 *)kv->val : 0; 
+  return kv ? (i32 *)kv->val : 0;
 }
+
+byte *reset_scratch(arena *a);
 
 // Defs e.g. "--port=int --workers=int" must be in --long-arg=type form.
 // Initials are promoted to short arg name (first wins).
@@ -935,19 +929,19 @@ struct args argparse(arena *store, arena *scratch, char *defs, int argc, char **
     if (!def.head.len) def.head = remaining;
     kv = s8cut(def.head, s8("="));
     if (s8startswith(kv.head, s8("--"))) kv.head = s8slice(kv.head, 2, 0);
-    else failwith(1, s8("Invalid arg name def."));
+    else failwith(1, "Invalid arg name def in %s.", defs);
     enum argtype t = UNK_ARG;
     if (s8equal(s8("int"), kv.tail)) t = INT_ARG;
     else if (s8equal(s8("str"), kv.tail)) t = STR_ARG;
     else if (s8equal(s8("bool"), kv.tail)) t = BOOL_ARG;
-    else failwith(1, s8("Invalid arg type def."));
+    else failwith(1, "Invalid arg type def in %s.", defs);
     types = argtypes_assoc(scratch, types, kv.head, t);
   }
   struct args ret = {0};
   b32 await_val = 0;
   enum argtype t = UNK_ARG;
   int i = 1;
-  for (i = 1; i < argc; i++) {
+  for (; i < argc; i++) {
     s8 arg = s8wrap(argv[i], 256);
     if (!await_val) {
       kv = s8cut(arg, s8("="));
@@ -958,8 +952,8 @@ struct args argparse(arena *store, arena *scratch, char *defs, int argc, char **
         kv.head = s8slice(kv.head, 2, 0);
       }
       else if (s8startswith(kv.head, s8("-"))) {
-        if (kv.tail.len) failwith(1, s8("Invalid short arg format (omit '=')."));
-        kv.tail = s8slice(kv.head, 2, 0);
+        if (kv.tail.len) failwith(1, "Invalid short arg format (omit '=').");
+        kv.tail = s8slice(kv.head, 2, 0); // mutation in situ eugh
         kv.head = s8slice(kv.head, 1, 2);
         argtypes *cur = types;
         while (cur) 
@@ -987,28 +981,28 @@ struct args argparse(arena *store, arena *scratch, char *defs, int argc, char **
     switch (t) {
     case INT_ARG:
       i32p = new (scratch, i32, 1);
-      if (!i32p) failwith(1, s8_OOM);
+      if (!i32p) failwith(1, "OOM\n");
       kv.tail = s8wrap((char *)kv.tail.abs, 16); // should be null terminated
       char *end = 0;
       *i32p = strtol((char *)kv.tail.abs, &end, 10);
-      if (!end) failwith(1, s8("Invalid int argument."));
+      if (!end) failwith(1, "Invalid int argument.");
       ret.kv = kvargs_assoc(store, ret.kv, kv.head, i32p);
       break;
     case BOOL_ARG:
       b32p = new (store, b32, 1); // initialised to 0 i.e. false
-      if (!b32p) failwith(1, s8_OOM);
+      if (!b32p) failwith(1, "OOM\n");
       *b32p = 1; // if none->true
       if (s8equal(kv.tail, s8("false"))) *b32p = 0;
       else if (s8equal(kv.tail, s8("true")) || !kv.tail.len); // already
       else if (s8startswith(kv.tail, s8("-"))) i-- ; // no value, would be next arg relook at this arg next loop
       else
-        failwith(1, s8("Invalid bool argument."));
+        failwith(1, "Invalid bool argument.");
       ret.kv = kvargs_assoc(store, ret.kv, kv.head, b32p);
       break;
     case STR_ARG:
       s8p = new (scratch, s8, 1);
-      if (!s8p) failwith(1, s8_OOM);
-      if (s8startswith(kv.tail, s8("-"))) failwith(1, s8("Invalid str argument."));
+      if (!s8p) failwith(1, "OOM\n");
+      if (s8startswith(kv.tail, s8("-"))) failwith(1, "Invalid str argument.");
       *s8p = kv.tail;
       ret.kv = kvargs_assoc(store, ret.kv, kv.head, s8p);
       break;
@@ -1024,11 +1018,12 @@ struct args argparse(arena *store, arena *scratch, char *defs, int argc, char **
   if (++i < argc) {
     plainargs rest = make_plainargs(store, argc - i);
     s8 *cur = plainargs_array_abs(rest);
-    if (!rest.len) failwith(1, s8_OOM);
+    if (!rest.len) failwith(1, "OOM\n");
     for (int j = 0; j < argc - i; j++) 
       cur[j] = s8wrap(argv[i + j], 256);
     ret.rest = rest;
   }
+  reset_scratch(scratch);
   return ret;
 }
 
@@ -1116,10 +1111,6 @@ byte *reset_scratch(arena *a) { // NB 2026-05-26 13:53:00 breaks arena concept a
 }
 
 // TODO 2026-05-24 01:50:58 ser/de arenas with a little metadata
-
-void osfail(i32 code) {
-  _exit(code); // terminate without cleanup https://stackoverflow.com/a/5423108/780743
-}
 
 i32 osread(i32 fd, u8 *buf, i32 cap) {
   return (i32)read(fd, buf, cap);

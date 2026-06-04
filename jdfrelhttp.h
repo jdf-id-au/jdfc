@@ -638,7 +638,8 @@ void cleanup_client(EV_P_ ev_io *w) {
   remove_client(server, client);
   // https://metacpan.org/dist/EV/view/libev/ev.pod#ev_TYPE_stop-(loop,-ev_TYPE-*watcher)
   ev_io_stop(EV_A_ &client->read_io);
-  ev_io_stop(EV_A_ &client->write_io);
+  ev_io_stop(EV_A_ & client->write_io);
+  if (!w) return;
   client_cleanup_basics(0, 0, w->fd);
 }
 
