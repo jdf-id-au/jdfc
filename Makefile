@@ -8,8 +8,7 @@ PREAMBLE=MallocNanoZone='0' time
 CFLAGS=-std=c17 -g3 \
 -pedantic -Wall -Wextra \
 -fPIC -fsanitize=undefined,address
-CFLAGSPROD=-std=c17 -O3 \
--fPIC -fsanitize=undefined,address
+CFLAGSPROD=-std=c17 -O3 -fPIC
 
 clean:
 	rm testrel_http

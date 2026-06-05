@@ -1074,7 +1074,7 @@ void launch(Server *server) {
   ev_loop_destroy(server->loop);
 
   // TODO is it necessary to join/kill workers? do they need enclosing while(running) loop?
-  // FIXME 2026-06-06 00:54:57 apparent memory leak with requests (e.g. hyperfine)
+  // FIXME 2026-06-06 00:54:57 apparent memory leak with requests (e.g. hyperfine) but Instruments doesn't seem to think so
 }
 
 #endif // jdfhttp_h
