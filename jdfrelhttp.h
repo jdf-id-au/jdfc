@@ -445,7 +445,7 @@ b32 flushc(Chunk *workshop_pending) {
     fprintf(stderr, "💣 Tried to flush to uninitialised destination\n");
     return 0;
   }
-  Product *d = &dest->deliver;
+  Product *d = &dest->deliver; // FIXME 2026-06-05 22:32:52 capable of having garbage chunks! (via finishc only? or just not flushed prior?)
   i32 idx = 0; // also see write_qout for queue semantics
 
   idx = queue_push(&d->q, d->chunks.len); // ╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴ Queue access
@@ -458,9 +458,9 @@ b32 flushc(Chunk *workshop_pending) {
   // workshop_pending->buf is preallocated in Workshop arena by `launch`
   Chunk *client_deliver = &Chunks_array_abs(d->chunks)[idx];
   u8_rel_t buf = client_deliver->buf; // preallocated in Client arena by `make_product`
-  *client_deliver = *workshop_pending; // copy all fields but clobbers buf pointer // FIXME 2026-06-05 22:06:19 capable of misaligned load
+  *client_deliver = *workshop_pending; // copy all fields but clobbers buf pointer
   client_deliver->buf = buf; // correct buf pointer
-  copy(u8_abs(client_deliver->buf), u8_abs(workshop_pending->buf), workshop_pending->len); // FIXME 2026-06-05 22:03:30 capable of SEGV reading workshop_pending->buf
+  copy(u8_abs(client_deliver->buf), u8_abs(workshop_pending->buf), workshop_pending->len);
   queue_push_commit(&d->q); //  ╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴
 
   // Reset chunk for reuse! FIXME 2025-09-30 15:15:06 Error-prone
@@ -543,7 +543,7 @@ void serialise_response(Workshop *shop, Response res) {
       client->mode = SERVER_SENT_EVENTS;
       finishc(out, WRITE);
     }
-    else finishc(out, READ);
+    else finishc(out, READ); // FIXME  2026-06-05 23:00:29 
     printf("📣 %i\n", res.status);
   }
   arena_abs(client->store)->cur = arena_abs(client->store)->beg + client->store_reset;
