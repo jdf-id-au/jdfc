@@ -632,12 +632,11 @@ void cleanup_client(EV_P_ ev_io *w) {
   Client *client = client_from_arena((arena *)w->data);
   if (!client) return;
   Server *server = client->server;
-  remove_client(server, client);
   // https://metacpan.org/dist/EV/view/libev/ev.pod#ev_TYPE_stop-(loop,-ev_TYPE-*watcher)
   ev_io_stop(EV_A_ &client->read_io);
   ev_io_stop(EV_A_ & client->write_io);
-  if (!w) return;
-  client_cleanup_basics(0, 0, w->fd); // FIXME 2026-06-05 22:02:21 still capable of UAF
+  close(w->fd);
+  remove_client(server, client);
 }
 
 // returns previous state; not enjoyable to implement
@@ -876,16 +875,17 @@ void accept_client(EV_P_ ev_io *w, i32 events) {
     copy((u8 *)client->ip, (u8 *)client_ip, sizeof client_ip); // conveniences
     client->port = client_port;
     // ╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴ delivery queue
+    arena *client_store_in_server = add_client(server, client_store, client_scratch); // NB 2026-06-06 00:25:13 needs to be before make_product so arena pointer is correct
     // TODO 2025-09-30 09:04:44 make len configurable
-    Product deliver = make_product(&client_store, 32, server->config.chunk_size);
-    client = client_from_arena(&client_store);
+    Product deliver = make_product(client_store_in_server, 32, server->config.chunk_size);
+    client = client_from_arena(client_store_in_server);
     if (deliver.chunks.len) client->deliver = deliver;
     else {
       unavailable(new_socket, "allocate out queue");
       cleanup_client(EV_A_ &client->read_io);
       return;
     }
-    arena *client_store_in_server = add_client(server, client_store, client_scratch);
+    
     // ╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴ event setup
     ev_io_init(&client->read_io, read_client, new_socket, EV_READ);
     // FIXME 2026-05-27 10:03:14 pointer moves when resized
