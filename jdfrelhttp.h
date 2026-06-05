@@ -361,7 +361,6 @@ Product make_product(arena *client_arena, i32 len, size chunk_size) {
   if (!buf)
     return nil;
   Chunk *cb = Chunks_array_abs(chunks);
-  Client_rel_t client = Client_rel(client_arena, client_from_arena(client_arena));
   for (size i = 0; i < len; i++) {
     cb[i] = (Chunk) {
       .buf = u8_rel(client_arena, &buf[i * chunk_size]), .cap = chunk_size,
@@ -445,7 +444,7 @@ b32 flushc(Chunk *workshop_pending) {
     fprintf(stderr, "💣 Tried to flush to uninitialised destination\n");
     return 0;
   }
-  Product *d = &dest->deliver; // FIXME 2026-06-05 22:32:52 capable of having garbage chunks! (via finishc only? or just not flushed prior?)
+  Product *d = &dest->deliver; // FIXME 2026-06-05 22:32:52 capable of having garbage chunks!
   i32 idx = 0; // also see write_qout for queue semantics
 
   idx = queue_push(&d->q, d->chunks.len); // ╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴ Queue access
