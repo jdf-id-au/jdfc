@@ -445,7 +445,7 @@ b32 flushc(Chunk *workshop_pending) {
     fprintf(stderr, "💣 Tried to flush to uninitialised destination\n");
     return 0;
   }
-  Product *d = &dest->deliver; // FIXME 2026-05-27 22:17:58 garbage
+  Product *d = &dest->deliver;
   i32 idx = 0; // also see write_qout for queue semantics
 
   idx = queue_push(&d->q, d->chunks.len); // ╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴ Queue access
@@ -456,9 +456,7 @@ b32 flushc(Chunk *workshop_pending) {
     return 0;
   }
   // workshop_pending->buf is preallocated in Workshop arena by `launch`
-  // FIXME 2026-06-01 22:52:15 probably garbage
   Chunk *client_deliver = &Chunks_array_abs(d->chunks)[idx];
-  // FIXME 2026-05-27 22:42:13 something lost in rel-translation here
   u8_rel_t buf = client_deliver->buf; // preallocated in Client arena by `make_product`
   *client_deliver = *workshop_pending; // copy all fields but clobbers buf pointer
   client_deliver->buf = buf; // correct buf pointer
@@ -790,10 +788,9 @@ b32 enqueue_request(Request req) {
   return 1;
 }
 
-//__attribute__((no_sanitize_address)) // hmm
 void read_client(EV_P_ ev_io *w, i32 events) {
-  DEBUG("%p", w->data); // FIXME 2026-05-27 11:58:40 argh stale ?? assume not asan misfire
-  DEBUG(":%p read_client\n",(void *)((arena *)w->data)->beg); // FIXME 2026-05-27 10:55:37 something seems to be moving ??Server.client_stores before we get here?!
+  DEBUG("%p", w->data);
+  DEBUG(":%p read_client\n",(void *)((arena *)w->data)->beg);
   Client *client = client_from_arena((arena *)w->data);
   // using scratch arena as a buffer here, instead of local array
   // printf("client scratch usage should be 0: %ti\n", used(&client->scratch));
@@ -958,7 +955,6 @@ void *worker(Workshop *workshop) { // ──────────────
     // by half-duplex `client_set_direction`. Writer is on main thread
     // so libev can deal with delays writing.
     res = server->handler(&workshop->store, &workshop->scratch, req);
-    // FIXME 2026-05-27 22:56 this is probably transmitting the garbage dest in flushc
     if (!Client_abs(res.client)) res.client = req.client;
     workshop->pending.dest = res.client;
     serialise_response(workshop, res);

@@ -1075,6 +1075,7 @@ arena alloc_arena(usize cap, arena *parent) {
   else return (arena){0};
 }
 
+// Not threadsafe
 b32 resize_arena(arena *a, size cap) {
   assert(cap > used(a), "can't shrink while full");
   usize u = used(a);
@@ -1082,7 +1083,6 @@ b32 resize_arena(arena *a, size cap) {
   //printf("a: %p, beg: %p, new: %p\n", a, a->beg, new_memory);
   DEBUG("%p:%p->%p reallocated %tuB with parent %p\n", (void *)a, (void *)a->beg, (void *)new_memory, cap, (void *)a->parent);
   if (new_memory) {
-    // FIXME 2026-05-23 18:33:43 needs to be threadsafe!!
     a->beg = new_memory;
     a->cur = new_memory + u;
     a->end = new_memory + cap;
