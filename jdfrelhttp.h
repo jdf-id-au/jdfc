@@ -458,9 +458,9 @@ b32 flushc(Chunk *workshop_pending) {
   // workshop_pending->buf is preallocated in Workshop arena by `launch`
   Chunk *client_deliver = &Chunks_array_abs(d->chunks)[idx];
   u8_rel_t buf = client_deliver->buf; // preallocated in Client arena by `make_product`
-  *client_deliver = *workshop_pending; // copy all fields but clobbers buf pointer
+  *client_deliver = *workshop_pending; // copy all fields but clobbers buf pointer // FIXME 2026-06-05 22:06:19 capable of misaligned load
   client_deliver->buf = buf; // correct buf pointer
-  copy(u8_abs(client_deliver->buf), u8_abs(workshop_pending->buf), workshop_pending->len);
+  copy(u8_abs(client_deliver->buf), u8_abs(workshop_pending->buf), workshop_pending->len); // FIXME 2026-06-05 22:03:30 capable of SEGV reading workshop_pending->buf
   queue_push_commit(&d->q); //  ╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴
 
   // Reset chunk for reuse! FIXME 2025-09-30 15:15:06 Error-prone
@@ -638,7 +638,7 @@ void cleanup_client(EV_P_ ev_io *w) {
   ev_io_stop(EV_A_ &client->read_io);
   ev_io_stop(EV_A_ & client->write_io);
   if (!w) return;
-  client_cleanup_basics(0, 0, w->fd);
+  client_cleanup_basics(0, 0, w->fd); // FIXME 2026-06-05 22:02:21 still capable of UAF
 }
 
 // returns previous state; not enjoyable to implement
@@ -797,7 +797,7 @@ void read_client(EV_P_ ev_io *w, i32 events) {
   ssize_t bytes_read = read(w->fd, arena_abs(client->scratch)->beg, available(arena_abs(client->scratch)));
   arena_abs(client->scratch)->cur = arena_abs(client->scratch)->beg + bytes_read;
   if (bytes_read == 0) { // client closed connection
-    // printf("Zero bytes read from %s:%d, cleaning up\n", client->ip, client->port);
+    printf("Zero bytes read from %s:%d, cleaning up\n", client->ip, client->port);
     cleanup_client(EV_A_ w);
   } else if (bytes_read < 0) {
     if (errno == EAGAIN || errno == EWOULDBLOCK) {

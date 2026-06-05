@@ -8,6 +8,8 @@ PREAMBLE=MallocNanoZone='0' time
 CFLAGS=-std=c17 -g3 \
 -pedantic -Wall -Wextra \
 -fPIC -fsanitize=undefined,address
+CFLAGSPROD=-std=c17 -O3 \
+-fPIC -fsanitize=undefined,address
 
 clean:
 	rm testrel_http
@@ -28,6 +30,11 @@ test_http: test_http.c jdf.h jdfhttp.h http_codes.h
 	#$(PREAMBLE) ./$@ -p 8081
 
 testrel_http: testrel_http.c jdfrel.h jdfrelhttp.h http_codes.h
+	cc $(CFLAGS) -Wno-unused-parameter -Wno-switch -lev -lpthread $< -o $@
+	du -sh $@
+	#$(PREAMBLE) ./$@ -p 8081
+
+testrel_http_prod: testrel_http.c jdfrel.h jdfrelhttp.h http_codes.h
 	cc $(CFLAGS) -Wno-unused-parameter -Wno-switch -lev -lpthread $< -o $@
 	du -sh $@
 	#$(PREAMBLE) ./$@ -p 8081
