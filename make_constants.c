@@ -1,30 +1,28 @@
 #include <stdio.h>
 #include <jansson.h>
-#include "jdf.h"
+#include "jdfrel.h"
 #include "enum_tools.h"
 
-arena *store, scratch;
+arena store, scratch; // global yay
 
 // big alignment should suit general use (?)
-void *store_alloc(usize count) { return alloc(store, sizeof(byte), 8, count, 0); }
-void *scratch_alloc(usize count) { return alloc(&scratch, sizeof(byte), 8, count, 0); }
+void *store_alloc(usize count) { return alloc(&store, sizeof(byte), 8, count, 0); }
 void pretend_free(void *p) { (void)p; }
 
 s8 json_s8_value(json_t *s) {
-  return (s8){.buf = (u8 *)json_string_value(s), .len = json_string_length(s) };
+  return (s8){.abs = (u8 *)json_string_value(s), .len = json_string_length(s), .absolute = 1};
 }
 
 s8 symbolise(arena *store, json_t *s) {
-  s8_ symbol = fussy_screaming_snake(store, json_s8_value(s));
-  if (symbol.ok) return symbol.v;
+  s8 symbol = fussy_screaming_snake(store, json_s8_value(s));
+  if (symbol.len) return symbol;
   fprintf(stderr, "Invalid symbol: %s\n", json_string_value(s));
   exit(1); // rudely doesn't close fp
 }
 
 i32 main(i32 argc, char *argv[]) {
-  arena storeval = alloc_arena(MiB(1));
-  store = &storeval; // to make normal-looking fn calls
-  scratch = alloc_arena(MiB(1));
+  store = alloc_arena(MiB(1), 0);
+  scratch = alloc_arena(MiB(1), 0);
   FILE *f = {0};
   if (argc != 2) {
     perror("Specify one json file");
@@ -67,7 +65,7 @@ i32 main(i32 argc, char *argv[]) {
   
   // TODO json error handling
   json_object_keylen_foreach(root, j_id, j_id_len, j_value_group) {
-    s8 id = (s8){.buf = (u8 *)j_id, .len = j_id_len};
+    s8 id = (s8){.abs = (u8 *)j_id, .len = j_id_len, .absolute = 1};
     json_array_foreach(j_value_group, i, j_value) {
       enum_value construct = {0};
       if (json_is_array(j_value)) {
@@ -83,14 +81,14 @@ i32 main(i32 argc, char *argv[]) {
             construct.number = json_integer_value(ja[0]);
             if (construct.number == 0) construct.defines_zero = 1;
             construct.name = json_s8_value(ja[1]);
-            construct.symbol = symbolise(store, ja[1]);
+            construct.symbol = symbolise(&store, ja[1]);
             if (jas==2) construct.text = json_s8_value(ja[1]);
-            values = enum_valuesappend(store, values, construct);
+            values = enum_values_append(&store, values, construct);
           } else if (json_is_string(ja[0]) && json_array_size(j_value) == 2) {
             construct.name = json_s8_value(ja[0]);
-            construct.symbol = symbolise(store,ja[0]);
+            construct.symbol = symbolise(&store,ja[0]);
             construct.text = json_s8_value(ja[1]);
-            values = enum_valuesappend(store, values, construct);
+            values = enum_values_append(&store, values, construct);
           } else {
             fprintf(stderr, "Invalid combination: %s\n", json_dumps(j_value, 0));
           }
@@ -101,9 +99,9 @@ i32 main(i32 argc, char *argv[]) {
         }
       } else if (json_is_string(j_value)) {
         construct.name = json_s8_value(j_value);
-        construct.symbol = symbolise(store, j_value);
+        construct.symbol = symbolise(&store, j_value);
         construct.text = (s8){0};
-        values = enum_valuesappend(store, values, construct);
+        values = enum_values_append(&store, values, construct);
       } else {
         fprintf(stderr, "Invalid enum value definition: %s\n",
                 json_dumps(j_value, 0));
@@ -111,40 +109,40 @@ i32 main(i32 argc, char *argv[]) {
       }
       if (!head && values) head = values;
     }
-    groups = s8enumassoc(store, groups, id, head);
+    groups = s8enum_assoc(&store, groups, id, head);
     head = 0;
     values = 0;
   }
 
-  bufout_ out = make_bufout(store, KiB(4), 1);
-  if (!out.ok) {
+  bufout out = make_bufout(&store, KiB(4), 1);
+  if (!out.cap) {
     perror("Unable to allocate out buffer");
     goto exit;
   }
-  s8write(&out.v, s8("// This is auto-generated, do not edit!\n"));
-  s8write(&out.v, s8("#include \"jdf.h\"\n"));
+  s8write(&out, s8("// This is auto-generated, do not edit!\n"));
+  s8write(&out, s8("#include \"jdf.h\"\n"));
 
   s8 source = s8wrap(argv[1], 256); // more conservative than FILENAME_MAX
-  s8_ header_guard = fussy_screaming_snake(store, source); // e.g. SOMETHING_JSON
-  assert(header_guard.ok);
-  s8write(&out.v, s8("#ifndef "));
-  s8write(&out.v, header_guard.v);
-  s8write(&out.v, s8("\n"));
-  s8write(&out.v, s8("#define "));
-  s8write(&out.v, header_guard.v);
-  s8write(&out.v, s8("\n"));
+  s8 header_guard = fussy_screaming_snake(&store, source); // e.g. SOMETHING_JSON
+  assert(header_guard.len, "oom");
+  s8write(&out, s8("#ifndef "));
+  s8write(&out, header_guard);
+  s8write(&out, s8("\n"));
+  s8write(&out, s8("#define "));
+  s8write(&out, header_guard);
+  s8write(&out, s8("\n"));
   
   do {
-    render_enum(store, scratch, &out.v, groups->key, groups->val);
-  } while ((groups = groups->next));
+    render_enum(&store, &scratch, &out, groups->key, groups->val);
+  } while ((groups = s8enum_next(groups)));
 
-  s8write(&out.v, s8("#endif // "));
-  s8write(&out.v, header_guard.v);
-  s8write(&out.v, s8("\n"));
-  flush(&out.v);
+  s8write(&out, s8("#endif // "));
+  s8write(&out, header_guard);
+  s8write(&out, s8("\n"));
+  flush(&out);
   
   fprintf(stderr, "\n%ti scratch and %ti store arena bytes used\n",
-          used(&scratch), used(store));
+          used(&scratch), used(&store));
       
  exit:
   fclose(f);

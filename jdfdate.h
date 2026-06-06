@@ -1,4 +1,4 @@
-#include "jdf.h"
+#include "jdfrel.h"
 #include "dates.h"
 #include <limits.h>
 
@@ -98,14 +98,14 @@ i32 in_days(date from, date to) { return date_epoch(to) - date_epoch(from); }
 
 i32 in_weeks(date from, date to) { return in_days(from, to) / 7; }
 
-s8_ s8date(arena *store, date d) {
+s8 s8date(arena *store, date d) {
   return s8sprintf(store, date_format, d.y, d.m, d.d);
 }
 
 date s8parsedate(s8 s) {
   if (s.len != 10) return (date){0};
   u8 buf[11] = {0}; // make zero-terminated
-  copy(buf, s.buf, 10);
+  copy(buf, s8_array_abs(s), 10);
   date ret = {0};
   if (sscanf((const char *)buf, date_format, &ret.y, &ret.m, &ret.d) == 3)
     return ret;

@@ -20,14 +20,15 @@ test: test.c jdf.h
 	time cc $(CFLAGS) $< -o $@
 	$(PREAMBLE) ./$@
 
-testrel: testrel.c jdfrel.h
-	time cc $(CFLAGS) $< -o $@
-	#$(PREAMBLE) ./$@
-
 test_http: test_http.c jdf.h jdfhttp.h http_codes.h
 	time cc $(CFLAGS) -Wno-unused-parameter -Wno-switch -lev -lpthread $< -o $@
 	du -sh $@
 	#$(PREAMBLE) ./$@ -p 8081
+
+
+testrel: testrel.c jdfrel.h
+	time cc $(CFLAGS) $< -o $@
+	#$(PREAMBLE) ./$@
 
 testrel_http: testrel_http.c jdfrel.h jdfrelhttp.h http_codes.h
 	cc $(CFLAGS) -Wno-unused-parameter -Wno-switch -lev -lpthread $< -o $@
@@ -38,6 +39,7 @@ testrel_http_prod: testrel_http.c jdfrel.h jdfrelhttp.h http_codes.h
 	cc $(CFLAGSPROD) -Wno-unused-parameter -Wno-switch -lev -lpthread $< -o $@
 	du -sh $@
 	#$(PREAMBLE) ./$@ -p 8081
+
 
 test_date: test_date.c jdf.h jdfdate.h dates.h
 	time cc $(CFLAGS) $< -o $@
