@@ -1,14 +1,17 @@
 /*
   After Wellons https://nullprogram.com/blog/2023/10/08/
   and https://nullprogram.com/blog/2023/09/27/ .
-  See discussion https://old.reddit.com/r/C_Programming/comments/173e0vn/nullprogram_my_personal_c_coding_style_as_of_late/ .
-  
+  See discussion https://old.reddit.com/r/C_Programming/comments/173e0vn/nullprogram_my_personal_c_coding_style_as_of_late/
+.
+
   - generally omit const (controversial!)
   - literal 0 for null pointers and false
   - restrict when necessary
   - typedef all structures
   - static all functions except for entry points (not applied here; less meaningful in single translation unit build)
   - structure returns instead of out parameters; initialise with {0} as per C99
+
+  Now with dynamically resizing arenas. See `alloc` comment.
 */
 
 #ifndef jdf_h
@@ -17,16 +20,12 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <stdarg.h>
-#include <stdlib.h> // strtol
-#include <stdio.h> // mainly vsnprintf
+#include <stdlib.h>
+#include <stdio.h>
 #include <string.h>
 #include <stdatomic.h>
 
 typedef uint8_t   u8;
-#ifdef _WIN32
-#include <uchar.h>
-typedef char16_t  c16;
-#endif
 typedef int32_t   b32; // 0 false, 1 true
 typedef int32_t   i32;
 typedef int64_t   i64;
@@ -39,119 +38,226 @@ typedef char      byte;
 typedef ptrdiff_t size;
 typedef size_t    usize;
 
-typedef struct arena arena; // forward decl
-
 #define alignof(x) (size)_Alignof(x) // casting from size_t
 #define countof(arrayptr) (size)(sizeof(arrayptr) / sizeof(*(arrayptr))) // casting from size_t
+#define new(a, t, n)                                            \
+  (t *)alloc(a, sizeof(t), alignof(t), n, #t) // arena, type, number
+
+#ifdef LOG_DEBUG
+#define DEBUG(...) fprintf(stderr, "DEBUG " __VA_ARGS__);
+#else
+#define DEBUG(...)
+#endif
+#ifdef LOG_TRACE
+#define TRACE(...) fprintf(stderr, "TRACE " __VA_ARGS__);
+#else
+#define TRACE(...)
+#endif
+
 /*
-  Somewhat evil semantic affordance for structs starting with (possibly nested)
-  nullable pointer. Allows if(s.ok) process(s.v). Should be safer than null
-  pointer because of explicit types. Type name followed by underscore.
-  Use to represent e.g. internal allocation failure.
-  (Can only cast scalars unfortunately.)
-  https://stackoverflow.com/a/3995987/780743
+  Relative pointers, with respect to host arena (not anything else).
+  Allows arena resizing and maybe serialisation. NB +1 keeps
+  meaning of 0 as null.
+
+  Operate on normal pointers, store relative pointers.
+
+  Also see `alloc` comments.
+  
+  In contrast to non-rel implementation, need to pass "scratch" by
+  reference to accommodate dynamic resize.
 */
-#define MAYBE(t) typedef union {uptr ok; t v;} t##_;
-#define new(a, t, n) (t *)alloc(a, sizeof(t), alignof(t), n, #t) // arena, type, number
-#define ARRAY(tn, t) /* new type name, el type */            \
-  typedef struct {                                           \
-    t *buf;                                                  \
-    size len;                                                \
-  } tn;                                                      \
-  MAYBE(tn)                                                  \
-  tn##_ make_##tn(arena *a, size len) {                      \
-    t *buf = new (a, t, len);                                \
-    if (buf) return (tn##_){.v = {.buf = buf, .len = len }}; \
-    else return (tn##_){0};                                  \
+typedef struct arena arena;
+struct arena {
+  byte *beg; // start of allocated memory
+  byte *cur; // cursor: start of free space
+  byte *end; // end of allocated memory
+  // TODO 2026-06-04 19:50:05 check when calculating rel:
+  arena *parent; // line of ancestors whose contents are fair game for a rel ptr 
+};
+
+struct rel {
+  arena *arena; // allow pointing to ancestor arena contents
+  size ptr; // byte offset within arena PLUS ONE
+};
+
+#define MAX_CAP PTRDIFF_MAX - 1
+
+#define REL(t)                                                                 \
+  typedef struct rel t##_rel_t;                                                \
+  t##_rel_t t##_rel(arena *a, void *p) {                                       \
+    if (!p)                                                                    \
+      return (t##_rel_t){.arena = a, 0};                                       \
+    byte *b = (byte *)p;                                                       \
+    assert(a->beg <= b && b < a->cur && b < a->beg + MAX_CAP,                  \
+           "invalid <t>_rel call");                                            \
+    return (t##_rel_t){.arena = a, .ptr = b - a->beg + 1};                     \
+  }                                                                            \
+  t *t##_abs(t##_rel_t r) {                                                    \
+    return r.ptr ? (t *)(r.arena->beg + r.ptr - 1) : 0;                        \
   }
-#define endof(v) ((v).buf + (v).len) // one beyond last of sized value
+
+#define rel(a, t, n) t##_rel(a, new (a, t, n))
+#define ARRAY(tn, t) /* new type name, el type */                              \
+  typedef struct {                                                             \
+    union {                                                                    \
+      t##_rel_t rel;                                                           \
+      t *abs;                                                                  \
+    };                                                                         \
+    size len;                                                                  \
+    b32 absolute;                                                              \
+  } tn;                                                                        \
+  tn make_##tn(arena *a, size len) {                                           \
+    t##_rel_t r = rel(a, t, len);                                              \
+    return r.ptr ? (tn){.rel = r, .len = len} : (tn){0};                       \
+  }                                                                            \
+  t##_rel_t tn##_array_rel(tn v, t *p) {                                       \
+    assert(!v.absolute, "can't get rel for abs");                              \
+    return t##_rel(v.rel.arena, p);                                            \
+  }                                                                            \
+  t *tn##_array_abs(tn v) { return v.absolute ? v.abs : t##_abs(v.rel); }      \
+  t *tn##endof(tn v) { return tn##_array_abs(v) + v.len; }                     \
+  /* Slice forward using pointers */                                           \
+  tn tn##span(tn src, t *beg, t *end) {                                        \
+    t *src_beg = tn##_array_abs(src);                                          \
+    if (beg >= src_beg && end <= src_beg + src.len && end > beg)               \
+      return src.absolute                                                      \
+                 ? (tn){.abs = beg, .len = end - beg, .absolute = 1}           \
+                 : (tn){.rel = tn##_array_rel(src, beg), .len = end - beg};    \
+    return (tn){0};                                                            \
+  }                                                                            \
+  /*  Slice forward using clamped offsets, which may be positive or negative   \
+      (i.e. from start or end, respectively) */                                \
+  tn tn##slice(tn src, size from, size to) {                                   \
+    tn s = src;                                                                \
+    size f = (from < 0) ? src.len + from : from;                               \
+    size t = (to > 0) ? to : src.len + to;                                     \
+    if (f < 0)                                                                 \
+      f = 0; /* clamp offsets */                                               \
+    if (f > src.len)                                                           \
+      f = src.len;                                                             \
+    if (t < 0)                                                                 \
+      t = 0;                                                                   \
+    if (t > src.len)                                                           \
+      t = src.len;                                                             \
+    if (src.absolute)                                                          \
+      s.abs += f;                                                              \
+    else                                                                       \
+      s.rel.ptr += f;                                                          \
+    if (t > f)                                                                 \
+      s.len = t - f;                                                           \
+    else                                                                       \
+      s.len = 0; /* refuse to slice backwards */                               \
+    return s;                                                                  \
+  }
+
 /*
   To enable assertions in release builds,
   put UBSan in trap mode with -fsanitize-trap
   and then enable at least -fsanitize=unreachable.
-
-  FIXME would be better with error message...
 */
-#define assert(c) while (!(c)) __builtin_unreachable()
+// TODO 2026-05-19 21:40:22 compiler flag to choose between:
+#define assert(c, ...) while (!(c)) { printf("💥 "); printf(__VA_ARGS__); printf("\n"); __builtin_unreachable(); } // probably not optimised away?
+// #define assert(c, ...) while (!(c)) __builtin_unreachable() // probably optimisable away
 
 // ──────────────────────────────────────────────────────────────── Linked lists
-
-typedef struct node_t node_t; struct node_t { node_t *next; }; // ignore subsequent fields
-// No loop detection!
+typedef struct { size next; } node_t; // can be either direction; ignore subsequent fields; 0 indicates none, not self
+node_t *offset(node_t *from, size by) { return (node_t *)((byte *)from + by); }
+size ptrdiff(void *from, void *to) { return (byte *)to - (byte *)from; }
+node_t *next(node_t *node) {
+  assert(node, "no node for next");
+  // NB 2026-05-02 12:54:00 need bounds checking elsewhere
+  return node->next ? offset(node, node->next) : 0;
+}
+// No loop detection
 size countfn(node_t *node) {
+  assert(node, "no node for count");
   size c = 0;
-  node_t *cur = node;
-  if (!cur) return 0;
-  do { c++; } while ((cur = cur->next));
+  for(node_t *cur = node; cur; cur = next(cur)) c++;
   return c;
 }
 // Indirections to allow use from multiple linked list-derived data structures...
 #define count(n) countfn((node_t *)n)
-node_t *next(node_t *node) { return node->next; }
+// No loop detection
 node_t *nth(node_t *node, size n) {
+  assert(node, "no node for nth");
   node_t *ret = node;
-  for (size i = 0; i < n; i++) {
-    if (!ret) return 0;
-    ret = ret->next;
-  }
+  for (size i = 0; i < n && ret; i++, ret = next(ret)); 
   return ret;
-}
+  }
+// No loop detection!
 node_t *last(node_t *node) {
-  while (node && node->next) node = node->next;
-  return node;
+  assert(node, "no node for last");
+  node_t *prev = 0;
+  for(; node; prev = node, node = next(node));
+  return prev;
 }
-// Connect two nodes. Can cause loop! Returns any previous `from` tail.
+// Connect two nodes from same arena. Can cause loop! Returns any previous `from` tail.
+// FIXME 2026-05-02 13:03:05 doesn't validate they're in same arena!
 node_t *extend(node_t *from, node_t *to) {
-  if (!from) return 0;
-  node_t *from_tail = from->next;
-  from->next = to;
+  assert(from, "no node to extend");
+  node_t *from_tail = next(from);
+  from->next = ptrdiff(from, to);
   return from_tail;
 }
-// Insert exactly `count` nodes from `from` after `after`, returning any remaining `from` tail (including if count > available: return all of `from`).
+// Insert exactly `count` nodes from `from` after `after`, returning
+// any remaining `from` tail (including if count > available: insert
+// none and return all of `from`).
 node_t *insert(node_t *after, node_t *from, size count) {
-  if (!after || !from || count <= 0) return from;
+  assert(after, "no node after which to insert");
+  if (!from || count <= 0) return from;
   node_t *to = nth(from, count - 1);
   if (to) {
-    node_t *after_tail = after->next;
-    node_t *from_tail = to->next;
-    after->next = from;
-    to->next = after_tail;
+    node_t *after_tail = next(after);
+    node_t *from_tail = next(to);
+    after->next = ptrdiff(after, from);
+    to->next = ptrdiff(to, after_tail);
     return from_tail;
   } else return from;
 }
 /*
-  Define new linked list type tn, element type t.
-  t can be typename * for pointer (i.e. reference list).
+  Define new linked list type tn, element type t. t can be a (typedef'd)
+  pointer, making a reference list.
 
-  <tn>append appends node with value `m` to node `maybe`.
-  If `maybe` doesn't exist, append starts a new list.
-  If `maybe` already has a ->next, append follows it to the end.
+  <tn>_append appends node with value `m` to node `maybe`.
+  If `maybe` doesn't exist, starts a new list.
+  If `maybe` already has a ->next, follows it to the end.
   Does not prevent inclusion of stack-allocated values in heap-allocated list!
 */
-#define LIST(tn, t)                                                     \
-  typedef struct tn tn;                                                 \
-  struct tn {                                                           \
-    tn *next;                                                           \
-    t val;                                                              \
-  };                                                                    \
-  tn *tn##last(tn *node) { return (tn *)last((node_t *)node); }         \
-  tn *tn##append(arena *a, tn *maybe, t m) {                            \
-    tn *cur = new (a, tn, 1);                                           \
-    if (!cur) return 0;                                                 \
-    cur->val = m;                                                       \
-    if (maybe) {                                                        \
-      maybe = tn##last(maybe); /* avoid passing early nodes if hot */   \
-      maybe->next = cur;                                                \
-    }                                                                   \
-    return cur;                                                         \
-  }                                                                     \
-  tn *tn##next(tn *node) { return (tn *)next((node_t *)node); }         \
-  tn *tn##nth(tn *node, size n) { return (tn *)nth((node_t *)node, n); } \
-  tn *tn##extend(tn *from, tn *to) {                                    \
-    return (tn *)extend((node_t *)from, (node_t *)to);                  \
-  }                                                                     \
-  tn *tn##insert(tn *after, tn *from, size n) {                         \
-    return (tn *)insert((node_t *)after, (node_t *)from, n);            \
+
+#define NEXT(tn)                                                               \
+  tn *tn##_next(tn *node) { return (tn *)next((node_t *)node); }
+
+// NB 2026-05-02 00:09:37 only supports LIST within same arena
+#define LIST(tn, t)                                                            \
+  typedef struct tn tn;                                                        \
+  REL(tn)                                                                      \
+  struct tn {                                                                  \
+    size next; /* relative to this struct! no +1, unlike REL; 0 indicates      \
+                  nothing, not self */                                         \
+    t val;                                                                     \
+  };                                                                           \
+  tn *tn##_last(tn *node) { return (tn *)last((node_t *)node); }               \
+  tn *tn##_append(arena *a, tn *maybe, t m) {                                  \
+    tn##_rel_t maybe_rel = tn##_rel(a, maybe); /* allow new to realloc */      \
+    tn *new_one = new (a, tn, 1);                                              \
+    if (!new_one)                                                              \
+      return 0;                                                                \
+    tn *cur = maybe = tn##_abs(maybe_rel);                                     \
+    new_one->val = m;                                                          \
+    if (maybe) {                                                               \
+      cur = tn##_last(maybe); /* avoid passing early nodes if hot */           \
+      cur->next = ptrdiff(cur, new_one);                                       \
+      return maybe;                                                            \
+    }                                                                          \
+    return new_one;                                                            \
+  }                                                                            \
+  NEXT(tn)                                                                     \
+  tn *tn##_nth(tn *node, size n) { return (tn *)nth((node_t *)node, n); }      \
+  tn *tn##_extend(tn *from, tn *to) {                                          \
+    return (tn *)extend((node_t *)from, (node_t *)to);                         \
+  }                                                                            \
+  tn *tn##_insert(tn *after, tn *from, size n) {                               \
+    return (tn *)insert((node_t *)after, (node_t *)from, n);                   \
   }
 
 /*
@@ -162,143 +268,152 @@ node_t *insert(node_t *after, node_t *from, size count) {
   Make sure to use `dissoc`s returned head! Dissoc final key will return null.
   Makes no attempt to compact or reorder storage within arena.
 */
-#define MAP_LIST(tn, kt, vt, keq)                                     \
-  typedef struct tn tn;                                               \
-  struct tn {                                                         \
-    tn *next;                                                         \
-    kt key;                                                           \
-    vt val;                                                           \
-  };                                                                  \
-  /* Uniquely associate key to value. Caller must ensure kv validity. \
-     Assoc to null head to make new association list.                 \
-     Allows null val. Returns null pointer if new fails. */           \
-  tn *tn##assoc(arena *a, tn *head, kt key, vt val) {                 \
-    tn *beg = 0;                                                      \
-    if (!head) {                                                      \
-      beg = new (a, tn, 1);                                           \
-      if (!beg)                                                       \
-        return 0;                                                     \
-      beg->key = key;                                                 \
-      beg->val = val;                                                 \
-      return beg;                                                     \
-    }                                                                 \
-    beg = head;                                                       \
-    tn *cur = beg;                                                    \
-    tn *prev = 0;                                                     \
-    for (; cur; prev = cur, cur = cur->next) {                        \
-      if (keq(cur->key, key)) {                                       \
-        cur->val = val;                                               \
-        return beg;                                                   \
-      }                                                               \
-    }                                                                 \
-    cur = prev->next = new (a, tn, 1);                                \
-    if (!cur)                                                         \
-      return 0;                                                       \
-    cur->key = key;                                                   \
-    cur->val = val;                                                   \
-    return beg;                                                       \
-  }                                                                   \
-  tn *tn##dissoc(tn *head, kt key) {                                  \
-    if (!head)                                                        \
-      return 0;                                                       \
-    tn *cur = head;                                                   \
-    tn *prev = 0;                                                     \
-    for (; cur; prev = cur, cur = cur->next) {                        \
-      if (keq(cur->key, key)) {                                       \
-        if (prev) prev->next = cur->next;                             \
-        else return cur->next;                                        \
-      }                                                               \
-    }                                                                 \
-    return head;                                                      \
-  }                                                                   \
-  /* Return possibly-null pointer to kv pair with key match. */       \
-  tn *tn##get(tn *head, kt key) {                                     \
-      if (!head)                                                      \
-        return 0;                                                     \
-      tn *cur = head;                                                 \
-    do {                                                              \
-      if (keq(cur->key, key)) return cur;                             \
-    } while ((cur = cur->next));                                      \
-    return 0;                                                         \
+#define MAP_LIST(tn, kt, vt, keq)                                              \
+  typedef struct tn tn;                                                        \
+  REL(tn)                                                                      \
+  struct tn {                                                                  \
+    size next;                                                                 \
+    kt key;                                                                    \
+    vt val;                                                                    \
+  };                                                                           \
+  NEXT(tn)                                                                     \
+  /* Uniquely associate key to value. Caller must ensure kv validity.          \
+     Assoc to null head to make new association list.                          \
+     Allows null val. Returns null pointer if new fails. */                    \
+  tn *tn##_assoc(arena *a, tn *head, kt key, vt val) {                         \
+    tn *beg = 0;                                                               \
+    if (!head) {                                                               \
+      beg = new (a, tn, 1);                                                    \
+      if (!beg)                                                                \
+        return 0;                                                              \
+      beg->key = key;                                                          \
+      beg->val = val;                                                          \
+      return beg;                                                              \
+    }                                                                          \
+    beg = head;                                                                \
+    tn *cur = beg;                                                             \
+    tn *prev = 0;                                                              \
+    for (; cur; prev = cur, cur = tn##_next(cur)) {                            \
+      if (keq(cur->key, key)) {                                                \
+        cur->val = val;                                                        \
+        return beg;                                                            \
+      }                                                                        \
+    }                                                                          \
+    tn##_rel_t prev_rel = tn##_rel(a, prev);                                   \
+    tn##_rel_t beg_rel = tn##_rel(a, beg);                                     \
+    cur = new (a, tn, 1);                                                      \
+    prev = tn##_abs(prev_rel);                                                 \
+    beg = tn##_abs(beg_rel);                                                   \
+    if (!cur)                                                                  \
+      return 0;                                                                \
+    prev->next = ptrdiff(prev, cur);                                           \
+    cur->key = key;                                                            \
+    cur->val = val;                                                            \
+    return beg;                                                                \
+  }                                                                            \
+  tn *tn##_dissoc(tn *head, kt key) {                                          \
+    tn *cur = head;                                                            \
+    tn *prev = 0;                                                              \
+    for (; cur; prev = cur, cur = tn##_next(cur)) {                            \
+      if (keq(cur->key, key)) {                                                \
+        if (prev)                                                              \
+          prev->next = ptrdiff(prev, tn##_next(cur));                          \
+        else                                                                   \
+          return tn##_next(cur);                                               \
+      }                                                                        \
+    }                                                                          \
+    return head;                                                               \
+  }                                                                            \
+  /* Return possibly-null pointer to kv pair with key match. */                \
+  tn *tn##_get(tn *head, kt key) {                                             \
+    assert(head, "no map to get from");                                        \
+    tn *cur = head;                                                            \
+    do {                                                                       \
+      if (keq(cur->key, key))                                                  \
+        return cur;                                                            \
+    } while ((cur = tn##_next(cur)));                                          \
+    return 0;                                                                  \
   }
+
 // Barely worth it vs MAP_LIST with ignored vt. Make sure to use `disj`s returned head!
-#define SET_LIST(tn, kt, keq)                   \
-  typedef struct tn tn;                         \
-  struct tn {                                   \
-    tn *next;                                   \
-    kt key;                                     \
-  };                                            \
-  tn *tn##conj(arena *a, tn *head, kt key) {    \
-    tn *beg = 0;                                \
-    if (!head) {                                \
-      beg = new (a, tn, 1);                     \
-      if (!beg)                                 \
-        return 0;                               \
-      beg->key = key;                           \
-      return beg;                               \
-    }                                           \
-    beg = head;                                 \
-    tn *cur = beg;                              \
-    tn *prev = 0;                               \
-    for (; cur; prev = cur, cur = cur->next)    \
-      if (keq(cur->key, key))                   \
-        return beg;                             \
-    cur = prev->next = new (a, tn, 1);          \
-    if (!cur)                                   \
-      return 0;                                 \
-    cur->key = key;                             \
-    return beg;                                 \
-  }                                             \
-  tn *tn##disj(tn *head, kt key) {              \
-    if (!head)                                  \
-      return 0;                                 \
-    tn *cur = head;                             \
-    tn *prev = 0;                               \
-    for (; cur; prev = cur, cur = cur->next) {  \
-      if (keq(cur->key, key)) {                 \
-        if (prev)                               \
-          prev->next = cur->next;               \
-        else return cur->next;                  \
-      }                                         \
-    }                                           \
-    return head;                                \
-  }                                             \
-  tn *tn##has(tn *head, kt key) {               \
-    if (!head)                                  \
-      return 0;                                 \
-    tn *cur = head;                             \
-    do {                                        \
-      if (keq(cur->key, key))                   \
-        return cur;                             \
-    } while ((cur =  cur->next));               \
-    return 0;                                   \
+#define SET_LIST(tn, kt, keq)                                                  \
+  typedef struct tn tn;                                                        \
+  REL(tn)                                                                      \
+  struct tn {                                                                  \
+    size next;                                                                 \
+    kt key;                                                                    \
+  };                                                                           \
+  NEXT(tn)                                                                     \
+  tn *tn##_conj(arena *a, tn *head, kt key) {                                  \
+    tn *beg = 0;                                                               \
+    if (!head) {                                                               \
+      beg = new (a, tn, 1);                                                    \
+      if (!beg)                                                                \
+        return 0;                                                              \
+      beg->key = key;                                                          \
+      return beg;                                                              \
+    }                                                                          \
+    beg = head;                                                                \
+    tn *cur = beg;                                                             \
+    tn *prev = 0;                                                              \
+    for (; cur; prev = cur, cur = tn##_next(cur))                              \
+      if (keq(cur->key, key))                                                  \
+        return beg;                                                            \
+    tn##_rel_t prev_rel = tn##_rel(a, prev);                                   \
+    cur = new (a, tn, 1);                                                      \
+    if (!cur)                                                                  \
+      return 0;                                                                \
+    prev = tn##_abs(prev_rel);                                                 \
+    prev->next = ptrdiff(prev, cur);                                           \
+    cur->key = key;                                                            \
+    return beg;                                                                \
+  }                                                                            \
+  tn *tn##_disj(tn *head, kt key) {                                            \
+    if (!head)                                                                 \
+      return 0;                                                                \
+    tn *cur = head;                                                            \
+    tn *prev = 0;                                                              \
+    for (; cur; prev = cur, cur = tn##_next(cur)) {                            \
+      if (keq(cur->key, key)) {                                                \
+        if (prev)                                                              \
+          prev->next = ptrdiff(prev, tn##_next(cur));                          \
+        else                                                                   \
+          return tn##_next(cur);                                               \
+      }                                                                        \
+    }                                                                          \
+    return head;                                                               \
+  }                                                                            \
+  tn *tn##_has(tn *head, kt key) {                                             \
+    if (!head)                                                                 \
+      return 0;                                                                \
+    tn *cur = head;                                                            \
+    do {                                                                       \
+      if (keq(cur->key, key))                                                  \
+        return cur;                                                            \
+    } while ((cur = tn##_next(cur)));                                          \
+    return 0;                                                                  \
   }
 
 // ─────────────────────────────────────────────────────────────────────── Arena
 
-/*
-  Pass "store" arena by reference, and "scratch" by value.
-  This effectively resets the scratch *cur pointer on fn return.
-*/
-typedef struct arena {
-  // https://stackoverflow.com/a/21476937/780743
-  // easier not to have `byte *const beg` and end to facilitate free_arena
-  byte *beg; // original start of arena
-  byte *cur; // cursor: current start of free space
-  byte *end; // allocated end of arena
-} arena;
+size capacity(arena *a) { return a->end - a->beg; }
+size used(arena *a) { return a->cur - a->beg; }
+size available(arena *a) { return a->end - a->cur; }
+b32 resize_arena(arena *a, size cap); // forward declaration
 
-// TODO could visualise correctness of padding algorithm
 /*
   Allocate space within arena. Use via `new` macro.
   Not designed to be threadsafe! Each thread requires its own arena/s.
-  NB It's somewhat redundant to test for failure of alloc_arena, because the
-  first alloc here would fail if the arena is 0.
+
+  Every allocation can cause the arena to resize, so take a relative
+  pointer to anything which could change, before allocating, then
+  convert back to absolute, after.
 */
 byte *alloc(arena *a, size objsize, size align, size count, const char *t) {
-  if (!a || count <= 0 || align <= 0) return 0; // why are count and size signed?
-  //printf("Trying to allocate %ti %ss of size %ti\n", count, t, objsize);
-  size avail = a->end - a->cur;
+  if (count <= 0 || align <= 0) return 0;
+  TRACE("%p:%p [ %s ] of size %ti x %ti\n", (void *)a, (void *)a->beg, t, objsize, count);
+  size padding = 0;
+ recalc:
   /*
     Padding is how far the next aligned address is beyond the cursor.
    
@@ -316,15 +431,34 @@ byte *alloc(arena *a, size objsize, size align, size count, const char *t) {
      padding      x            1   0b0001 == -cur & (align-1)
       giving  ----------->.... 0xc 0b1100
    */
-  size padding = -(uptr)a->cur & (align - 1);
+  padding = -(uptr)a->cur & (align - 1);
+  size avail = available(a);
+  size usd = used(a);
   /*
     Deliberately return null pointer if arena can't allocate requested amount!
     This does propagate annoyingly.
     Distinction between OOM proper and getting killed by (Linux) OOM killer?
   */
   if (count > (avail - padding) / objsize) {
-    fprintf(stderr, "Couldn't allocate %s: count %ti, count available %ti\n", t, count, (avail-padding)/objsize);
-    return 0;
+    size needed = (count * objsize) + usd + padding;
+    size c = capacity(a);
+    size asking = c;
+    // grug approve
+    for (size thinking = asking; thinking < PTRDIFF_MAX; thinking *= 2) {
+      if (thinking > needed) {
+        asking = thinking;
+        break;
+      }
+    }
+    DEBUG("%p resizing arena from %ti to %ti\n", (void *)a, c, asking);
+    if (resize_arena(a, asking)) {
+      goto recalc;
+    } else {
+      // TODO 2026-05-23 18:47:09 more conservative size increment algo?
+      fprintf(stderr, "Couldn't allocate %s: count %ti, count available %ti, capacity %ti\n",
+              t, count, (avail - padding) / objsize, c);
+      return 0;
+    }
   }
   size total = count * objsize;
   byte *p = a->cur + padding;
@@ -332,10 +466,6 @@ byte *alloc(arena *a, size objsize, size align, size count, const char *t) {
   for (size i = 0; i < total; i++) p[i] = 0;
   return p;
 }
-
-size capacity(arena *a) { return a->end - a->beg; }
-size used(arena *a) { return a->cur - a->beg; }
-size available(arena *a) { return a->end - a->cur; }
 
 size KiB(u32 n) { return (1<<10) * n; }
 size MiB(u32 n) { return (1<<20) * n; }
@@ -350,67 +480,25 @@ size copy(u8 *restrict dst, u8 *restrict src, size len) {
 
 // ───────────────────────────────────────────────────────────────────── Strings
 
+REL(u8)
 ARRAY(s8, u8) // s8: Basic UTF-8 string. Not null terminated!
-#define s8(s) (s8){(u8 *)(s), countof(s) - 1} // Wrap C string literal into s8 string.
+#define s8(s) (s8){.abs = (u8 *)s, .len = countof(s) - 1, .absolute = 1}
 static const s8 s8_OOM = s8("error: out of memory");
-
-b32 s8equal(s8, s8);
-ARRAY(s8a, s8)
+REL(s8)
 LIST(s8l, s8)
-MAP_LIST(s8m, s8, s8, s8equal)
-SET_LIST(s8s, s8, s8equal)
-     
-#ifdef _WIN32
-ARRAY(s16, c16)
-#define s16(s) (s16) { (c16 *)(s), countof(s) - 1 }
-// TODO what about all the rest?!
-#endif
-
-/*
-  Make one s8 from unquoted multiline text, after collapsing whitespace.
-  IDE may be annoying about it, try fundamental-mode.
-  Compare with s8("first line"⏎"second line"⏎"etc").
-*/ 
-#define text(...) s8(#__VA_ARGS__) // https://stackoverflow.com/a/17996915/780743
-
-/*
-  Slice using pointers, doesn't check that actually within an s8!
-  Not MAYBE because doesn't allocate.
-*/
-s8 s8span(u8 *beg, u8 *end) {
-  if (beg && end >= beg) return (s8){.buf = beg, .len = end - beg};
-  return (s8){0};
-}
-
-s8 s8bytespan(byte *beg, byte *end) {
-  return s8span((u8 *)beg, (u8 *)end);
-}
-
-// Slice forward using clamped offsets, which may be positive or negative (i.e. from start or end, respectively)
-s8 s8slice(s8 src, size from, size to) {
-  s8 s = {.buf = src.buf};
-  size f = (from < 0) ? src.len + from : from;
-  size t = (to > 0) ? to : src.len + to;
-  if (f < 0) f = 0; // clamp offsets
-  if (f > src.len) f = src.len;
-  if (t < 0) t = 0;
-  if (t > src.len) t = src.len;
-  s.buf += f;
-  if (t > f) s.len = t - f;
-  else s.len = 0; // refuse to slice backwards
-  return s;
-}
 
 b32 s8equal(s8 a, s8 b) {
   if (a.len != b.len) return 0;
-  for (size i = 0; i < a.len ; i++) if (a.buf[i] != b.buf[i]) return 0;
+  u8 *acur = s8_array_abs(a), *bcur = s8_array_abs(b);
+  for (size i = 0; i < a.len ; i++) if (acur[i] != bcur[i]) return 0;
   return 1;
 }
 
 size s8cmp(s8 a, s8 b) {
   size len = (a.len < b.len) ? a.len : b.len;
+  u8 *acur = s8_array_abs(a), *bcur = s8_array_abs(b);
   for (size i = 0; i < len; i++) {
-    size d = a.buf[i] - b.buf[i];
+    size d = acur[i] - bcur[i];
     if (d) return d;
   }
   return a.len - b.len;
@@ -419,8 +507,9 @@ size s8cmp(s8 a, s8 b) {
 // Why `size`? TODO visualise hashification of input
 size s8hash(s8 s) {
   u64 h = 0x100;
+  u8 *scur = s8_array_abs(s);
   for (size i = 0; i < s.len; i++) {
-    h ^= s.buf[i];
+    h ^= scur[i];
     h *= 1111111111111111111u; // nineteen ones
   }
   return (h ^ h>>32) & (u32)-1;
@@ -428,13 +517,14 @@ size s8hash(s8 s) {
 
 // Find string
 u8 *s8find(s8 haystack, s8 needle) {
-  if (!haystack.buf || !needle.buf) return 0;
+  u8 *hcur = s8_array_abs(haystack), *ncur = s8_array_abs(needle);
+  if (!hcur || !ncur) return 0;
   u8 *found = 0;
-  u8 *he = endof(haystack);
-  u8 *ne = endof(needle);
+  u8 *he = hcur + haystack.len;
+  u8 *ne = ncur + needle.len;
   // init first; cond before loop; iter after loop
-  for (u8 *h = haystack.buf; !found && (h < he); h++) {
-    for (u8 *n = needle.buf;
+  for (u8 *h = hcur; !found && (h < he); h++) {
+    for (u8 *n = ncur;
          n < ne && h < he;
          n++) {
       if (*h == *n) {
@@ -452,9 +542,10 @@ u8 *s8find(s8 haystack, s8 needle) {
 
 // Find char
 u8 *s8findu8(s8 haystack, u8 needle) {
-  if (!haystack.buf) return 0; // allow \0 needle
-  u8 *end = endof(haystack);
-  for (u8 *h = haystack.buf; h < end; h++)
+  u8 *hcur = s8_array_abs(haystack);
+  if (!hcur) return 0; // allow \0 needle
+  u8 *end = hcur + haystack.len;
+  for (u8 *h = hcur; h < end; h++)
     if (*h == needle)
       return h;
   return 0;
@@ -468,13 +559,13 @@ b32 s8endswith(s8 s, s8 with) {
   return s8equal(s8slice(s, -with.len, 0), with);
 }
 
-// Wrap decayed C string into s8 string
+// Wrap decayed C string
 s8 s8wrap(const char *cstr, size maxlen) {
   if (!cstr) return (s8){0};
   u8 *beg = (u8 *)cstr;
   u8 *end = beg;
   while (*end != '\0' && (end-beg) < maxlen) end++;
-  return s8span(beg, end);
+  return (s8){.abs = beg, .len = end - beg, .absolute = 1};
 }
 
 // Return pointer to copy of s in a, one byte longer for terminal
@@ -483,7 +574,7 @@ s8 s8wrap(const char *cstr, size maxlen) {
 char *s8unwrap(arena *a, s8 s) {
   u8 *buf = new (a, u8, s.len + 1); // is zeroed
   if (!buf) return 0;
-  copy(buf, s.buf, s.len);
+  copy(buf, s8_array_abs(s), s.len);
   return (char *)buf;
 }
 
@@ -503,91 +594,102 @@ b32 whitespace(u8 c) { // too cool for ctype.h isspace
 }
 
 s8 s8trim(s8 src) {
-  u8 *beg = src.buf;
-  u8 *end = endof(src);
+  u8 *scur = s8_array_abs(src);
+  u8 *beg = scur;
+  u8 *end = scur + src.len;
   while (end > beg && whitespace(*(end - 1))) end--;
   while (beg < end && whitespace(*beg)) beg++;
-  return s8span(beg, end);
+  return s8span(src, beg, end);
 }
 
 /* Is s only whitespace? */
 b32 s8blank(s8 s) {
+  u8 *scur = s8_array_abs(s);
   for (size i = 0; i < s.len; i++)
-    if (!whitespace(s.buf[i]))
+    if (!whitespace(scur[i]))
       return 0;
   return 1;
 }
 
-// Copies buf, optionally null-terminated for easier interop.
-s8_ s8clone(arena *a, s8 s, b32 null_terminate) {
-  s8_ c = make_s8(a, null_terminate ? s.len + 1 : s.len);
-  if (!c.ok) return c;
-  copy(c.v.buf, s.buf, s.len);
+// Copies buffer, optionally null-terminated for easier interop.
+s8 s8clone(arena *a, s8 s, b32 null_terminate) {
+  s8 c = make_s8(a, null_terminate ? s.len + 1 : s.len);
+  if (!c.len) return c;
+  copy(s8_array_abs(c), s8_array_abs(s), s.len);
   return c;
 }
 
 typedef struct {
-  s8 head;
+  s8 head; // could be empty
   s8 tail;
-  b32 ok; // different to MAYBE because head could be empty
+  b32 ok;
 } s8pair;
 
 s8pair s8cut(s8 s, s8 on) {
   u8 *found = s8find(s, on);
   if (!found) return (s8pair){0};
-  return (s8pair) {.head = s8span(s.buf, found), .tail = s8span(found + on.len, endof(s)), .ok = 1};
+  return (s8pair) {
+    .head = s8span(s, s8_array_abs(s), found),
+    .tail = s8span(s, found + on.len, s8endof(s)),
+    .ok = 1
+  };
 }
 
 s8pair s8cutu8(s8 s, u8 on) {
   u8 *found = s8findu8(s, on);
   if (!found) return (s8pair){0};
-  return (s8pair) {.head = s8span(s.buf, found), .tail = s8span(found + 1, endof(s)), .ok = 1};
+  return (s8pair) {
+    .head = s8span(s, s8_array_abs(s), found),
+    .tail = s8span(s, found + 1, s8endof(s)),
+    .ok = 1
+  };
 }
 
 // Concatenate array of strings
-s8_ s8concat(arena *a, s8 *ss, size len) {
+s8 s8concat(arena *a, s8 *ss, size len) {
   size tot = 0;
   for (size i = 0; i < len; i++) tot += ss[i].len;
-  s8_ ret = make_s8(a, tot);
-  if (!ret.ok) return ret;
-  u8 *cur = ret.v.buf;
+  s8 ret = make_s8(a, tot);
+  if (!ret.len) return ret;
+  u8 *cur = s8_array_abs(ret);
   for (size i = 0; i < len; i++) {
-    copy(cur, ss[i].buf, ss[i].len);
+    copy(cur, s8_array_abs(ss[i]), ss[i].len);
     cur += ss[i].len;
   }
   return ret;
 }
 
-size s8llen(s8l *sl) {
+size s8l_len(s8l *sl) {
   size len = 0;
   s8l *node = sl;
-  do { len += node->val.len; } while ((node = node->next));
+  do { len += node->val.len; } while ((node = s8l_next(node)));
   return len;
 }
-     
-s8_ s8lconcat(arena *store, s8l *sl) {
-  s8_ ret = make_s8(store, s8llen(sl));
-  if (!ret.ok) return ret;
-  u8 *cur = ret.v.buf;
+
+s8 s8l_concat(arena *store, s8l *sl) {
+  s8 ret = make_s8(store, s8l_len(sl));
+  if (!ret.len) return ret;
+  u8 *cur = s8_array_abs(ret);
   s8l *node = sl;
   do {
-    copy(cur, sl->val.buf, sl->val.len);
+    copy(cur, s8_array_abs(sl->val), sl->val.len);
     cur += sl->val.len;
-  } while ((node = node->next));
+  } while ((node = s8l_next(node)));
   return ret;
 }
 
-s8_ u8fill(arena *buf, u8 with, size count) {
-  s8_ ret = make_s8(buf, count);
-  if (!ret.ok) return ret;
-  for (size i = 0; i < count; i++) ret.v.buf[i] = with;
+s8 u8fill(arena *a, u8 with, size count) {
+  s8 ret = make_s8(a, count);
+  if (!ret.len) return ret;
+  u8 *cur = s8_array_abs(ret);
+  for (size i = 0; i < count; i++) cur[i] = with;
   return ret;
 }
 
-// Does effectively allocate by moving buf.cur, so MAYBE return type.
+// Does effectively allocate by moving buf.cur, so can fail.
 // Also see s8printf.
-s8_ s8sprintf(arena *buf, const char *format, ...) {
-  if (!buf || !buf->cur) return (s8_){0};
+s8 s8sprintf(arena *buf, const char *format, ...) {
+  if (!buf || !buf->cur) return (s8){0};
   byte *start = buf->cur;
   size avail = available(buf);
   va_list args;
@@ -599,8 +701,10 @@ s8_ s8sprintf(arena *buf, const char *format, ...) {
   va_end(args);
   if (n > 0) {
     buf->cur += n > avail ? avail : n;
-    return (s8_){.v = s8bytespan(start, buf->cur)};
-  } else return (s8_){0};
+    return (s8) {
+      .rel = u8_rel(buf, start), .len = buf->cur - start
+    };
+  } else return (s8){0};
 }
 
 // ───────────────────────────────────────────────── Lock-free concurrent queues
@@ -623,7 +727,7 @@ i32 queue_mpop(queue *q, i32 len, u32 *save) {
   i32 tail = r >> 16 & mask;
   return head == tail ? -1 : tail;
 }
-// NB element load must be atomic TODO 2026-04-20 18:30:01 spell out meaning of this
+// NB element load must be atomic e.g. _Atomic struct job slots[LEN]
 b32 queue_mpop_commit(queue *q, u32 save) {
   return atomic_compare_exchange_strong(q, &save, save + 0x10000);
 }
@@ -641,7 +745,7 @@ void queue_pop_commit(queue *q) {
   *q += 0x10000; // 0x10000 == 1u << 16 i.e. increment tail ; ? memory_order_release
 }
 // ╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴ Multiple producer
-// TODO 2025-10-02 03:08:56 test, analyse
+// TODO 2025-10-02 03:08:56 this is just me; need to test, analyse!
 i32 queue_mpush(queue *q, i32 len, u32 *save) {
   u32 r = *save = *q;
   i32 mask = len - 1;
@@ -678,21 +782,22 @@ typedef struct {
   s8 buf;
   queue q;
 } qout;
-MAYBE(qout)
-qout_ make_qout(arena *a, i32 len) {
-  qout_ nil = (qout_){0};
+
+qout make_qout(arena *a, i32 len) {
+  qout nil = (qout){0};
   i32 cap = queue_capacity(len);
   if (!cap) return nil;
   u8 *buf = new (a, u8, len);
   if (!buf) return nil;
-  return (qout_) { .v = {.buf = (s8){.buf = buf, .len = len}, .q = 0 } };
+  return (qout) {.buf = (s8){.rel = u8_rel(a, buf), .len = len}, .q = 0 } ;
 }
 size read_qout(qout *qo, s8 buf) {
   i32 qi = 0;
   size bi = 0;
+  u8 *abuf = s8_array_abs(buf), *qbuf = s8_array_abs(qo->buf);
   while ((qi = queue_pop(&qo->q, qo->buf.len))) { // where .len is queue capacity
     if (qi < 0) break; // empty
-    buf.buf[bi++] = qo->buf.buf[qi];
+    abuf[bi++] = qbuf[qi];
     queue_pop_commit(&qo->q);
   }
   return bi;
@@ -700,12 +805,13 @@ size read_qout(qout *qo, s8 buf) {
 size write_qout(qout *qo, u8 *buf, size maxlen) {
   i32 qi = 0;
   i32 bi = 0;
+  u8 *qbuf = s8_array_abs(qo->buf);
   while (1) {
     qi = queue_push(&qo->q, qo->buf.len); // where .len is queue capacity
     if (qi < 0 || bi >= maxlen) break;
     // printf("pushing %c to queue position %i\n", buf[bi], qi);
     // printf("%c", buf[bi]);
-    qo->buf.buf[qi] = buf[bi++]; // byte at a time
+    qbuf[qi] = buf[bi++]; // byte at a time
     queue_push_commit(&qo->q);
   }
   return bi;
@@ -720,11 +826,11 @@ typedef struct {
   i32 fd; // 1 stdout, 2 stderr
   b32 err;
 } bufout;
-MAYBE(bufout)
-bufout_ make_bufout(arena *a, i32 cap, i32 fd) {
+
+bufout make_bufout(arena *a, i32 cap, i32 fd) {
   u8 *buf = new (a, u8, cap);
-  if (!buf) return (bufout_){0};
-  return (bufout_){.v = {.buf = buf, .cap = cap, .fd = fd}};
+  if (!buf) return (bufout){0};
+  return (bufout){.buf = buf, .cap = cap, .fd = fd};
 }
 
 void flush(bufout *b);
@@ -734,9 +840,9 @@ typedef size (*Writer)(void *out, s8 s);
 // Caller needs to flush
 size s8write(void *out, s8 s) {
   bufout *b = (bufout *)out;
-  if (!b->buf || !s.buf) return 0;
-  u8 *buf = s.buf;
-  u8 *end = endof(s);
+  if (!b->buf || !s.len) return 0;
+  u8 *buf = s8_array_abs(s);
+  u8 *end = s8endof(s);
   size total_copied = 0;
   while (!b->err && (buf < end)) {
     i32 avail = b->cap - b->len; // TODO learn about size -> i32
@@ -752,20 +858,21 @@ size s8write(void *out, s8 s) {
 }
 
 // Also see s8sprintf.
-i32 s8printf(arena scratch, Writer writer, void *out, const char *format, ...) {
-  if (!scratch.beg) return -1;
-  assert(scratch.beg == scratch.cur);
-  size avail = available(&scratch);
+i32 s8printf(arena *scratch, Writer writer, void *out, const char *format, ...) {
+  if (!scratch->beg) return -1;
+  assert(scratch->beg == scratch->cur, "scratch buffer cursor not at beginning");
+  size avail = available(scratch); // TODO 2026-05-23 23:35:59 could resize if needed
   va_list args;
   va_start(args, format);
   // returns misleading n which disregards available size!
   // also disregards terminal \0, as usual
-  // FIXME 2026-05-27 21:44:16 possibly working by luck because s8 starts with *buf
-  i32 n = vsnprintf(scratch.beg, avail, format, args);
+  i32 n = vsnprintf(scratch->beg, avail, format, args);
   va_end(args);
   if (n > 0) {
-    scratch.cur += (n > avail ? avail : n); // at terminal \0
-    return writer(out, s8bytespan(scratch.beg, scratch.cur));
+    scratch->cur += (n > avail ? avail : n); // at terminal \0
+    return writer(out, (s8){.abs = (u8 *)scratch->beg,
+                            .len = used(scratch),
+                            .absolute = 1});
   } else return n;
 }
 
@@ -779,90 +886,108 @@ void flush(bufout *b) {
     }
 }
 
-void s8writefd(i32 fd, s8 s) {
-  oswrite(fd, (u8 *)s.buf, s.len);
-}
+void s8writefd(i32 fd, s8 s) {oswrite(fd, s8_array_abs(s), s.len);}
 
 // Unbuffered
 void s8log(i32 fd, s8 s) {
   s8writefd(fd, s);
-  s8writefd(fd, s8("\n"));
+  oswrite(fd, (u8 *)"\n", 1);
 }
 
 // ──────────────────────────────────────────────────────────── Operating System
 
-void osfail(i32 code);
+ // terminate without cleanup https://stackoverflow.com/a/5423108/780743
 
-void failwith(i32 code, s8 msg) {
-  s8log(2, msg);
-  osfail(code);
-}
+#define failwith(code, ...)                                                    \
+  do {                                                                         \
+    fprintf(stderr, __VA_ARGS__);                                              \
+    _Exit(code);                                                               \
+  } while (0)
 
 // ╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴ Arg parsing
 
-MAP_LIST(s8vm, s8, void *, s8equal)
-
-enum arg_type {UNK_ARG, INT_ARG, STR_ARG, BOOL_ARG};
-
-MAP_LIST(s8arg_typem, s8, enum arg_type, s8equal)
-
+ARRAY(plainargs, s8)
+MAP_LIST(kvargs, s8, void *, s8equal)
+enum argtype {UNK_ARG, INT_ARG, STR_ARG, BOOL_ARG};
+MAP_LIST(argtypes, s8, enum argtype, s8equal)
+  
 struct args {
-  s8vm *kv;
-  s8a rest;
+  kvargs *kv;
+  plainargs rest;
 };
+
+s8 *str_arg(struct args a, char *k) {
+  kvargs *kv = kvargs_get(a.kv, s8wrap(k, 64));
+  return kv ? (s8 *)kv->val : 0;
+}
+
+b32 *bool_arg(struct args a, char *k) {
+  kvargs *kv = kvargs_get(a.kv, s8wrap(k, 64));
+  return kv ? (b32 *)kv->val : 0;
+}
+
+i32 *int_arg(struct args a, char *k) {
+  kvargs *kv = kvargs_get(a.kv, s8wrap(k, 64));
+  return kv ? (i32 *)kv->val : 0;
+}
+
+byte *reset_scratch(arena *a);
 
 // Defs e.g. "--port=int --workers=int" must be in --long-arg=type form.
 // Initials are promoted to short arg name (first wins).
 // They will allow any combination of styles:
-// "-p8080 -w3" // TODO
-// "-p 8080 -w 3" // TODO
+// "-p8080 -w3"
+// "-p 8080 -w 3"
 // "--port=8080" "--workers=3"
 // "--port 8080" "--workers 3"
 // and puts trailing args (or args after first "--") in .rest
-struct args argparse(arena *a, int argc, char **argv, char *defs) {
-  s8arg_typem *types = 0;
-  s8pair def = {.tail = s8wrap(defs, 1024)};
+struct args argparse(arena *store, arena *scratch, char *defs, int argc, char **argv) {
+  argtypes *types = 0;
+  s8pair def = {.tail = s8clone(scratch, s8wrap(defs, 1024), 0)};
   s8pair kv = {0};
   while (def.tail.len) {
     s8 remaining = def.tail;
-    def = s8cut(def.tail, s8(" "));
+    def = s8cut(def.tail, s8(" ")); // FIXME UB
     if (!def.head.len) def.head = remaining;
     kv = s8cut(def.head, s8("="));
     if (s8startswith(kv.head, s8("--"))) kv.head = s8slice(kv.head, 2, 0);
-    else failwith(1, s8("Invalid arg name def."));
-    enum arg_type t = UNK_ARG;
+    else failwith(1, "Invalid arg name def in %s.", defs);
+    enum argtype t = UNK_ARG;
     if (s8equal(s8("int"), kv.tail)) t = INT_ARG;
     else if (s8equal(s8("str"), kv.tail)) t = STR_ARG;
     else if (s8equal(s8("bool"), kv.tail)) t = BOOL_ARG;
-    else failwith(1, s8("Invalid arg type def."));
-    types = s8arg_typemassoc(a, types, kv.head, t);
+    else failwith(1, "Invalid arg type def in %s.", defs);
+    types = argtypes_assoc(scratch, types, kv.head, t);
   }
   struct args ret = {0};
   b32 await_val = 0;
-  enum arg_type t = UNK_ARG;
+  enum argtype t = UNK_ARG;
   int i = 1;
-  for (i = 1; i < argc; i++) {
+  for (; i < argc; i++) {
     s8 arg = s8wrap(argv[i], 256);
     if (!await_val) {
       kv = s8cut(arg, s8("="));
       kv = kv.head.len ? kv : (s8pair){.head = arg};
       if (s8equal(kv.head, s8("--"))) break; // with i set
-      if (s8startswith(kv.head, s8("--"))) kv.head = s8slice(kv.head, 2, 0);
+      if (s8startswith(kv.head, s8("--"))) {
+        // TODO 2026-05-26 12:07:50 support "--port 8080"
+        kv.head = s8slice(kv.head, 2, 0);
+      }
       else if (s8startswith(kv.head, s8("-"))) {
-        if (kv.tail.len) failwith(1, s8("Invalid short arg format (omit '=')."));
-        kv.tail = s8slice(kv.head, 2, 0);
+        if (kv.tail.len) failwith(1, "Invalid short arg format (omit '=').");
+        kv.tail = s8slice(kv.head, 2, 0); // mutation in situ eugh
         kv.head = s8slice(kv.head, 1, 2);
-        s8arg_typem *cur = types;
+        argtypes *cur = types;
         while (cur) 
           if (s8startswith(cur->key, kv.head)) {
             kv.head = cur->key;
             break;
-          } else cur = cur->next;
+          } else cur = argtypes_next(cur);
       } else { // allow absence of kwargs
         i--;
         break;
       }
-      s8arg_typem *kt = s8arg_typemget(types, kv.head);
+      argtypes *kt = argtypes_get(types, kv.head);
       if (kt) t = kt->val; else t = STR_ARG; // default
       if (!kv.tail.len) {
         if (!(i + 1 == argc && t == BOOL_ARG)) {
@@ -877,31 +1002,31 @@ struct args argparse(arena *a, int argc, char **argv, char *defs) {
     kv.tail = await_val ? arg : kv.tail; // .head = key, .tail = value
     switch (t) {
     case INT_ARG:
-      i32p = new (a, i32, 1);
-      if (!i32p) failwith(1, s8_OOM);
-      kv.tail = s8wrap((char *)kv.tail.buf, 16); // should be null terminated
+      i32p = new (scratch, i32, 1);
+      if (!i32p) failwith(1, "OOM\n");
+      kv.tail = s8wrap((char *)kv.tail.abs, 16); // should be null terminated
       char *end = 0;
-      *i32p = strtol((char *)kv.tail.buf, &end, 10);
-      if (!end) failwith(1, s8("Invalid int argument."));
-      ret.kv = s8vmassoc(a, ret.kv, kv.head, i32p);
+      *i32p = strtol((char *)kv.tail.abs, &end, 10);
+      if (!end) failwith(1, "Invalid int argument.");
+      ret.kv = kvargs_assoc(store, ret.kv, kv.head, i32p);
       break;
     case BOOL_ARG:
-      b32p = new (a, b32, 1); // initialised to 0 i.e. false
-      if (!b32p) failwith(1, s8_OOM);
+      b32p = new (store, b32, 1); // initialised to 0 i.e. false
+      if (!b32p) failwith(1, "OOM\n");
       *b32p = 1; // if none->true
       if (s8equal(kv.tail, s8("false"))) *b32p = 0;
       else if (s8equal(kv.tail, s8("true")) || !kv.tail.len); // already
       else if (s8startswith(kv.tail, s8("-"))) i-- ; // no value, would be next arg relook at this arg next loop
       else
-        failwith(1, s8("Invalid bool argument."));
-      ret.kv = s8vmassoc(a, ret.kv, kv.head, b32p);
+        failwith(1, "Invalid bool argument.");
+      ret.kv = kvargs_assoc(store, ret.kv, kv.head, b32p);
       break;
     case STR_ARG:
-      s8p = new (a, s8, 1);
-      if (!s8p) failwith(1, s8_OOM);
-      if (s8startswith(kv.tail, s8("-"))) failwith(1, s8("Invalid str argument."));
+      s8p = new (scratch, s8, 1);
+      if (!s8p) failwith(1, "OOM\n");
+      if (s8startswith(kv.tail, s8("-"))) failwith(1, "Invalid str argument.");
       *s8p = kv.tail;
-      ret.kv = s8vmassoc(a, ret.kv, kv.head, s8p);
+      ret.kv = kvargs_assoc(store, ret.kv, kv.head, s8p);
       break;
     default:
       if (s8equal(kv.tail, s8("--"))) {
@@ -913,12 +1038,14 @@ struct args argparse(arena *a, int argc, char **argv, char *defs) {
     await_val = 0;
   }
   if (++i < argc) {
-    s8a_ rest = make_s8a(a, argc - i);
-    if (!rest.ok) failwith(1, s8_OOM);
+    plainargs rest = make_plainargs(store, argc - i);
+    s8 *cur = plainargs_array_abs(rest);
+    if (!rest.len) failwith(1, "OOM\n");
     for (int j = 0; j < argc - i; j++) 
-      rest.v.buf[j] = s8wrap(argv[i + j], 256);
-    ret.rest = rest.v;
+      cur[j] = s8wrap(argv[i + j], 256);
+    ret.rest = rest;
   }
+  reset_scratch(scratch);
   return ret;
 }
 
@@ -945,99 +1072,65 @@ void debytes(i32 fd, void *val, size len) { // too cool for stdio.h printf
   oswrite(fd, (u8 *)"\n", 1);
 }
 
-#define inspect(ptr)                                  \
-  s8writefd(2, s8("Contents of pointer " #ptr ":"));   \
+#define inspect(ptr)                                                           \
+  s8writefd(2, s8("Contents of pointer " #ptr ":"));                           \
   debytes(2, ptr, sizeof(*(ptr)))
 
-#define log_debug(s)                              \
-  s8writefd(2, s8("Value of " #s ": "));          \
+#define log_debug(s)                                                           \
+  s8writefd(2, s8("Value of " #s ": "));                                       \
   s8log(2, s)
 
+// ╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴ Essentials
+
 // TODO why are there so many signed ints below where negative is incorrect?
-
-#ifdef _WIN32 // ╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴ _WIN32
-// msys2 clang64 to get asan & usan
-// /usr/share/mintty/emojis/getemojis -d
-typedef struct { i32 dummy; } *handle;
-#define W32(r) __declspec(dllimport) r __stdcall
-W32(byte *) VirtualAlloc(byte *, usize, u32, u32);
-W32(b32) VirtualFree(byte *, usize, u32);
-W32(handle) GetStdHandle(u32);
-W32(b32) ReadFile(handle, u8 *, u32, u32 *, void *);
-W32(b32) WriteFile(handle, u8 *, u32, u32 *, void *);
-W32(void) ExitProcess(u32);
-W32(u32) GetLastError(void);
-
-arena alloc_arena(size cap) {
-  // https://learn.microsoft.com/en-us/windows/win32/api/memoryapi/nf-memoryapi-virtualalloc
-  // lpAddress = system determines where to allocate
-  // dwSize = size in bytes
-  // flAllocationType =  MEM_COMMIT + MEM_RESERVE
-  // flProtect = PAGE_READWRITE
-  byte* beg = VirtualAlloc(0, cap, 0x3000, 4);
-  if (beg) return (arena){.beg = beg, .cur = beg, .end = beg + cap};
-  else return (arena){0};
-}
-
-b32 free_arena(arena *a) {
-  b32 ret = 0;
-  if (!a) return 0;
-  byte *me = a->beg;
-  a->beg = 0;
-  a->cur = 0;
-  a->end = 0;
-  if (me) ret = VirtualFree(me, 0, 0x00008000); // MEM_RELEASE
-  return ret; // nonzero on success
-}
-
-void osfail(i32 code) {
-  ExitProcess(code); // TOOD check vs 1
-}
-
-i32 osread(i32 fd, u8 *buf, i32 cap) {
-  handle in = GetStdHandle(-10 - fd);
-  u32 len;
-  ReadFile(in, buf, cap, &len, 0);
-  return len;
-}
-
-u32 oswrite(i32 fd, u8 *buf, i32 len) {
-  handle out = GetStdHandle(-10 - fd);
-  u32 dummy;
-  b32 stat = WriteFile(out, buf, len, &dummy, 0); // TODO GetLastError if fails
-  if (stat) return 0;
-  else return GetLastError();
-}
-
-// https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-exitprocess
-// void mainCRTStartup(void) { stuff; ExitProcess(code); }
-        
-#else // ╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴ not _WIN32
  
 #include <stdlib.h> // malloc
 #include <unistd.h> // read write _exit
 #include <errno.h>
 
 // malloc failure will return zero-capacity arena so its `alloc`s will just fail.
-arena alloc_arena(size cap) {
-  byte* beg = malloc(cap);
-  if (beg) return (arena){.beg = beg, .cur = beg, .end = beg + cap};
+arena alloc_arena(usize cap, arena *parent) {
+  assert(cap <= MAX_CAP, "arena too big to address");
+  byte *beg = malloc(cap);
+  TRACE(":%p allocated %tuB for arena with parent %p\n", (void *)beg, cap, (void *)parent);
+  if (beg) return (arena){.beg = beg, .cur = beg, .end = beg + cap, .parent = parent};
   else return (arena){0};
 }
 
+// Not threadsafe
+b32 resize_arena(arena *a, size cap) {
+  assert(cap > used(a), "can't shrink while full");
+  usize u = used(a);
+  byte *new_memory = realloc(a->beg, cap);
+  TRACE("%p:%p->%p reallocated %tuB with parent %p\n", (void *)a, (void *)a->beg, (void *)new_memory, cap, (void *)a->parent);
+  if (new_memory) {
+    a->beg = new_memory;
+    a->cur = new_memory + u;
+    a->end = new_memory + cap;
+    return 1;
+  } else {
+    // "If there is not enough memory, the old memory block is not freed and null pointer is returned."
+    fprintf(stderr, "Unable to grow arena\n");
+    return 0;
+  }
+}
+
 b32 free_arena(arena *a) {
-  if(!a) return 0;
+  TRACE("%p:%p freed\n", (void *)a, (void *)a->beg);
   byte *me = a->beg;
   a->beg = 0;
   a->cur = 0;
   a->end = 0;
   free(me); // safe even if null
+  // NB 2026-05-02 13:59:49 not resetting id 
   return 1;
 }
 
-void osfail(i32 code) {
-  _exit(code); // terminate without cleanup https://stackoverflow.com/a/5423108/780743
+byte *reset_scratch(arena *a) { // NB 2026-05-26 13:53:00 breaks arena concept a bit, only when exiting scope
+  return (a->cur = a->beg);
 }
+
+// TODO 2026-05-24 01:50:58 ser/de arenas with a little metadata
 
 i32 osread(i32 fd, u8 *buf, i32 cap) {
   return (i32)read(fd, buf, cap);
@@ -1053,7 +1146,5 @@ u32 oswrite(i32 fd, u8 *buf, i32 len) {
 }
 
 // i32 main(void) { stuff; return r; }
-
-#endif // ╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴
 
 #endif // jdf_h

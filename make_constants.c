@@ -1,6 +1,6 @@
 #include <stdio.h>
 #include <jansson.h>
-#include "jdfrel.h"
+#include "jdf.h"
 #include "enum_tools.h"
 
 arena store, scratch; // global yay

@@ -1,4 +1,4 @@
-#include "jdfrel.h"
+#include "jdf.h"
 #include "dates.h"
 #include <limits.h>
 
