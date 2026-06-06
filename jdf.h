@@ -1,15 +1,6 @@
 /*
   After Wellons https://nullprogram.com/blog/2023/10/08/
   and https://nullprogram.com/blog/2023/09/27/ .
-  See discussion https://old.reddit.com/r/C_Programming/comments/173e0vn/nullprogram_my_personal_c_coding_style_as_of_late/
-.
-
-  - generally omit const (controversial!)
-  - literal 0 for null pointers and false
-  - restrict when necessary
-  - typedef all structures
-  - static all functions except for entry points (not applied here; less meaningful in single translation unit build)
-  - structure returns instead of out parameters; initialise with {0} as per C99
 
   Now with dynamically resizing arenas. See `alloc` comment.
 */
@@ -63,8 +54,8 @@ typedef size_t    usize;
 
   Also see `alloc` comments.
   
-  In contrast to non-rel implementation, need to pass "scratch" by
-  reference to accommodate dynamic resize.
+  Need to pass "scratch" by reference to accommodate dynamic resize;
+  reset_scratch(a) when leaving scope.
 */
 typedef struct arena arena;
 struct arena {
