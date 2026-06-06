@@ -31,7 +31,18 @@ typedef size_t    usize;
 #define countof(arrayptr) (size)(sizeof(arrayptr) / sizeof(*(arrayptr))) // casting from size_t
 #define new(a, t, n)                                            \
   (t *)alloc(a, sizeof(t), alignof(t), n, #t) // arena, type, number
-#define DEBUG(...) fprintf(stderr, __VA_ARGS__);
+
+#ifdef LOG_DEBUG
+#define DEBUG(...) fprintf(stderr, "DEBUG " __VA_ARGS__);
+#else
+#define DEBUG(...)
+#endif
+#ifdef LOG_TRACE
+#define TRACE(...) fprintf(stderr, "TRACE " __VA_ARGS__);
+#else
+#define TRACE(...)
+#endif
+
 /*
   Relative pointers, with respect to host arena (not anything else).
   Allows arena resizing and maybe serialisation. NB +1 keeps
@@ -389,7 +400,7 @@ b32 resize_arena(arena *a, size cap); // forward declaration
 */
 byte *alloc(arena *a, size objsize, size align, size count, const char *t) {
   if (count <= 0 || align <= 0) return 0;
-  printf("%p:%p [ %s ] of size %ti x %ti\n", (void *)a, (void *)a->beg, t, objsize, count);
+  TRACE("%p:%p [ %s ] of size %ti x %ti\n", (void *)a, (void *)a->beg, t, objsize, count);
   size padding = 0;
  recalc:
   /*
@@ -1070,7 +1081,7 @@ void debytes(i32 fd, void *val, size len) { // too cool for stdio.h printf
 arena alloc_arena(usize cap, arena *parent) {
   assert(cap <= MAX_CAP, "arena too big to address");
   byte *beg = malloc(cap);
-  DEBUG(":%p allocated %tuB for arena with parent %p\n", (void *)beg, cap, (void *)parent);
+  TRACE(":%p allocated %tuB for arena with parent %p\n", (void *)beg, cap, (void *)parent);
   if (beg) return (arena){.beg = beg, .cur = beg, .end = beg + cap, .parent = parent};
   else return (arena){0};
 }
@@ -1080,8 +1091,7 @@ b32 resize_arena(arena *a, size cap) {
   assert(cap > used(a), "can't shrink while full");
   usize u = used(a);
   byte *new_memory = realloc(a->beg, cap);
-  //printf("a: %p, beg: %p, new: %p\n", a, a->beg, new_memory);
-  DEBUG("%p:%p->%p reallocated %tuB with parent %p\n", (void *)a, (void *)a->beg, (void *)new_memory, cap, (void *)a->parent);
+  TRACE("%p:%p->%p reallocated %tuB with parent %p\n", (void *)a, (void *)a->beg, (void *)new_memory, cap, (void *)a->parent);
   if (new_memory) {
     a->beg = new_memory;
     a->cur = new_memory + u;
@@ -1095,14 +1105,13 @@ b32 resize_arena(arena *a, size cap) {
 }
 
 b32 free_arena(arena *a) {
-  //printf("freeing arena %p\n", (void *a);
+  TRACE("%p:%p freed\n", (void *)a, (void *)a->beg);
   byte *me = a->beg;
   a->beg = 0;
   a->cur = 0;
   a->end = 0;
   free(me); // safe even if null
   // NB 2026-05-02 13:59:49 not resetting id 
-  // TODO 2026-05-01 17:59:16 mechanism for removing from arenas global (and notifying errors)?
   return 1;
 }
 

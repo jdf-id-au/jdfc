@@ -18,9 +18,15 @@
 #include <pthread.h>
 #include <ev.h>
 
+#ifdef LOG_INFO
+#define INFO(...) fprintf(stdout, "INFO " __VA_ARGS__);
+#else
+#define INFO(...)
+#endif
+
 // Dump s8 in desperation (debugging)
 void dumbp(s8 s) {
-  printf("%*ti B ✏ ", 5, s.len);
+  DEBUG("%*ti B ✏ ", 5, s.len);
   u8 *buf = s8_array_abs(s);
   for (size i = 0; i < s.len; i++) printf("%c", buf[i]);
   printf("\n");
@@ -149,7 +155,7 @@ typedef struct {
 
 i32 nworkers(void);
 
-// TODO 2026-05-26 13:50:37 observe how much need for resize_arena
+// TODO 2026-05-26 13:50:37 observe how much need for resize_arena, could have custom profiler to recommend optimal sizes for given workloads (starting with client)
 
 #define DEFAULT_CONFIG .domain = PF_INET,       \
     .backlog = 10,                              \
@@ -157,9 +163,9 @@ i32 nworkers(void);
     .rcvtimeo = 5,                              \
     .sndtimeo = 5,                              \
     .server_mem = KiB(1),                       \
-    .client_mem = KiB(1)  ,                     \
+    .client_mem = KiB(256),                     \
     .worker_mem = KiB(1),                       \
-    .clients = 1024,                            \
+    .clients = 256,                             \
     .workers = nworkers(),                      \
     .chunk_size = KiB(4)
 
@@ -370,16 +376,6 @@ Product make_product(arena *client_arena, i32 len, size chunk_size) {
   return (Product) { .chunks = chunks, .q = 0 };
 }
 
-// printf contents of arena. Terminates string in situ!
-size arena_printf(arena *a, const char *format) {
-  if (a->cur < a->end) *a->cur = 0;
-  else {
-    const char *warning = "❗️(too long for buffer)";
-    snprintf(a->end - sizeof(warning), sizeof(warning), "%s", warning);
-  }
-  return printf(format, a->beg);
-}
-
 s8m *s8m_assoc_clonev(arena *store, s8m *head, s8 k, s8 v) {
   s8m *already = head ? s8m_get(head, k) : 0;
   if (already && s8equal(already->val, v))
@@ -444,7 +440,7 @@ b32 flushc(Chunk *workshop_pending) {
     fprintf(stderr, "💣 Tried to flush to uninitialised destination\n");
     return 0;
   }
-  Product *d = &dest->deliver; // FIXME 2026-06-05 22:32:52 capable of having garbage chunks!
+  Product *d = &dest->deliver;
   i32 idx = 0; // also see write_qout for queue semantics
 
   idx = queue_push(&d->q, d->chunks.len); // ╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴ Queue access
@@ -516,9 +512,7 @@ void serialise_response(Workshop *shop, Response res) {
   if (res.is_update) {
     s8writec(out, res.update);
     finishc(out, WRITE); // TODO 2025-09-30 11:41:06 READWRITE if websocket...
-#ifndef QUIET
-    printf("📡 %td B to %s:%d\n", res.update.len, client->ip, client->port);
-#endif
+    INFO("📡 %td B to %s:%d\n", res.update.len, client->ip, client->port);
   } else {
     s8 crlf = s8("\r\n");
     add_headers(store, scratch, &res); // reassigning to pass-by-value parameter
@@ -543,7 +537,7 @@ void serialise_response(Workshop *shop, Response res) {
       finishc(out, WRITE);
     }
     else finishc(out, READ); // FIXME  2026-06-05 23:00:29 
-    printf("📣 %i\n", res.status);
+    INFO("📣 %i\n", res.status);
   }
   arena_abs(client->store)->cur = arena_abs(client->store)->beg + client->store_reset;
   reset_scratch(scratch);
@@ -754,14 +748,10 @@ void write_client(EV_P_ ev_io *w, i32 events) {
     } else break;
   }
   if (c.finished) {
-#ifndef QUIET
-    //printf("✅ %ti B written to %s:%d\n", total_bytes_written, client->ip, client->port);
-#endif
+    INFO("✅ %ti B written to %s:%d\n", total_bytes_written, client->ip, client->port);
   } else if (c.len) {
-#ifndef QUIET
-    printf("➡️ Chunk of %td B written, message not finished to %s:%d\n",
+    INFO("➡️ Chunk of %td B written, message not finished to %s:%d\n",
            c.len, client->ip, client->port);
-#endif
   } else { //  Only legitimate empty is when finished, to set direction.
     fprintf(stderr, "Erroneously wrote no data to %s:%d.\n", client->ip, client->port);
   }
@@ -795,7 +785,7 @@ void read_client(EV_P_ ev_io *w, i32 events) {
   ssize_t bytes_read = read(w->fd, arena_abs(client->scratch)->beg, available(arena_abs(client->scratch)));
   arena_abs(client->scratch)->cur = arena_abs(client->scratch)->beg + bytes_read;
   if (bytes_read == 0) { // client closed connection
-    printf("Zero bytes read from %s:%d, cleaning up\n", client->ip, client->port);
+    DEBUG("Zero bytes read from %s:%d, cleaning up\n", client->ip, client->port);
     cleanup_client(EV_A_ w);
   } else if (bytes_read < 0) {
     if (errno == EAGAIN || errno == EWOULDBLOCK) {
@@ -822,7 +812,7 @@ void read_client(EV_P_ ev_io *w, i32 events) {
     arena *client_scratch = arena_abs(client->scratch);
     Request req = parse_request(client_store, client_scratch, raw); // NB 2026-06-03 22:15:58 can move client pointer and therefore invalidate client->store (even though it's in the server arena!)
     char *uri = s8unwrap(client_scratch, req.uri);
-    if (uri) printf("🔔 %s from %s:%d\n", uri, client->ip, client->port);
+    if (uri) INFO("🔔 %s from %s:%d\n", uri, client->ip, client->port);
     client = client_from_arena(client_store); // recover correct pointer
     req.client = Client_rel(client_store, client);
     if (!enqueue_request(req)) {
@@ -849,12 +839,12 @@ void accept_client(EV_P_ ev_io *w, i32 events) {
     // NB server->address seemingly changed from server to client between `bind` and `accept`
     ipstr(client_, server->address);
     if (server->nclients > server->config.clients) {
-      printf("⛔ Rejected connection from %s:%d\n", client_ip, client_port);
+      INFO("⛔ Rejected connection from %s:%d\n", client_ip, client_port);
       write(new_socket, s8_array_abs(UNAVAILABLE), UNAVAILABLE.len);
       close(new_socket);
       return;
     }
-    printf("☎️  %s:%d\n", client_ip, client_port);
+    INFO("☎️  %s:%d\n", client_ip, client_port);
     set_non_blocking(new_socket);
     set_nodelay(new_socket);
     set_timeout(new_socket, SO_RCVTIMEO, server->config.rcvtimeo);
@@ -938,7 +928,7 @@ void *worker(Workshop *workshop) { // ──────────────
         res = (Response){.status = req.error};
         break;
       default:
-        if (req.error) printf("Disregarding Request.error status %d.\n", req.error);
+        if (req.error) INFO("Disregarding Request.error status %d.\n", req.error);
       }
     }
     // NB 2025-09-29 16:13:45 handler is currently also responsible for routing!
@@ -1049,7 +1039,7 @@ void launch(Server *server) {
   ipstr(server_, server->address);
   copy((u8 *)server->ip, (u8 *)server_ip, sizeof server_ip); // convenience
   server->port = server_port;
-  printf("👂 Listening on %s:%d using %td threads for up to %d clients.\n",
+  INFO("👂 Listening on %s:%d using %td threads for up to %d clients.\n",
          server->ip, server->port, workers, server->config.clients);
   
   server->loop = ev_loop_new(0);
@@ -1074,7 +1064,12 @@ void launch(Server *server) {
   ev_loop_destroy(server->loop);
 
   // TODO is it necessary to join/kill workers? do they need enclosing while(running) loop?
-  // FIXME 2026-06-06 00:54:57 apparent memory leak with requests (e.g. hyperfine) but Instruments doesn't seem to think so
+
+  // FIXME 2026-06-06 00:54:57 apparent memory leak with requests
+  // (e.g. hyperfine) but Instruments doesn't seem to think so also by
+  // logging, allocs = frees + 34; nothing being realloced to ridiculous size
+
+  // TODO 2026-06-06 11:14:59 look for hidden per-client leak? libev something?? ALSO AFFECTS non-rel jdfhttp! asan?
 }
 
 #endif // jdfhttp_h

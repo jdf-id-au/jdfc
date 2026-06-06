@@ -7,8 +7,9 @@ PREAMBLE=MallocNanoZone='0' time
 # https://www.gnu.org/software/make/manual/html_node/Automatic-Variables.html
 CFLAGS=-std=c17 -g3 \
 -pedantic -Wall -Wextra \
--fPIC -fsanitize=undefined,address
-CFLAGSPROD=-std=c17 -O3 -fPIC
+-fPIC -fsanitize=undefined,address \
+-DLOG_TRACE -DLOG_DEBUG -DLOG_INFO
+CFLAGSPROD=-std=c17 -O3 -fPIC -DLOG_INFO
 
 clean:
 	rm testrel_http
