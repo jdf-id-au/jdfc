@@ -650,14 +650,22 @@ void cleanup_client(EV_P_ ev_io *w) {
   remove_client(server, client);
 }
 
-// returns previous state; not enjoyable to implement
-enum direction client_set_direction(EV_P_ ev_io *w, enum direction next, char *note) {
+enum direction client_get_direction(EV_P_ ev_io *w) {
   Client *client = client_from_arena((arena *)w->data);
   ev_io *read_io = &client->read_io;
   ev_io *write_io = &client->write_io;
-  enum direction previous;
-  if (ev_is_active(read_io)) previous = ev_is_active(write_io) ? READWRITE : READ;
-  else previous = ev_is_active(write_io) ? WRITE : NEITHER;
+  enum direction ret;
+  if (ev_is_active(read_io)) ret = ev_is_active(write_io) ? READWRITE : READ;
+  else ret = ev_is_active(write_io) ? WRITE : NEITHER;
+  return ret;
+}
+
+// returns previous state; not enjoyable to implement
+enum direction client_set_direction(EV_P_ ev_io *w, enum direction next) {
+  Client *client = client_from_arena((arena *)w->data);
+  ev_io *read_io = &client->read_io;
+  ev_io *write_io = &client->write_io;
+  enum direction previous = client_get_direction(EV_A_ w);
   //printf("direction %d", previous);
   if (next!=previous) {
     switch (previous) {
@@ -702,7 +710,6 @@ enum direction client_set_direction(EV_P_ ev_io *w, enum direction next, char *n
     }
     //printf(" → %d", next);
   }
-  //printf(" %s\n", note ? note : ""); // TODO 2026-04-20 20:03:31 remove note 
   return previous;
 }
 
@@ -765,7 +772,9 @@ void write_client(EV_P_ ev_io *w, i32 events) {
     } else break;
   }
   if (c.finished) {
-    INFO("✅ %ti B written to %s:%d\n", total_bytes_written, client->ip, client->port);
+    INFO("✅ %ti B written to %s:%d\n", total_bytes_written, client->ip,
+         client->port);
+    ev_timer_stop(EV_A_ &client->timeout);
   } else if (c.len) {
     INFO("➡️ Chunk of %td B written, message not finished to %s:%d\n",
            c.len, client->ip, client->port);
@@ -773,10 +782,10 @@ void write_client(EV_P_ ev_io *w, i32 events) {
     fprintf(stderr, "Erroneously wrote no data to %s:%d.\n", client->ip, client->port);
   }
 
-  char note[128];
-  snprintf(note, sizeof note, "write_client %s:%d %s", client->ip, client->port,
-           client->mode==SERVER_SENT_EVENTS ? "📡" : "📣");
-  client_set_direction(EV_A_ w, c.then, note);
+  //char note[128];
+  //snprintf(note, sizeof note, "write_client %s:%d %s", client->ip, client->port,
+  //           client->mode==SERVER_SENT_EVENTS ? "📡" : "📣");
+  client_set_direction(EV_A_ w, c.then);
   reset_scratch(scratch);
 }
 
@@ -787,6 +796,7 @@ b32 enqueue_request(Request req) {
   if (idx < 0) return 0; // queue full
   Requests_array_abs(server->work.requests)[idx] = req;
   queue_push_commit(&server->work.q);
+  ev_timer_again(server->loop, &Client_abs(req.client)->timeout);
   pthread_mutex_lock(&server->work_waiting_lock);
   pthread_cond_signal(&server->work_waiting); // worker can just sleep again if queue already emptied
   pthread_mutex_unlock(&server->work_waiting_lock);
@@ -800,6 +810,7 @@ void read_client(EV_P_ ev_io *w, i32 events) {
   // using scratch arena as a buffer here, instead of local array
   // printf("client scratch usage should be 0: %ti\n", used(&client->scratch));
   ssize_t bytes_read = read(w->fd, arena_abs(client->scratch)->beg, available(arena_abs(client->scratch)));
+  client->timeout.repeat = 5.;
   arena_abs(client->scratch)->cur = arena_abs(client->scratch)->beg + bytes_read;
   if (bytes_read == 0) { // client closed connection
     DEBUG("Zero bytes read from %s:%d, cleaning up\n", client->ip, client->port);
@@ -836,7 +847,10 @@ void read_client(EV_P_ ev_io *w, i32 events) {
         client = client_from_arena(client_store); // recover correct pointer
         client->receive.body = s8l_rel(client_store, head);
         client->receive.received += raw.len;
-        if (client->receive.received < client->receive.content_length) return; // await further read 
+        if (client->receive.received < client->receive.content_length) {
+          ev_timer_again(client->server->loop, &client->timeout);
+          return; // await further read
+        }
       } else {
         req.error = CONTENT_TOO_LARGE;
       }
@@ -858,6 +872,7 @@ void read_client(EV_P_ ev_io *w, i32 events) {
             req.content_length = content_length.val;
             req.received = body_length;
             client->receive = req;
+            ev_timer_again(client->server->loop, &client->timeout);
             return; // await further read
           } else if (body_length > content_length.val) {
             req.error = CONTENT_TOO_LARGE;
@@ -876,21 +891,35 @@ void read_client(EV_P_ ev_io *w, i32 events) {
     }
     client->receive = (Request){0};
     if (!enqueue_request(req)) {
+      // FIXME 2026-06-07 19:26:13 test; may need to change direction first?
       unavailable(w->fd, "enqueue job"); // effectively backpressure
       cleanup_client(EV_A_ w);
       return;
     }
-    char note[128];
-    snprintf(note, sizeof note, "read_client %s:%d %s", client->ip,
-             client->port, client->mode == SERVER_SENT_EVENTS ? "📡" : "📣");
-    client_set_direction(EV_A_ w, WRITE, note);
+    //char note[128];
+    //snprintf(note, sizeof note, "read_client %s:%d %s", client->ip,
+    //         client->port, client->mode == SERVER_SENT_EVENTS ? "📡" : "📣");
+    client_set_direction(EV_A_ w, WRITE);
     // not closing socket
   }
 }
 
 void timeout_client(EV_P_ ev_timer *w, i32 events) {
-  Client *client = client_from_arena((arena *)w->data);
+  arena *client_storage = (arena *)w->data;
+  Client *client = client_from_arena(client_storage);
   INFO("timeout for %s:%d\n", client->ip, client->port);
+  // FIXME 2026-06-07 19:23:55 not necessarily correct:
+  switch (client_get_direction(EV_A_ & client->read_io)) {
+  case READ:
+    client_set_direction(EV_A_ &client->read_io, WRITE);
+    enqueue_request((Request){.client = Client_rel(client_storage, client),
+                              .error = REQUEST_TIMEOUT});
+    break;
+  case READWRITE: // fallthrough
+  case WRITE:
+  case NEITHER:
+    cleanup_client(EV_A_ &client->read_io);
+  }
 }
 
 void accept_client(EV_P_ ev_io *w, i32 events) {
@@ -954,14 +983,16 @@ void accept_client(EV_P_ ev_io *w, i32 events) {
     // ...so deliberately not starting here.
 
     ev_init(&client->timeout, timeout_client);
-    client->timeout.repeat = 5.;
+    client->timeout.repeat = 60.;
     client->timeout.data = client_store_in_server;
-    ev_timer_again(server->loop, &client->timeout);
+    // NB 2026-06-07 19:45:44 Chrome seems to open two sockets and not do
+    // anything with one? How to avoid DOS? Limit to one minute? 
+    ev_timer_again(server->loop, &client->timeout); // "method 2" from docs
     
-    char note[128];
-    snprintf(note, sizeof note, "accept_client %s:%d %s", client->ip, client->port,
-             client->mode==SERVER_SENT_EVENTS ? "📡" : "📣");
-    client_set_direction(EV_A_ &client->read_io, READ, note);
+    //char note[128];
+    //snprintf(note, sizeof note, "accept_client %s:%d %s", client->ip, client->port,
+    //         client->mode==SERVER_SENT_EVENTS ? "📡" : "📣");
+    client_set_direction(EV_A_ &client->read_io, READ);
 
     client->store_reset = used(client_store_in_server);
   }
