@@ -932,9 +932,11 @@ s8 str_arg(struct args a, char *k) {
 static const s8 ARG_TRUE = s8("true");
 static const s8 ARG_FALSE = s8("false");
 
-b32 bool_arg(struct args a, char *k) {
+MAYBE(b32)
+
+b32_ bool_arg(struct args a, char *k) {
   kvargs *kv = kvargs_get(kvargs_abs(a.kv), s8wrap(k, 64));
-  return kv && s8equal(kv->val, ARG_TRUE);
+  return kv ? (b32_){.v = s8equal(kv->val, ARG_TRUE), .ok = 1} : (b32_){0};
 }
 
 i32_ int_arg(struct args a, char *k) {
@@ -1015,16 +1017,17 @@ struct args argparse(arena *store, arena *scratch, char *defs, int argc, char **
       else if (s8equal(kv.tail, ARG_FALSE)) bool_val = 0;
       else if (s8equal(kv.tail, ARG_TRUE));
       else if (!kv.tail.len);
-      else failwith(1, "Invalid bool argument.");
+      else failwith(1, "Invalid bool argument: %s.", argv[i]);
       ret.kv =
           kvargs_rel(store, kvargs_assoc(store, kvargs_abs(ret.kv), kv.head,
                                          bool_val ? ARG_TRUE : ARG_FALSE));
       break;
     case INT_ARG:
-      if (s8startswith(kv.tail, s8("-"))) failwith(1, "Invalid int argument.");
+      if (!parse_i32(kv.tail).ok) failwith(1, "Invalid int argument %s.", argv[i]);
+      if (s8startswith(kv.tail, s8("-"))) failwith(1, "Invalid int argument: %s.", argv[i]);
       // fallthrough
     case STR_ARG:
-      if (s8startswith(kv.tail, s8("-"))) failwith(1, "Invalid str argument.");
+      if (s8startswith(kv.tail, s8("-"))) failwith(1, "Invalid str argument: %s.", argv[i]);
       ret.kv = kvargs_rel(store, kvargs_assoc(store, kvargs_abs(ret.kv), kv.head, kv.tail));
       break;
     default:

@@ -154,13 +154,11 @@ i32 main(int argc, char **argv) {
   arena init = alloc_arena(KiB(1), 0);
   arena init_scratch = alloc_arena(KiB(1), 0);
 
+  // TODO 2026-06-07 16:04:41 plumb through other config options; probably keep make_server as macro etc
   struct args args = argparse(&init, &init_scratch, "--port=int --workers=int", argc, argv);
-  i32 *port = int_arg(args, "port");
-  if (!port) {
-    fprintf(stderr, "Please specify a port");
-    return 1;
-  }
-  Server server = make_server(router, .port = *port);
+  i32_ port = int_arg(args, "port");
+  if (!port.ok) failwith(1, "Please specify a port.");
+  Server server = make_server(router, .port = port.v);
   launch(&server);
   return 0;
 }

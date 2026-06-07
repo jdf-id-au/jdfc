@@ -90,9 +90,11 @@ i32 main(void) {
   PREP(a = ARGPARSE( "--name=str", "pname", "--name", "thing"));
   TEST(s8equal(s8("thing"), str_arg(a, "name")));
   PREP(a = ARGPARSE("--yes=bool", "pname", "--yes"));
-  TEST(1 == bool_arg(a, "yes"));
+  TEST(1 == bool_arg(a, "yes").v);
   PREP(a = ARGPARSE("--yes=bool", "pname", "-y"));
-  TEST(1 == bool_arg(a, "yes"));
+  TEST(1 == bool_arg(a, "yes").v);
+  PREP(a = ARGPARSE("--yes=bool", "pname", "-yfalse"));
+  TEST(0 == bool_arg(a, "yes").v);
   PREP(a = ARGPARSE("--name=str", "pname", "-nhello"));
   TEST(s8equal(s8("hello"), str_arg(a, "name")));
   PREP(a = ARGPARSE("--name=str", "pname", "-n", "hello"));
