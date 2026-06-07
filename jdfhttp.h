@@ -909,16 +909,12 @@ void timeout_client(EV_P_ ev_timer *w, i32 events) {
   Client *client = client_from_arena(client_storage);
   INFO("timeout for %s:%d\n", client->ip, client->port);
   // FIXME 2026-06-07 19:23:55 not necessarily correct:
-  switch (client_get_direction(EV_A_ & client->read_io)) {
-  case READ:
+  if (client_get_direction(EV_A_ & client->read_io) == READ && client->receive.content_length) {
     client_set_direction(EV_A_ &client->read_io, WRITE);
     enqueue_request((Request){.client = Client_rel(client_storage, client),
                               .error = REQUEST_TIMEOUT});
-    break;
-  case READWRITE: // fallthrough
-  case WRITE:
-  case NEITHER:
-    cleanup_client(EV_A_ &client->read_io);
+  } else {
+    cleanup_client(EV_A_ & client->read_io);
   }
 }
 
@@ -983,10 +979,10 @@ void accept_client(EV_P_ ev_io *w, i32 events) {
     // ...so deliberately not starting here.
 
     ev_init(&client->timeout, timeout_client);
-    client->timeout.repeat = 60.;
+    client->timeout.repeat = 120.;
     client->timeout.data = client_store_in_server;
     // NB 2026-06-07 19:45:44 Chrome seems to open two sockets and not do
-    // anything with one? How to avoid DOS? Limit to one minute? 
+    // anything with one? How to avoid DOS? Limit to two minutes?
     ev_timer_again(server->loop, &client->timeout); // "method 2" from docs
     
     //char note[128];

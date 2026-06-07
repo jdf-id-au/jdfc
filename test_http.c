@@ -2,6 +2,8 @@
 
 #define print(x) cur = s8l_append(store, cur, x);
 
+// TODO 2026-06-07 19:59:01 opaque "client resources" pointer for db conn etc
+
 // Response websocket_handler(arena *store, arena *scratch, Request req) {
 //   Response res = {0};
 //   if (!s8equal(req.uri, s8("/ws"))) return (Response){.status = NOT_FOUND};
