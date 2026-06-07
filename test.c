@@ -38,6 +38,8 @@ i32 main(void) {
   TEST(s8equal(cut.tail, s8(" cd, ef")));
 
   // TODO etc...
+  PREP(s8 inty = s8("12345"));
+  TEST(12345 == parse_i32(inty).v);
 
   PREP(arena store = alloc_arena(2, 0)); // stress test resize_arena
   PREP(arena scratch = alloc_arena(2, 0));
@@ -76,8 +78,8 @@ i32 main(void) {
   struct args a = {0};
   PREP(a = ARGPARSE("--port=int --workers=int", "pname", "--port=8080", "--workers=2", "--", "other",));
   
-  TEST(8080 == *int_arg(a, "port"));
-  TEST(2 == *int_arg(a, "workers"));
+  TEST(8080 == int_arg(a, "port").v);
+  TEST(2 == int_arg(a, "workers").v);
   TEST(s8equal(s8("other"), *plainargs_array_abs(a.rest)));
 
   // NB 2026-05-25 18:07:44 risking null pointer dereference on *x_arg() calls
@@ -86,20 +88,20 @@ i32 main(void) {
   PREP(a = ARGPARSE("--port=int --workers=int", "pname", "other"));
   TEST(s8equal(s8("other"), *plainargs_array_abs(a.rest)));
   PREP(a = ARGPARSE( "--name=str", "pname", "--name", "thing"));
-  TEST(s8equal(s8("thing"), *str_arg(a, "name")));
+  TEST(s8equal(s8("thing"), str_arg(a, "name")));
   PREP(a = ARGPARSE("--yes=bool", "pname", "--yes"));
-  TEST(1 == *bool_arg(a, "yes"));
+  TEST(1 == bool_arg(a, "yes"));
   PREP(a = ARGPARSE("--yes=bool", "pname", "-y"));
-  TEST(1 == *bool_arg(a, "yes"));
+  TEST(1 == bool_arg(a, "yes"));
   PREP(a = ARGPARSE("--name=str", "pname", "-nhello"));
-  TEST(s8equal(s8("hello"), *str_arg(a, "name")));
+  TEST(s8equal(s8("hello"), str_arg(a, "name")));
   PREP(a = ARGPARSE("--name=str", "pname", "-n", "hello"));
-  TEST(s8equal(s8("hello"), *str_arg(a, "name")));
+  TEST(s8equal(s8("hello"), str_arg(a, "name")));
   PREP(a = ARGPARSE("--port=int --workers=int", "pname", "-p8080"));
-  TEST(8080 == *int_arg(a, "port"));
+  TEST(8080 == int_arg(a, "port").v);
   PREP(a = ARGPARSE("--port=int --workers=int", "pname", "-p 8080"));
-  TEST(8080 == *int_arg(a, "port"));
-  TEST(!int_arg(a, "absent"));
+  TEST(8080 == int_arg(a, "port").v);
+  TEST(!int_arg(a, "absent").ok);
   // TODO 2026-05-25 17:26:36
   /* PREP(a = ARGPARSE( "--port=int --workers=int", "pname", "--port 8080")); */
   /* PREP(kv = kvargs_get(a.kv, s8("port"))); */

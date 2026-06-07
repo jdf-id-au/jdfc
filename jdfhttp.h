@@ -39,9 +39,6 @@ REL(Server)
 typedef struct client Client;
 REL(Client)
 
-typedef struct request Request;
-REL(Request)
-
 REL(arena)
 ARRAY(arenas, arena)
 
@@ -60,28 +57,6 @@ typedef struct product { // allocated in Client arena
   Chunks chunks;
   queue q;
 } Product; // Concurrent queue (single consumer)
-
-enum mode {
-  REQUEST_RESPONSE,
-  SERVER_SENT_EVENTS,
-  // TRANSFER_ENCODING_CHUNKED, // then back to NORMAL when finished?
-  //  WEBSOCKET
-};
-
-typedef struct client {
-  Server *server;
-  arena_rel_t store; // points into Server.client_stores
-  arena_rel_t scratch;
-  size store_reset; // after initialisation, before work; only slightly breaks arena concept
-  struct sockaddr_in address;
-  char ip[INET_ADDRSTRLEN];
-  i32 port;
-  ev_io read_io;
-  ev_io write_io;
-  Request_rel_t receive; // only for buffering, prior to enqueueing
-  Product deliver;
-  enum mode mode;
-} Client; // Server's resources for serving one client // TODO 2025-09-29 22:24:48 rename to Connection ?
 
 MAP_LIST(s8m, s8, s8, s8equal)
 
@@ -107,7 +82,30 @@ typedef struct request {
     };
   };
 } Request;
+REL(Request)
 ARRAY(Requests, Request)
+
+enum mode {
+  REQUEST_RESPONSE,
+  SERVER_SENT_EVENTS,
+  // TRANSFER_ENCODING_CHUNKED, // then back to NORMAL when finished?
+  //  WEBSOCKET
+};
+
+typedef struct client {
+  Server *server;
+  arena_rel_t store; // points into Server.client_stores
+  arena_rel_t scratch;
+  size store_reset; // after initialisation, before work; only slightly breaks arena concept
+  struct sockaddr_in address;
+  char ip[INET_ADDRSTRLEN];
+  i32 port;
+  ev_io read_io;
+  ev_io write_io;
+  Request receive; // only for buffering, prior to enqueueing
+  Product deliver;
+  enum mode mode;
+} Client; // Server's resources for serving one client // TODO 2025-09-29 22:24:48 rename to Connection ?
 
 typedef struct {
   Client_rel_t client;
@@ -298,6 +296,14 @@ i32 set_timeout(int sockfd, int which, int seconds) {
 
 #define ReqErr(e) do { req.error = e; return req; } while (0) // macro block semicolon hack
 
+s8 mutate_lowercase(s8 s) {
+  u8 *c = s8_array_abs(s);
+  for (size i = 0; i < s.len; i++)
+    if (c[i] >= 'A' && c[i] <= 'Z')
+      c[i] -= ('A' - 'a');
+  return s;
+}
+
 // Store raw request, "parse" into zero-copy s8s.
 Request parse_request(arena *store, arena *scratch, s8 raw) {
   Request req = {.raw = raw};
@@ -328,7 +334,7 @@ Request parse_request(arena *store, arena *scratch, s8 raw) {
     }
     s8pair header = s8cut(line.head, s8(": "));
     if (!header.ok) ReqErr(BAD_REQUEST);
-    headers = s8m_assoc(store, headers, header.head, header.tail);
+    headers = s8m_assoc(store, headers, mutate_lowercase(header.head), header.tail);
     if (!headers) {
       fprintf(stderr, "💣 OOM saving headers \n");
       ReqErr(SERVICE_UNAVAILABLE);
@@ -814,14 +820,20 @@ void read_client(EV_P_ ev_io *w, i32 events) {
       return;
     }
     // s8arenaprintf(&client->scratch, "🔔 %s\n");
-    arena_abs(client->scratch)->cur = arena_abs(client->scratch)->beg; // Reset!
+    reset_scratch(arena_abs(client->scratch));
+    // Keep track of the arena object (which won't move because
+    // preallocated in server arena), not the client pointer (which is
+    // arena->beg and might move if store resized during use).
     arena *client_store = arena_abs(client->store);
     arena *client_scratch = arena_abs(client->scratch);
-    Request req = parse_request(client_store, client_scratch, raw); // NB 2026-06-03 22:15:58 can move client pointer and therefore invalidate client->store (even though it's in the server arena!)
+    Request req = parse_request(client_store, client_scratch, raw);
     char *uri = s8unwrap(client_scratch, req.uri);
-    if (uri) INFO("🔔 %s from %s:%d\n", uri, client->ip, client->port);
     client = client_from_arena(client_store); // recover correct pointer
+    if (uri) INFO("🔔 %s from %s:%d\n", uri, client->ip, client->port);
     req.client = Client_rel(client_store, client);
+    // TODO 2026-06-07 12:25:00 inspect content-length, decide whether need to set client->receive (buffer)
+    // TODO 2026-06-07 12:56:45 maybe inspect transfer-encoding if no content-length
+    
     if (!enqueue_request(req)) {
       unavailable(w->fd, "enqueue job"); // effectively backpressure
       cleanup_client(EV_A_ w);

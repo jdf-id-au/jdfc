@@ -15,6 +15,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdatomic.h>
+#include <errno.h>
 
 typedef uint8_t   u8;
 typedef int32_t   b32; // 0 false, 1 true
@@ -140,6 +141,8 @@ struct rel {
       s.len = 0; /* refuse to slice backwards */                               \
     return s;                                                                  \
   }
+
+#define MAYBE(t) typedef struct { t v ; b32 ok ; } t##_;
 
 /*
   To enable assertions in release builds,
@@ -657,6 +660,19 @@ size s8l_len(s8l *sl) {
   return len;
 }
 
+MAYBE(i32)
+
+i32_ parse_i32(s8 s) {
+  char buf[14] = {0}; // up to 10 digits, 2 commas, sign, \0
+  assert(s.len >= 0, "but how");
+  copy((u8 *)buf, s8_array_abs(s8trim(s)),
+       (usize)s.len < (sizeof(buf) - 1) ? s.len : (sizeof(buf) - 1));
+  char *end = 0;
+  i32 v = strtol(buf, &end, 10);
+  if (end == buf || errno) return (i32_){.ok = 0};
+  return (i32_){.v = v, .ok = 1};
+}
+
 s8 s8l_concat(arena *store, s8l *sl) {
   s8 ret = make_s8(store, s8l_len(sl));
   if (!ret.len) return ret;
@@ -898,28 +914,32 @@ void s8log(i32 fd, s8 s) {
 // ╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴ Arg parsing
 
 ARRAY(plainargs, s8)
-MAP_LIST(kvargs, s8, void *, s8equal)
+MAP_LIST(kvargs, s8, s8, s8equal)
 enum argtype {UNK_ARG, INT_ARG, STR_ARG, BOOL_ARG};
 MAP_LIST(argtypes, s8, enum argtype, s8equal)
   
 struct args {
-  kvargs *kv;
+  kvargs_rel_t kv;
+  argtypes_rel_t types;
   plainargs rest;
 };
 
-s8 *str_arg(struct args a, char *k) {
-  kvargs *kv = kvargs_get(a.kv, s8wrap(k, 64));
-  return kv ? (s8 *)kv->val : 0;
+s8 str_arg(struct args a, char *k) {
+  kvargs *kv = kvargs_get(kvargs_abs(a.kv), s8wrap(k, 64));
+  return kv ? kv->val : (s8){0};
 }
 
-b32 *bool_arg(struct args a, char *k) {
-  kvargs *kv = kvargs_get(a.kv, s8wrap(k, 64));
-  return kv ? (b32 *)kv->val : 0;
+static const s8 ARG_TRUE = s8("true");
+static const s8 ARG_FALSE = s8("false");
+
+b32 bool_arg(struct args a, char *k) {
+  kvargs *kv = kvargs_get(kvargs_abs(a.kv), s8wrap(k, 64));
+  return kv && s8equal(kv->val, ARG_TRUE);
 }
 
-i32 *int_arg(struct args a, char *k) {
-  kvargs *kv = kvargs_get(a.kv, s8wrap(k, 64));
-  return kv ? (i32 *)kv->val : 0;
+i32_ int_arg(struct args a, char *k) {
+  kvargs *kv = kvargs_get(kvargs_abs(a.kv), s8wrap(k, 64));
+  return kv ? parse_i32(kv->val) : (i32_){0};
 }
 
 byte *reset_scratch(arena *a);
@@ -934,11 +954,11 @@ byte *reset_scratch(arena *a);
 // and puts trailing args (or args after first "--") in .rest
 struct args argparse(arena *store, arena *scratch, char *defs, int argc, char **argv) {
   argtypes *types = 0;
-  s8pair def = {.tail = s8clone(scratch, s8wrap(defs, 1024), 0)};
+  s8pair def = {.tail = s8wrap(defs, 1024)};
   s8pair kv = {0};
   while (def.tail.len) {
     s8 remaining = def.tail;
-    def = s8cut(def.tail, s8(" ")); // FIXME UB
+    def = s8cut(def.tail, s8(" "));
     if (!def.head.len) def.head = remaining;
     kv = s8cut(def.head, s8("="));
     if (s8startswith(kv.head, s8("--"))) kv.head = s8slice(kv.head, 2, 0);
@@ -948,9 +968,9 @@ struct args argparse(arena *store, arena *scratch, char *defs, int argc, char **
     else if (s8equal(s8("str"), kv.tail)) t = STR_ARG;
     else if (s8equal(s8("bool"), kv.tail)) t = BOOL_ARG;
     else failwith(1, "Invalid arg type def in %s.", defs);
-    types = argtypes_assoc(scratch, types, kv.head, t);
+    types = argtypes_assoc(store, types, kv.head, t);
   }
-  struct args ret = {0};
+  struct args ret = {.types = argtypes_rel(store, types)};
   b32 await_val = 0;
   enum argtype t = UNK_ARG;
   int i = 1;
@@ -968,7 +988,7 @@ struct args argparse(arena *store, arena *scratch, char *defs, int argc, char **
         if (kv.tail.len) failwith(1, "Invalid short arg format (omit '=').");
         kv.tail = s8slice(kv.head, 2, 0); // mutation in situ eugh
         kv.head = s8slice(kv.head, 1, 2);
-        argtypes *cur = types;
+        argtypes *cur = argtypes_abs(ret.types);
         while (cur) 
           if (s8startswith(cur->key, kv.head)) {
             kv.head = cur->key;
@@ -978,7 +998,7 @@ struct args argparse(arena *store, arena *scratch, char *defs, int argc, char **
         i--;
         break;
       }
-      argtypes *kt = argtypes_get(types, kv.head);
+      argtypes *kt = argtypes_get(argtypes_abs(ret.types), kv.head);
       if (kt) t = kt->val; else t = STR_ARG; // default
       if (!kv.tail.len) {
         if (!(i + 1 == argc && t == BOOL_ARG)) {
@@ -987,42 +1007,28 @@ struct args argparse(arena *store, arena *scratch, char *defs, int argc, char **
         }
       }
     }
-    i32 *i32p = 0;
-    b32 *b32p = 0;
-    s8 *s8p = 0;
     kv.tail = await_val ? arg : kv.tail; // .head = key, .tail = value
+    b32 bool_val = 1;
     switch (t) {
-    case INT_ARG:
-      i32p = new (scratch, i32, 1);
-      if (!i32p) failwith(1, "OOM\n");
-      kv.tail = s8wrap((char *)kv.tail.abs, 16); // should be null terminated
-      char *end = 0;
-      *i32p = strtol((char *)kv.tail.abs, &end, 10);
-      if (!end) failwith(1, "Invalid int argument.");
-      ret.kv = kvargs_assoc(store, ret.kv, kv.head, i32p);
-      break;
     case BOOL_ARG:
-      b32p = new (store, b32, 1); // initialised to 0 i.e. false
-      if (!b32p) failwith(1, "OOM\n");
-      *b32p = 1; // if none->true
-      if (s8equal(kv.tail, s8("false"))) *b32p = 0;
-      else if (s8equal(kv.tail, s8("true")) || !kv.tail.len); // already
-      else if (s8startswith(kv.tail, s8("-"))) i-- ; // no value, would be next arg relook at this arg next loop
-      else
-        failwith(1, "Invalid bool argument.");
-      ret.kv = kvargs_assoc(store, ret.kv, kv.head, b32p);
+      if (s8startswith(kv.tail, s8("-"))) i--; // no value, would be next arg; relook next loop
+      else if (s8equal(kv.tail, ARG_FALSE)) bool_val = 0;
+      else if (s8equal(kv.tail, ARG_TRUE));
+      else if (!kv.tail.len);
+      else failwith(1, "Invalid bool argument.");
+      ret.kv =
+          kvargs_rel(store, kvargs_assoc(store, kvargs_abs(ret.kv), kv.head,
+                                         bool_val ? ARG_TRUE : ARG_FALSE));
       break;
+    case INT_ARG:
+      if (s8startswith(kv.tail, s8("-"))) failwith(1, "Invalid int argument.");
+      // fallthrough
     case STR_ARG:
-      s8p = new (scratch, s8, 1);
-      if (!s8p) failwith(1, "OOM\n");
       if (s8startswith(kv.tail, s8("-"))) failwith(1, "Invalid str argument.");
-      *s8p = kv.tail;
-      ret.kv = kvargs_assoc(store, ret.kv, kv.head, s8p);
+      ret.kv = kvargs_rel(store, kvargs_assoc(store, kvargs_abs(ret.kv), kv.head, kv.tail));
       break;
     default:
-      if (s8equal(kv.tail, s8("--"))) {
-        continue;
-      }
+      if (s8equal(kv.tail, s8("--"))) continue;
     }
     kv = (s8pair){0};
     t = UNK_ARG;

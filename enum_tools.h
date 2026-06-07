@@ -9,7 +9,7 @@ char fss(char c) {
   return '_';
 }
 
-s8 fussy_screaming_snake(arena *store, s8 s) {
+s8 fussy_screaming_snake(arena *store, s8 s) { // NB 2026-06-07 12:58:53 only fit for ascii
   s8 ret = make_s8(store, s.len);
   assert(ret.len, "oom"); // TODO handle better
   u8 *rb = s8_array_abs(ret);
