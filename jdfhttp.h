@@ -645,6 +645,7 @@ void cleanup_client(EV_P_ ev_io *w) {
   // https://metacpan.org/dist/EV/view/libev/ev.pod#ev_TYPE_stop-(loop,-ev_TYPE-*watcher)
   ev_io_stop(EV_A_ &client->read_io);
   ev_io_stop(EV_A_ & client->write_io);
+  ev_timer_stop(EV_A_ &client->timeout);
   close(w->fd);
   remove_client(server, client);
 }
@@ -888,7 +889,8 @@ void read_client(EV_P_ ev_io *w, i32 events) {
 }
 
 void timeout_client(EV_P_ ev_timer *w, i32 events) {
-  
+  Client *client = client_from_arena((arena *)w->data);
+  INFO("timeout for %s:%d\n", client->ip, client->port);
 }
 
 void accept_client(EV_P_ ev_io *w, i32 events) {
@@ -951,7 +953,10 @@ void accept_client(EV_P_ ev_io *w, i32 events) {
     client->write_io.data = client_store_in_server;
     // ...so deliberately not starting here.
 
-    ev_timer_init(&client->timeout, timeout_client, 1., 0.);
+    ev_init(&client->timeout, timeout_client);
+    client->timeout.repeat = 5.;
+    client->timeout.data = client_store_in_server;
+    ev_timer_again(server->loop, &client->timeout);
     
     char note[128];
     snprintf(note, sizeof note, "accept_client %s:%d %s", client->ip, client->port,
