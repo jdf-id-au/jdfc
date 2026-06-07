@@ -891,7 +891,7 @@ void s8log(i32 fd, s8 s) {
 
 #define failwith(code, ...)                                                    \
   do {                                                                         \
-    fprintf(stderr, __VA_ARGS__);                                              \
+    fprintf(stderr, "💣 " __VA_ARGS__);                                        \
     _Exit(code);                                                               \
   } while (0)
 

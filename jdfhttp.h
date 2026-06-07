@@ -39,6 +39,9 @@ REL(Server)
 typedef struct client Client;
 REL(Client)
 
+typedef struct request Request;
+REL(Request)
+
 REL(arena)
 ARRAY(arenas, arena)
 
@@ -75,13 +78,14 @@ typedef struct client {
   i32 port;
   ev_io read_io;
   ev_io write_io;
+  Request_rel_t receive; // only for buffering, prior to enqueueing
   Product deliver;
   enum mode mode;
 } Client; // Server's resources for serving one client // TODO 2025-09-29 22:24:48 rename to Connection ?
 
 MAP_LIST(s8m, s8, s8, s8equal)
 
-typedef struct {
+typedef struct request {
   Client_rel_t client;
   b32 is_update;
   union {
@@ -91,19 +95,18 @@ typedef struct {
       Client_rel_t from; // provide for all SSE, and WS (if not initiated by same client)
     };
     struct {
-      s8 raw;
+      s8 raw; // everything, possibly except whole body; needs to fit in one client_scratch
       enum http_status error; // in anticipation...
       enum http_method method;
       s8 uri;
       s8 protocol;
       struct rel params; // optional pointer-to-struct of parsed params
-      s8m_rel_t headers;
+      s8m_rel_t headers; // doesn't support trailing headers
       s8m_rel_t cookies;
-      s8 body;
+      s8l_rel_t body;
     };
   };
 } Request;
-REL(Request)
 ARRAY(Requests, Request)
 
 typedef struct {
@@ -143,7 +146,8 @@ typedef struct {
   i32 rcvtimeo;
   i32 sndtimeo;
   size server_mem;
-  size client_mem;
+  size client_store_mem;
+  size client_scratch_mem; // configure separately because there will be many and probably don't need to be as big as store
   size worker_mem;
   i32 clients; // max
   i32 workers; // exact
@@ -163,7 +167,8 @@ i32 nworkers(void);
     .rcvtimeo = 5,                              \
     .sndtimeo = 5,                              \
     .server_mem = KiB(1),                       \
-    .client_mem = KiB(256),                     \
+    .client_store_mem = KiB(256),               \
+    .client_scratch_mem = KiB(8),               \
     .worker_mem = KiB(1),                       \
     .clients = 256,                             \
     .workers = nworkers(),                      \
@@ -294,7 +299,6 @@ i32 set_timeout(int sockfd, int which, int seconds) {
 #define ReqErr(e) do { req.error = e; return req; } while (0) // macro block semicolon hack
 
 // Store raw request, "parse" into zero-copy s8s.
-// TODO 2025-10-03 12:48:25 maybe divert body elsewhere for large requests, deal with separately...
 Request parse_request(arena *store, arena *scratch, s8 raw) {
   Request req = {.raw = raw};
   // https://developer.mozilla.org/en-US/docs/Web/HTTP/Guides/Messages
@@ -318,7 +322,8 @@ Request parse_request(arena *store, arena *scratch, s8 raw) {
     if (next.ok) line = next;
     else line = (s8pair){.head = line.tail, .tail = (s8){0}};
     if (s8blank(line.head)) {
-      req.body = line.tail;
+      // TODO 2025-10-03 12:48:25 maybe divert body elsewhere for large requests, deal with separately...
+      req.body = s8l_rel(store, s8l_append(store, s8l_abs(req.body), line.tail));
       break; // blank line indicating end of metadata
     }
     s8pair header = s8cut(line.head, s8(": "));
@@ -795,8 +800,10 @@ void read_client(EV_P_ ev_io *w, i32 events) {
       cleanup_client(EV_A_ w); // TODO 2025-10-03 08:52:01 confirm this fires on read timeout
     }
   } else {
-    // TODO handle large read, e.g. stream to arena until finished or excessive,
-    // then handle? For now, store (copy) request in client store arena.
+    // TODO 2026-06-07 11:16:59 handle large read, e.g. stream to arena until
+    // finished or excessive, then handle? For now, store (copy) request in
+    // client store arena if it fits in scratch!
+    // Need to parse, validate and enforce content-length...
     s8 src = (s8){.abs = (u8 *)arena_abs(client->scratch)->beg,
                   .len = used(arena_abs(client->scratch)),
                   .absolute = 1};
@@ -850,8 +857,8 @@ void accept_client(EV_P_ ev_io *w, i32 events) {
     set_timeout(new_socket, SO_RCVTIMEO, server->config.rcvtimeo);
     set_timeout(new_socket, SO_SNDTIMEO, server->config.sndtimeo);
     // Allocate arenas TODO 2025-09-30 15:56:50 monitor usage, tune, limit
-    arena client_store = alloc_arena(server->config.client_mem, &server->store);
-    arena client_scratch = alloc_arena(server->config.client_mem, &server->scratch); // NB 2026-05-26 13:53:55 parent concept less helpful for scratch
+    arena client_store = alloc_arena(server->config.client_store_mem, &server->store);
+    arena client_scratch = alloc_arena(server->config.client_scratch_mem, &server->scratch); // NB 2026-05-26 13:53:55 parent concept less helpful for scratch
     // https://metacpan.org/dist/EV/view/libev/ev.pod#ASSOCIATING-CUSTOM-DATA-WITH-A-WATCHER
     // NB 2026-05-26 21:04:34 must be first alloc! to allow server tracking
     Client *client = new (&client_store, Client, 1);
@@ -974,49 +981,40 @@ void sigpipe_cb(EV_P_ ev_signal *w, i32 events) {
 }
 
 void launch(Server *server) {
+  // TODO 2026-06-07 11:35:33 validate config more
+  if (server->config.client_scratch_mem < KiB(8))
+    failwith(1, "Need >%td KiB for client scratch. Suggest 8 KiB.\n", server->config.client_scratch_mem/KiB(1));
   // ╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴ Arenas
   server->store = alloc_arena(server->config.server_mem, 0);
   server->scratch = alloc_arena(server->config.server_mem, 0);
   if (!server->store.beg || !server->scratch.beg)
-    fprintf(stderr, "💣 Failed to allocate %td KB server arenas.", server->config.server_mem/KiB(1));
+    failwith(1, "Failed to allocate %td KB server arenas.\n", server->config.server_mem/KiB(1));
   // ╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴ Resources
   server->work = make_work(&server->store, 32);
-  if (!server->work.requests.len) {
-    fprintf(stderr, "💣 Failed to make work queue\n");
-    exit(1);
-  }
+  if (!server->work.requests.len) 
+    failwith(1, "Failed to make work queue\n");
   server->work_waiting = (pthread_cond_t)PTHREAD_COND_INITIALIZER;
   pthread_mutex_init(&server->work_waiting_lock, 0);
   // ╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴ Client tracking
   server->client_stores = make_arenas(&server->store, server->config.clients); 
-  if (!server->client_stores.len) {
-    fprintf(stderr, "💣 Failed to allocate client store tracking array for %d clients\n",
-            server->config.clients);
-    exit(1);
-  }
+  if (!server->client_stores.len) 
+    failwith(1, "Failed to allocate client store tracking array for %d clients\n",
+             server->config.clients);
   server->client_scratches = make_arenas(&server->store, server->config.clients);
-  if (!server->client_scratches.len) {
-    fprintf(stderr, "💣 Failed to allocate client scratch tracking array for %d clients\n",
-            server->config.clients);
-    exit(1);
-  }
+  if (!server->client_scratches.len) 
+    failwith(1, "Failed to allocate client scratch tracking array for %d clients\n",
+             server->config.clients);
   // ╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴ Workshops
   i32 nw = server->config.workers;
   server->workshops = make_Workshops(&server->store, nw);
-  if (!server->workshops.len) {
-    fprintf(stderr, "💣 Failed to allocate %d workshops\n", nw);
-    exit(1);
-  }
+  if (!server->workshops.len) failwith(1, "Failed to allocate %d workshops\n", nw);
   for (size i = 0; i < nw; i++) {
     Workshop *w = &Workshops_array_abs(server->workshops)[i];
     w->server = server;
     w->store = alloc_arena(server->config.worker_mem, &server->store);
     w->scratch = alloc_arena(server->config.worker_mem, &server->scratch);
     u8 *buf = new (&w->store, u8, server->config.chunk_size);
-    if (!buf) {
-      fprintf(stderr, "💣 Failed to allocate workshop %td pending buffer\n", i);
-      exit(1);
-    }
+    if (!buf) failwith(1, "Failed to allocate workshop %td pending buffer\n", i);
     w->pending = (Chunk) {
       .buf = u8_rel(&w->store, buf),
       .cap = server->config.chunk_size
