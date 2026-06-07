@@ -79,6 +79,8 @@ typedef struct request {
       s8m_rel_t headers; // doesn't support trailing headers
       s8m_rel_t cookies;
       s8l_rel_t body;
+      size content_length;
+      size received;
     };
   };
 } Request;
@@ -102,6 +104,7 @@ typedef struct client {
   i32 port;
   ev_io read_io;
   ev_io write_io;
+  ev_timer timeout;
   Request receive; // only for buffering, prior to enqueueing
   Product deliver;
   enum mode mode;
@@ -306,9 +309,10 @@ s8 mutate_lowercase(s8 s) {
 
 // Store raw request, "parse" into zero-copy s8s.
 Request parse_request(arena *store, arena *scratch, s8 raw) {
+  //log_debug(raw);
   Request req = {.raw = raw};
   // https://developer.mozilla.org/en-US/docs/Web/HTTP/Guides/Messages
-  s8pair line = s8cutu8(raw, '\n'); // .head is next line, .tail is rest
+  s8pair line = s8cut(raw, s8("\r\n")); // .head is next line, .tail is rest
   if (!line.ok) ReqErr(BAD_REQUEST); // HTTP request always >1 line
   s8pair seg = s8cutu8(line.head, ' '); // e.g. "POST /path/to/thing HTTP/1.1"
   if (!seg.ok) ReqErr(BAD_REQUEST);
@@ -324,11 +328,12 @@ Request parse_request(arena *store, arena *scratch, s8 raw) {
 
   s8m *headers = {0};
   while (line.tail.len) {
-    s8pair next = s8cutu8(line.tail, '\n');
+    s8pair next = s8cut(line.tail, s8("\r\n"));
     if (next.ok) line = next;
     else line = (s8pair){.head = line.tail, .tail = (s8){0}};
     if (s8blank(line.head)) {
-      // TODO 2025-10-03 12:48:25 maybe divert body elsewhere for large requests, deal with separately...
+      // TODO 2025-10-03 12:48:25 maybe divert body elsewhere for large
+      // requests, deal with separately...
       req.body = s8l_rel(store, s8l_append(store, s8l_abs(req.body), line.tail));
       break; // blank line indicating end of metadata
     }
@@ -528,7 +533,7 @@ void serialise_response(Workshop *shop, Response res) {
     s8 crlf = s8("\r\n");
     add_headers(store, scratch, &res); // reassigning to pass-by-value parameter
     s8m *header = s8m_abs(res.headers);
-    //printf("HTTP/1.1 %i %s\r\n", res.status, s8_array_abs(spell_http_status[res.status]));
+    INFO("HTTP/1.1 %i %s\r\n", res.status, s8_array_abs(spell_http_status[res.status]));
     s8printf(scratch, s8writec, out, "HTTP/1.1 %i %s\r\n",
              res.status, s8_array_abs(spell_http_status[res.status]));
     while (header) { // grug approve
@@ -788,8 +793,8 @@ b32 enqueue_request(Request req) {
 }
 
 void read_client(EV_P_ ev_io *w, i32 events) {
-  DEBUG("%p", w->data);
-  DEBUG(":%p read_client\n",(void *)((arena *)w->data)->beg);
+  //DEBUG("%p\n", w->data);
+  //DEBUG(":%p read_client\n",(void *)((arena *)w->data)->beg);
   Client *client = client_from_arena((arena *)w->data);
   // using scratch arena as a buffer here, instead of local array
   // printf("client scratch usage should be 0: %ti\n", used(&client->scratch));
@@ -806,13 +811,9 @@ void read_client(EV_P_ ev_io *w, i32 events) {
       cleanup_client(EV_A_ w); // TODO 2025-10-03 08:52:01 confirm this fires on read timeout
     }
   } else {
-    // TODO 2026-06-07 11:16:59 handle large read, e.g. stream to arena until
-    // finished or excessive, then handle? For now, store (copy) request in
-    // client store arena if it fits in scratch!
-    // Need to parse, validate and enforce content-length...
     s8 src = (s8){.abs = (u8 *)arena_abs(client->scratch)->beg,
-                  .len = used(arena_abs(client->scratch)),
-                  .absolute = 1};
+        .len = used(arena_abs(client->scratch)),
+        .absolute = 1};
     s8 raw = s8clone(arena_abs(client->store), src, 0);
     if (!raw.len) {
       unavailable(w->fd, "store raw request");
@@ -826,25 +827,68 @@ void read_client(EV_P_ ev_io *w, i32 events) {
     // arena->beg and might move if store resized during use).
     arena *client_store = arena_abs(client->store);
     arena *client_scratch = arena_abs(client->scratch);
-    Request req = parse_request(client_store, client_scratch, raw);
-    char *uri = s8unwrap(client_scratch, req.uri);
-    client = client_from_arena(client_store); // recover correct pointer
-    if (uri) INFO("🔔 %s from %s:%d\n", uri, client->ip, client->port);
-    req.client = Client_rel(client_store, client);
-    // TODO 2026-06-07 12:25:00 inspect content-length, decide whether need to set client->receive (buffer)
-    // TODO 2026-06-07 12:56:45 maybe inspect transfer-encoding if no content-length
-    
+    Request req = {0};
+    if (client->receive.content_length) { // partial request already started (SSE does its own enqueue_request to target clients)
+      req = client->receive;
+      if (client->receive.received + raw.len <= client->receive.content_length) {
+        s8l *head = s8l_append(client_store, s8l_abs(client->receive.body), raw);
+        client = client_from_arena(client_store); // recover correct pointer
+        client->receive.body = s8l_rel(client_store, head);
+        client->receive.received += raw.len;
+        if (client->receive.received < client->receive.content_length) return; // await further read 
+      } else {
+        req.error = CONTENT_TOO_LARGE;
+      }
+    } else {
+      req = parse_request(client_store, client_scratch, raw);
+      char *uri = s8unwrap(client_scratch, req.uri);
+      client = client_from_arena(client_store); // recover correct pointer
+      if (uri) INFO("🔔 %s %s from %s:%d\n", spell_http_method[req.method].abs, uri, client->ip, client->port);
+      req.client = Client_rel(client_store, client);
+      // TODO 2026-06-07 12:56:45 maybe inspect transfer-encoding if no content-length
+      s8m *headers = s8m_abs(req.headers);
+      s8m *header = s8m_get(headers, s8("content-length"));
+      if (header) {
+        i32_ content_length = parse_i32(header->val);
+        size body_length = s8l_abs(req.body)->val.len;
+        if (content_length.ok) {
+          INFO("Content-Length %d\n", content_length.val);
+          if (body_length < content_length.val) {
+            req.content_length = content_length.val;
+            req.received = body_length;
+            client->receive = req;
+            return; // await further read
+          } else if (body_length > content_length.val) {
+            req.error = CONTENT_TOO_LARGE;
+          }
+        } else {
+          INFO("Invalid Content-Length header\n");
+          req.error = BAD_REQUEST;
+        }
+      } else {
+        s8l *body = s8l_abs(req.body); 
+        if (body && body->val.len) {
+          INFO("No Content-Length header\n");
+          req.error = LENGTH_REQUIRED;
+        }
+      }
+    }
+    client->receive = (Request){0};
     if (!enqueue_request(req)) {
       unavailable(w->fd, "enqueue job"); // effectively backpressure
       cleanup_client(EV_A_ w);
       return;
     }
     char note[128];
-    snprintf(note, sizeof note, "read_client %s:%d %s", client->ip, client->port,
-             client->mode==SERVER_SENT_EVENTS ? "📡" : "📣");
+    snprintf(note, sizeof note, "read_client %s:%d %s", client->ip,
+             client->port, client->mode == SERVER_SENT_EVENTS ? "📡" : "📣");
     client_set_direction(EV_A_ w, WRITE, note);
     // not closing socket
   }
+}
+
+void timeout_client(EV_P_ ev_timer *w, i32 events) {
+  
 }
 
 void accept_client(EV_P_ ev_io *w, i32 events) {
@@ -907,6 +951,8 @@ void accept_client(EV_P_ ev_io *w, i32 events) {
     client->write_io.data = client_store_in_server;
     // ...so deliberately not starting here.
 
+    ev_timer_init(&client->timeout, timeout_client, 1., 0.);
+    
     char note[128];
     snprintf(note, sizeof note, "accept_client %s:%d %s", client->ip, client->port,
              client->mode==SERVER_SENT_EVENTS ? "📡" : "📣");
@@ -944,10 +990,11 @@ void *worker(Workshop *workshop) { // ──────────────
         cleanup_client(server->loop, &client->write_io);
         goto reset_store;
       case BAD_REQUEST: // TODO 2025-09-29 16:12:55 fall throughs relating only to request parsing
+      case CONTENT_TOO_LARGE:
+      case LENGTH_REQUIRED:
+      default:
         res = (Response){.status = req.error};
         break;
-      default:
-        if (req.error) INFO("Disregarding Request.error status %d.\n", req.error);
       }
     }
     // NB 2025-09-29 16:13:45 handler is currently also responsible for routing!
@@ -962,7 +1009,8 @@ void *worker(Workshop *workshop) { // ──────────────
     // client->deliver queue simultaneously. Pipelining is prevented
     // by half-duplex `client_set_direction`. Writer is on main thread
     // so libev can deal with delays writing.
-    res = server->handler(&workshop->store, &workshop->scratch, req);
+
+    if (req.is_update || !req.error) res = server->handler(&workshop->store, &workshop->scratch, req);
     if (!Client_abs(res.client)) res.client = req.client;
     workshop->pending.dest = res.client;
     serialise_response(workshop, res);

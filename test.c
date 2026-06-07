@@ -10,7 +10,7 @@ SET_LIST(s8s, s8, s8equal)
 
 #define STRINGS(...) ((char*[]){__VA_ARGS__})
 #define ARGS(...) countof(STRINGS(__VA_ARGS__)), STRINGS(__VA_ARGS__)
-#define ARGPARSE(defs, ...) argparse(&store, &scratch, defs, ARGS(__VA_ARGS__))
+#define ARGPARSE(defs, ...) argparse(&store, defs, ARGS(__VA_ARGS__))
      
 i32 main(void) {
   HEAD("s8 string functions");
@@ -39,7 +39,7 @@ i32 main(void) {
 
   // TODO etc...
   PREP(s8 inty = s8("12345"));
-  TEST(12345 == parse_i32(inty).v);
+  TEST(12345 == parse_i32(inty).val);
 
   PREP(arena store = alloc_arena(2, 0)); // stress test resize_arena
   PREP(arena scratch = alloc_arena(2, 0));
@@ -78,8 +78,8 @@ i32 main(void) {
   struct args a = {0};
   PREP(a = ARGPARSE("--port=int --workers=int", "pname", "--port=8080", "--workers=2", "--", "other",));
   
-  TEST(8080 == int_arg(a, "port").v);
-  TEST(2 == int_arg(a, "workers").v);
+  TEST(8080 == int_arg(a, "port").val);
+  TEST(2 == int_arg(a, "workers").val);
   TEST(s8equal(s8("other"), *plainargs_array_abs(a.rest)));
 
   // NB 2026-05-25 18:07:44 risking null pointer dereference on *x_arg() calls
@@ -90,19 +90,19 @@ i32 main(void) {
   PREP(a = ARGPARSE( "--name=str", "pname", "--name", "thing"));
   TEST(s8equal(s8("thing"), str_arg(a, "name")));
   PREP(a = ARGPARSE("--yes=bool", "pname", "--yes"));
-  TEST(1 == bool_arg(a, "yes").v);
+  TEST(1 == bool_arg(a, "yes").val);
   PREP(a = ARGPARSE("--yes=bool", "pname", "-y"));
-  TEST(1 == bool_arg(a, "yes").v);
+  TEST(1 == bool_arg(a, "yes").val);
   PREP(a = ARGPARSE("--yes=bool", "pname", "-yfalse"));
-  TEST(0 == bool_arg(a, "yes").v);
+  TEST(0 == bool_arg(a, "yes").val);
   PREP(a = ARGPARSE("--name=str", "pname", "-nhello"));
   TEST(s8equal(s8("hello"), str_arg(a, "name")));
   PREP(a = ARGPARSE("--name=str", "pname", "-n", "hello"));
   TEST(s8equal(s8("hello"), str_arg(a, "name")));
   PREP(a = ARGPARSE("--port=int --workers=int", "pname", "-p8080"));
-  TEST(8080 == int_arg(a, "port").v);
+  TEST(8080 == int_arg(a, "port").val);
   PREP(a = ARGPARSE("--port=int --workers=int", "pname", "-p 8080"));
-  TEST(8080 == int_arg(a, "port").v);
+  TEST(8080 == int_arg(a, "port").val);
   TEST(!int_arg(a, "absent").ok);
   // TODO 2026-05-25 17:26:36
   /* PREP(a = ARGPARSE( "--port=int --workers=int", "pname", "--port 8080")); */
@@ -111,3 +111,4 @@ i32 main(void) {
 
   return REPORT();
 }
+ 

@@ -28,6 +28,8 @@
 //   }
 // }
 
+// TODO 2026-06-07 18:32:21 proper testing, incl big POST etc
+
 Response handler(arena *store, arena *scratch, Request req) {
   Response res = (Response){.type = HTML};
   Client *client = Client_abs(req.client);
@@ -152,13 +154,12 @@ Response router(arena *store, arena *scratch, Request req) {
 
 i32 main(int argc, char **argv) {
   arena init = alloc_arena(KiB(1), 0);
-  arena init_scratch = alloc_arena(KiB(1), 0);
-
+  
   // TODO 2026-06-07 16:04:41 plumb through other config options; probably keep make_server as macro etc
-  struct args args = argparse(&init, &init_scratch, "--port=int --workers=int", argc, argv);
+  struct args args = argparse(&init, "--port=int --workers=int", argc, argv);
   i32_ port = int_arg(args, "port");
   if (!port.ok) failwith(1, "Please specify a port.");
-  Server server = make_server(router, .port = port.v);
+  Server server = make_server(router, .port = port.val);
   launch(&server);
   return 0;
 }

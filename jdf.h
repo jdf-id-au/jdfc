@@ -142,7 +142,7 @@ struct rel {
     return s;                                                                  \
   }
 
-#define MAYBE(t) typedef struct { t v ; b32 ok ; } t##_;
+#define MAYBE(t) typedef struct { t val ; b32 ok ; } t##_;
 
 /*
   To enable assertions in release builds,
@@ -464,10 +464,9 @@ byte *alloc(arena *a, size objsize, size align, size count, const char *t) {
 size KiB(u32 n) { return (1<<10) * n; }
 size MiB(u32 n) { return (1<<20) * n; }
 
-// Caller to check for null pointers, which fail silently.
 // Linker error when attempted `inline`...
 size copy(u8 *restrict dst, u8 *restrict src, size len) {
-  if (!(dst && src)) return 0;
+  assert(dst && src && len > 0, "Invalid call to copy %p %p %ti", (void *)src, (void *)dst, len);
   for (size i = 0; i < len; i++) dst[i] = src[i];
   return len;
 }
@@ -664,13 +663,13 @@ MAYBE(i32)
 
 i32_ parse_i32(s8 s) {
   char buf[14] = {0}; // up to 10 digits, 2 commas, sign, \0
+  size cap = countof(buf) - 1;
   assert(s.len >= 0, "but how");
-  copy((u8 *)buf, s8_array_abs(s8trim(s)),
-       (usize)s.len < (sizeof(buf) - 1) ? s.len : (sizeof(buf) - 1));
+  copy((u8 *)buf, s8_array_abs(s8trim(s)), s.len < cap ? s.len : cap);
   char *end = 0;
   i32 v = strtol(buf, &end, 10);
   if (end == buf || errno) return (i32_){.ok = 0};
-  return (i32_){.v = v, .ok = 1};
+  return (i32_){.val = v, .ok = 1};
 }
 
 s8 s8l_concat(arena *store, s8l *sl) {
@@ -925,7 +924,10 @@ struct args {
 };
 
 s8 str_arg(struct args a, char *k) {
-  kvargs *kv = kvargs_get(kvargs_abs(a.kv), s8wrap(k, 64));
+  s8 key = s8wrap(k, 64);
+  argtypes *at = argtypes_get(argtypes_abs(a.types), key);
+  assert(at ? at->val == STR_ARG : 1, "%s is not a str_arg", k);
+  kvargs *kv = kvargs_get(kvargs_abs(a.kv), key);
   return kv ? kv->val : (s8){0};
 }
 
@@ -935,16 +937,20 @@ static const s8 ARG_FALSE = s8("false");
 MAYBE(b32)
 
 b32_ bool_arg(struct args a, char *k) {
-  kvargs *kv = kvargs_get(kvargs_abs(a.kv), s8wrap(k, 64));
-  return kv ? (b32_){.v = s8equal(kv->val, ARG_TRUE), .ok = 1} : (b32_){0};
+  s8 key = s8wrap(k, 64);
+  argtypes *at = argtypes_get(argtypes_abs(a.types), key);
+  assert(at ? at->val == BOOL_ARG : 1, "%s is not a bool_arg", k);
+  kvargs *kv = kvargs_get(kvargs_abs(a.kv), key);
+  return kv ? (b32_){.val = s8equal(kv->val, ARG_TRUE), .ok = 1} : (b32_){0};
 }
 
 i32_ int_arg(struct args a, char *k) {
-  kvargs *kv = kvargs_get(kvargs_abs(a.kv), s8wrap(k, 64));
+  s8 key = s8wrap(k, 64);
+  argtypes *at = argtypes_get(argtypes_abs(a.types), key);
+  assert(at ? at->val == INT_ARG : 1, "%s is not an int_arg", k);
+  kvargs *kv = kvargs_get(kvargs_abs(a.kv), key);
   return kv ? parse_i32(kv->val) : (i32_){0};
 }
-
-byte *reset_scratch(arena *a);
 
 // Defs e.g. "--port=int --workers=int" must be in --long-arg=type form.
 // Initials are promoted to short arg name (first wins).
@@ -954,7 +960,7 @@ byte *reset_scratch(arena *a);
 // "--port=8080" "--workers=3"
 // "--port 8080" "--workers 3"
 // and puts trailing args (or args after first "--") in .rest
-struct args argparse(arena *store, arena *scratch, char *defs, int argc, char **argv) {
+struct args argparse(arena *store, char *defs, int argc, char **argv) {
   argtypes *types = 0;
   s8pair def = {.tail = s8wrap(defs, 1024)};
   s8pair kv = {0};
@@ -1045,7 +1051,6 @@ struct args argparse(arena *store, arena *scratch, char *defs, int argc, char **
       cur[j] = s8wrap(argv[i + j], 256);
     ret.rest = rest;
   }
-  reset_scratch(scratch);
   return ret;
 }
 
