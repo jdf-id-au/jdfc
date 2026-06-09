@@ -16,15 +16,14 @@ test: test.c jdf.h
 	$(PREAMBLE) ./$@
 
 test_http: test_http.c jdf.h jdfhttp.h http_codes.h
-	cc $(CFLAGS) -Wno-unused-parameter -Wno-switch -lev -lpthread $< -o $@
+	cc $(CFLAGS) -Wno-unused-parameter -Wno-switch -lev -lpthread -lsqlite3 $< -o $@
 	du -sh $@
 	#$(PREAMBLE) ./$@ -p 8081
 
 test_http_prod: test_http.c jdf.h jdfhttp.h http_codes.h
-	cc $(CFLAGSPROD) -Wno-unused-parameter -Wno-switch -lev -lpthread $< -o $@
+	cc $(CFLAGSPROD) -Wno-unused-parameter -Wno-switch -lev -lpthread -lsqlite3 $< -o $@
 	du -sh $@
 	#$(PREAMBLE) ./$@ -p 8081
-
 
 test_date: test_date.c jdf.h jdfdate.h dates.h
 	time cc $(CFLAGS) $< -o $@

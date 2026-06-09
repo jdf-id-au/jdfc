@@ -1,8 +1,7 @@
 #include "jdfhttp.h"
+#include "sqlite3.h"
 
 #define print(x) cur = s8l_append(store, cur, x);
-
-// TODO 2026-06-07 19:59:01 opaque "client resources" pointer for db conn etc
 
 // Response websocket_handler(arena *store, arena *scratch, Request req) {
 //   Response res = {0};
@@ -91,8 +90,8 @@ Response send_handler(arena *store, arena *scratch, Request req) {
                           client->ip, client->port, cur->ip, cur->port);
       if (!msg.len) return (Response){.status = SERVICE_UNAVAILABLE};
       b32 stat = enqueue_request((Request){
-          .client = Client_rel(a, cur),
-          .is_update = 1, // destination
+          .client = Client_rel(a, cur), // destination
+          .mode = SERVER_SENT_EVENTS,
           .update = msg,
           .from = req.client});
       //printf("%s %s:%d → %s:%d\n", stat ? "🟢" : "🔴", src_ip, src_port, dst_ip, dst_port);
@@ -130,8 +129,8 @@ const Route routes[] = {
 
 Response router(arena *store, arena *scratch, Request req) {
   // Updates bypass routing but should be in handler for app logic
-  if (req.is_update)
-    return (Response){.client = req.client, .is_update = 1, .update = req.update};
+  if (req.mode == SERVER_SENT_EVENTS)
+    return (Response){.client = req.client, .mode = SERVER_SENT_EVENTS, .update = req.update};
   // Other requests:
   for (size i = 0; i < countof(routes); i++) {
     Handler h = routes[i].handler;
@@ -154,6 +153,13 @@ Response router(arena *store, arena *scratch, Request req) {
   return (Response){.status = NOT_FOUND};
 }
 
+typedef struct {
+  sqlite3 *db;
+} server_resources;
+typedef struct {
+  s8 user;
+} client_resources;
+
 i32 main(int argc, char **argv) {
   arena init = alloc_arena(KiB(1), 0);
   
@@ -162,6 +168,8 @@ i32 main(int argc, char **argv) {
   i32_ port = int_arg(args, "port");
   if (!port.ok) failwith(1, "Please specify a port.");
   Server server = make_server(router, .port = port.val);
+  // 
+  // server.data = 
   launch(&server);
   return 0;
 }

@@ -51,18 +51,26 @@ typedef struct product { // allocated in Client arena
 
 MAP_LIST(s8m, s8, s8, s8equal)
 
+enum mode {
+  REQUEST_RESPONSE = 0,
+  SERVER_SENT_EVENTS,
+  // TRANSFER_ENCODING_CHUNKED, // then back to NORMAL when finished?
+  //  WEBSOCKET
+  SHUTDOWN
+};
+
 typedef struct request {
   Client_rel_t client;
-  b32 is_update;
+  enum mode mode; // tags the following union:
   union {
-    struct {
+    struct { // SERVER_SENT_EVENTS (etc?)
       s8 update; // e.g. message for SSE to send through, next transfer chunk to send through, websocket input (eventually)
       // FIXME 2026-05-26 17:51:33 can't do non-ancestor REL; ordinary pointer doesn't survive resize_arena
       Client_rel_t from; // provide for all SSE, and WS (if not initiated by same client)
     };
-    struct {
+    struct { // REQUEST_RESPONSE type
       s8 raw; // everything, possibly except whole body; needs to fit in one client_scratch
-      enum http_status error; // in anticipation...
+      enum http_status error; // to convey problems during receive/parsing
       enum http_method method;
       s8 uri;
       s8 protocol;
@@ -77,13 +85,6 @@ typedef struct request {
 } Request;
 REL(Request)
 ARRAY(Requests, Request)
-
-enum mode {
-  REQUEST_RESPONSE,
-  SERVER_SENT_EVENTS,
-  // TRANSFER_ENCODING_CHUNKED, // then back to NORMAL when finished?
-  //  WEBSOCKET
-};
 
 typedef struct client {
   Server *server;
@@ -102,12 +103,15 @@ typedef struct client {
   struct rel data; // effectively void pointer to struct of arbitrary app data, in client store if appropriate; could also point back to server store
 } Client; // Server's resources for serving one client // TODO 2025-09-29 22:24:48 rename to Connection ?
 
+typedef b32 (*Client_updown)(Server server, Client client, b32 up);
+typedef b32 (*Server_updown)(Server server, b32 up);
+
 typedef struct {
   Client_rel_t client;
-  b32 is_update;
+  enum mode mode; // tags the following union:
   union {
-    s8 update; // e.g. message for SSE to send, next transfer chunk, websocket output (eventually)
-    struct {
+    s8 update; // SERVER_SENT_EVENTS (etc?) e.g. message for SSE to send, next transfer chunk, websocket output (eventually)
+    struct { // REQUEST_RESPONSE
       enum http_status status;
       enum content_type type;
       s8m_rel_t headers; // does not accommodate repeat keys, which are permitted by http spec https://stackoverflow.com/a/4371395/780743
@@ -288,8 +292,6 @@ i32 set_timeout(int sockfd, int which, int seconds) {
   return 0;
 }
 
-#define ReqErr(e) do { req.error = e; return req; } while (0) // macro block semicolon hack
-
 s8 mutate_lowercase(s8 s) {
   u8 *c = s8_array_abs(s);
   for (size i = 0; i < s.len; i++)
@@ -304,15 +306,15 @@ Request parse_request(arena *client_store, arena *client_scratch, s8 raw) {
   Request req = {.raw = raw};
   // https://developer.mozilla.org/en-US/docs/Web/HTTP/Guides/Messages
   s8pair line = s8cut(raw, s8("\r\n")); // .head is next line, .tail is rest
-  if (!line.ok) ReqErr(BAD_REQUEST); // HTTP request always >1 line
+  if (!line.ok) return (Request){.error = BAD_REQUEST}; // HTTP request always >1 line
   s8pair seg = s8cutu8(line.head, ' '); // e.g. "POST /path/to/thing HTTP/1.1"
-  if (!seg.ok) ReqErr(BAD_REQUEST);
+  if (!seg.ok) return (Request){.error = BAD_REQUEST};
 
   req.method = parse_http_method(seg.head);
-  if (!req.method) ReqErr(BAD_REQUEST);
+  if (!req.method) return (Request){.error = BAD_REQUEST};
 
   seg = s8cutu8(seg.tail, ' ');
-  if (!seg.ok) ReqErr(BAD_REQUEST);
+  if (!seg.ok) return (Request){.error = BAD_REQUEST};
 
   req.uri = seg.head;
   req.protocol = seg.tail;
@@ -329,11 +331,11 @@ Request parse_request(arena *client_store, arena *client_scratch, s8 raw) {
       break; // blank line indicating end of metadata
     }
     s8pair header = s8cut(line.head, s8(": "));
-    if (!header.ok) ReqErr(BAD_REQUEST);
+    if (!header.ok) return (Request){.error = BAD_REQUEST};
     headers = s8m_assoc(client_store, headers, mutate_lowercase(header.head), header.tail);
     if (!headers) {
       fprintf(stderr, "💣 OOM saving headers \n");
-      ReqErr(SERVICE_UNAVAILABLE);
+      return (Request){.error = SERVICE_UNAVAILABLE};
     }
     req.headers = s8m_rel(client_store, headers);
   }
@@ -348,11 +350,11 @@ Request parse_request(arena *client_store, arena *client_scratch, s8 raw) {
       if (next.ok) line = next;
       else line = (s8pair){.head = line.tail, .tail = (s8){0}};
       s8pair cookie = s8cutu8(line.head, '=');
-      if (!cookie.ok) ReqErr(BAD_REQUEST);
+      if (!cookie.ok) return (Request){.error = BAD_REQUEST};
       cookies = s8m_assoc(client_store, cookies, cookie.head, cookie.tail);
       if (!cookies) {
         fprintf(stderr, "💣 OOM saving cookies \n");
-        ReqErr(SERVICE_UNAVAILABLE);
+        return (Request){.error = SERVICE_UNAVAILABLE};
       }
       req.cookies = s8m_rel(client_store, cookies);
     }
@@ -515,7 +517,7 @@ void serialise_response(Workshop *shop, Response res) {
   arena *scratch = &shop->scratch;
   Client *client = Client_abs(res.client);
   Chunk *out = &shop->pending;
-  if (res.is_update) {
+  if (res.mode == SERVER_SENT_EVENTS) {
     s8writec(out, res.update);
     finishc(out, WRITE); // TODO 2025-09-30 11:41:06 READWRITE if websocket...
     INFO("📡 %td B to %s:%d\n", res.update.len, client->ip, client->port);
@@ -1003,19 +1005,26 @@ void *worker(Workshop *workshop) { // ──────────────
     pthread_mutex_unlock(&server->work_waiting_lock); // ╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴
     Client *client = Client_abs(req.client);
     Response res = {0};
-    if (!req.is_update) {
+    switch (req.mode) {
+    case REQUEST_RESPONSE:
       switch (req.error) {
+      case INVALID_HTTP_STATUS: // i.e. no error
+        break;
       case SERVICE_UNAVAILABLE: // mainly being some disaster allocating memory
         unavailable(client->write_io.fd, "parse request");
         cleanup_client(server->loop, &client->write_io);
         goto reset_store;
-      case BAD_REQUEST: // TODO 2025-09-29 16:12:55 fall throughs relating only to request parsing
+      case BAD_REQUEST: // fall throughs, relating only to request parsing
       case CONTENT_TOO_LARGE:
       case LENGTH_REQUIRED:
       default:
         res = (Response){.status = req.error};
-        break;
       }
+      break;
+    case SHUTDOWN:
+      return 0;
+    case SERVER_SENT_EVENTS:
+      break;
     }
     // NB 2025-09-29 16:13:45 handler is currently also responsible for routing!
      
@@ -1030,7 +1039,9 @@ void *worker(Workshop *workshop) { // ──────────────
     // by half-duplex `client_set_direction`. Writer is on main thread
     // so libev can deal with delays writing.
 
-    if (req.is_update || !req.error) res = server->handler(&workshop->store, &workshop->scratch, req);
+    if (req.mode == SERVER_SENT_EVENTS ||
+        (req.mode == REQUEST_RESPONSE && !req.error))
+      res = server->handler(&workshop->store, &workshop->scratch, req);
     if (!Client_abs(res.client)) res.client = req.client;
     workshop->pending.dest = res.client;
     serialise_response(workshop, res);
@@ -1139,15 +1150,12 @@ void launch(Server *server) {
   ev_signal_start(server->loop, &sigpipe_watcher);
 
   ev_run(server->loop, 0);
+  // ev_break from sigint_cb
+  // TODO 2026-06-09 21:15:21 cleanup gracefully: finish responses, close front door, close resources
+  // worker threads? delivery queue? sockets?
+  // within sigint_cb?
+  // - return from `worker` then pthread_join (vs pthread_cancel)
   ev_loop_destroy(server->loop);
-
-  // TODO is it necessary to join/kill workers? do they need enclosing while(running) loop?
-
-  // FIXME 2026-06-06 00:54:57 apparent memory leak with requests
-  // (e.g. hyperfine) but Instruments doesn't seem to think so also by
-  // logging, allocs = frees + 34; nothing being realloced to ridiculous size
-
-  // TODO 2026-06-06 11:14:59 look for hidden per-client leak? libev something?? ALSO AFFECTS non-rel jdfhttp! asan?
 }
 
 #endif // jdfhttp_h
