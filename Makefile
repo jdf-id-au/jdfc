@@ -8,7 +8,7 @@ PREAMBLE=MallocNanoZone='0' time
 CFLAGS=-std=c17 -g3 \
 -pedantic -Wall -Wextra \
 -fPIC -fsanitize=undefined,address \
--DLOG_TRACE -DLOG_DEBUG -DLOG_INFO
+-DLOG_DEBUG -DLOG_INFO # -DLOG_TRACE
 CFLAGSPROD=-std=c17 -O3 -fPIC -DLOG_INFO
 
 test: test.c jdf.h

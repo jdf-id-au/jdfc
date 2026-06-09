@@ -54,8 +54,8 @@ MAP_LIST(s8m, s8, s8, s8equal)
 enum mode {
   REQUEST_RESPONSE = 0,
   SERVER_SENT_EVENTS,
-  // TRANSFER_ENCODING_CHUNKED, // then back to NORMAL when finished?
-  //  WEBSOCKET
+  // TRANSFER_ENCODING_CHUNKED, // then back to REQUEST_RESPONSE when finished?
+  // WEBSOCKET
   SHUTDOWN
 };
 
@@ -121,7 +121,7 @@ typedef struct {
   };
 } Response;
 
-// Runs within worker thread
+// Runs within worker thread.
 typedef Response (*Handler)(arena *workshop_store, arena *workshop_scratch, Request req);
 //                 ^^^^^^^
 
@@ -177,7 +177,6 @@ typedef struct {
   arena scratch;
   size store_reset; // after initialisation, before work; only slightly breaks arena concept
   pthread_t thread;
-  ev_io write_io;
   Chunk pending; // under construction, before copy to Product->chunks
 } Workshop; // Resources for one worker!
 REL(Workshop)
@@ -206,6 +205,7 @@ typedef struct server { // must not move
   arenas client_stores;
   arenas client_scratches;
   size nclients; // should always match `clients` occpancy
+  ev_io accept_watcher; 
   struct rel data; // see client.data doc
 } Server;
 
@@ -504,7 +504,7 @@ void finishc(Chunk *c, enum direction then) {
   c->finished = 1;
   c->then = then;
   //printf("flushed with %d\n", then);
-  DEBUG("finishing %p\n", (void *)c);
+  //DEBUG("finishing %p\n", (void *)c);
   flushc(c);
 }
 
@@ -583,7 +583,7 @@ arena *add_client(Server *server, arena client_store, arena client_scratch) {
     }
   }
   if (!success) goto add_fail;
-  DEBUG("%p:%p added client\n", (void *)client_store_in_server, (void *)client_store_in_server->beg);
+  // DEBUG("%p:%p added client\n", (void *)client_store_in_server, (void *)client_store_in_server->beg);
   return client_store_in_server;
 add_fail:
   fprintf(stderr, "Unable to add client!\n");
@@ -616,7 +616,7 @@ b32 remove_client(Server *server, Client *client) {
     break;
   }
   if (!success) goto remove_fail;
-  DEBUG("%p:%p removing client\n", (void *)freed_store, (void *)freed_store_beg);
+  // DEBUG("%p:%p removing client\n", (void *)freed_store, (void *)freed_store_beg);
   return 1;
 remove_fail:
   fprintf(stderr, "Unable to remove client!\n");
@@ -706,8 +706,6 @@ enum direction client_set_direction(EV_P_ ev_io *w, enum direction next) {
 
 const static s8 UNAVAILABLE = s8("HTTP/1.1 503 Service Unavailable\r\n");
 
-// FIXME 2025-05-25 15:28:50 need to close client gracefully when arena
-// available below a threshold, or timeout since last read...
 // TODO 2025-05-25 15:31:23 rate limitation, or leave it to nginx?
 void unavailable(i32 sock, char *msg) {
   fprintf(stderr, "💣 Failed to %s\n", msg);
@@ -780,18 +778,34 @@ void write_client(EV_P_ ev_io *w, i32 events) {
   reset_scratch(scratch);
 }
 
+// Called from read_client on main thread, and maybe from handler on
+// worker thread e.g. to provoke SSE. This makes queue multiple-producer.
 b32 enqueue_request(Request req) {
   Server *server = Client_abs(req.client)->server;
-  i32 idx = queue_push(&server->work.q, server->work.requests.len);
+  u32 save;
+  i32 idx = queue_mpush(&server->work.q, server->work.requests.len, &save);
   //printf("queue_push position %i\n", idx);
   if (idx < 0) return 0; // queue full
   Requests_array_abs(server->work.requests)[idx] = req;
-  queue_push_commit(&server->work.q);
+  queue_mpush_commit(&server->work.q, save);
   ev_timer_again(server->loop, &Client_abs(req.client)->timeout);
   pthread_mutex_lock(&server->work_waiting_lock);
   pthread_cond_signal(&server->work_waiting); // worker can just sleep again if queue already emptied
   pthread_mutex_unlock(&server->work_waiting_lock);
   return 1;
+}
+
+// Rather than wrangling pthread_cancel; should exit worker at a more predictable point?
+i32 enqueue_shutdown(Server *server) {
+  u32 save;
+  i32 idx = queue_mpush(&server->work.q, server->work.requests.len, &save);
+  if (idx < 0) return 0; // queue full
+  Requests_array_abs(server->work.requests)[idx] = (Request){.mode = SHUTDOWN};
+  queue_mpush_commit(&server->work.q, save);
+  pthread_mutex_lock(&server->work_waiting_lock);
+  pthread_cond_signal(&server->work_waiting);
+  pthread_mutex_unlock(&server->work_waiting_lock);
+  return 1;  
 }
 
 void read_client(EV_P_ ev_io *w, i32 events) {
@@ -804,7 +818,7 @@ void read_client(EV_P_ ev_io *w, i32 events) {
   client->timeout.repeat = 5.;
   arena_abs(client->scratch)->cur = arena_abs(client->scratch)->beg + bytes_read;
   if (bytes_read == 0) { // client closed connection
-    DEBUG("Zero bytes read from %s:%d, cleaning up\n", client->ip, client->port);
+    // DEBUG("Zero bytes read from %s:%d, cleaning up\n", client->ip, client->port);
     cleanup_client(EV_A_ w);
   } else if (bytes_read < 0) {
     if (errno == EAGAIN || errno == EWOULDBLOCK) {
@@ -960,7 +974,7 @@ void accept_client(EV_P_ ev_io *w, i32 events) {
     ev_io_init(&client->read_io, read_client, new_socket, EV_READ);
     // FIXME 2026-05-27 10:03:14 pointer moves when resized
     client->read_io.data = client_store_in_server; // I'm a woozie (see libev doc)
-    DEBUG("%p:%p accept_client\n", (void *)client_store_in_server, (void *)client_store_in_server->beg);
+    // DEBUG("%p:%p accept_client\n", (void *)client_store_in_server, (void *)client_store_in_server->beg);
     // This is started and stopped conditionally on whether there is data to
     // write, to prevent excessive activation...
     // https://buildmage.com/blog/libev-tutorial-and-wrapper
@@ -998,7 +1012,7 @@ void *worker(Workshop *workshop) { // ──────────────
     pthread_mutex_lock(&server->work_waiting_lock); // ╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴ lock work
     // Loop to cover suprious wakeup.
     while ((qi = queue_pop(&server->work.q, server->work.requests.len)) < 0)
-      // Block thread instead of busy-waiting.
+      // Block thread instead of busy-waiting (and atomically releases lock)
       pthread_cond_wait(&server->work_waiting, &server->work_waiting_lock);
     req = Requests_array_abs(server->work.requests)[qi];
     queue_pop_commit(&server->work.q);
@@ -1022,7 +1036,10 @@ void *worker(Workshop *workshop) { // ──────────────
       }
       break;
     case SHUTDOWN:
-      return 0;
+      // DEBUG("Shutting down worker %p\n", (void *)workshop);
+      free_arena(&workshop->store);
+      free_arena(&workshop->scratch);
+      return 0; // exit worker
     case SERVER_SENT_EVENTS:
       break;
     }
@@ -1062,7 +1079,16 @@ Work make_work(arena *server_store, i32 len) {
 }
 
 void sigint_cb(EV_P_ ev_signal *w, i32 events) {
-  fprintf(stderr, "SIGINT\n");
+  fprintf(stderr, "Shutting down\n");
+  Server *server = (Server *)w->data;
+  ev_io_stop(server->loop, &server->accept_watcher);
+  for (size i = 0; i < server->config.workers; i++)
+    if (!enqueue_shutdown(server)) INFO("Struggling to shut down because queue full\n");
+  for (size i = 0; i < server->config.workers; i++)
+    pthread_join(Workshops_array_abs(server->workshops)[i].thread, 0);
+  // TODO 2026-06-10 00:45:35 complete requests in flight and reject
+  // new requests from existing clients. e.g. somehow wait for all
+  // Client .deliver.q's to be empty
   ev_break (EV_A_ EVBREAK_ALL);
 }
 
@@ -1134,15 +1160,20 @@ void launch(Server *server) {
   server->loop = ev_loop_new(0);
   set_non_blocking(server->socket);
 
-  ev_io accept_watcher;
-  ev_io_init(&accept_watcher, accept_client, server->socket, EV_READ);
-  accept_watcher.data = server; // allows access within callbacks
-  ev_io_start(server->loop, &accept_watcher);
+  ev_io_init(&server->accept_watcher, accept_client, server->socket, EV_READ);
+  server->accept_watcher.data = server; // allows access within callbacks
+  ev_io_start(server->loop, &server->accept_watcher);
 
+  // e.g. ^C
   ev_signal sigint_watcher;
   ev_signal_init(&sigint_watcher, sigint_cb, SIGINT);
   sigint_watcher.data = server;
   ev_signal_start(server->loop, &sigint_watcher);
+  // e.g. systemd
+  ev_signal sigterm_watcher;
+  ev_signal_init(&sigterm_watcher, sigint_cb, SIGTERM); // same callback as SIGINT
+  sigterm_watcher.data = server;
+  ev_signal_start(server->loop, &sigterm_watcher);
 
   ev_signal sigpipe_watcher;
   ev_signal_init(&sigpipe_watcher, sigpipe_cb, SIGPIPE);

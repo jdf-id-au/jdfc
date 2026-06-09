@@ -769,7 +769,7 @@ i32 queue_mpush(queue *q, i32 len, u32 *save) {
 }
 // Presumably element store must be atomic
 b32 queue_mpush_commit(queue *q, u32 save) {
-  return atomic_compare_exchange_strong(q, &save, save + 1);
+  return atomic_compare_exchange_strong(q, &save, save + 0x1);
 } 
 // ╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴  Single producer
 // Returns index for next value to be pushed. -1 when full.
