@@ -87,8 +87,8 @@ enum mode {
 
 typedef struct client {
   Server *server;
-  arena_rel_t store; // points into Server.client_stores
-  arena_rel_t scratch;
+  arena_rel_t store; // used for raw, receive and deliver; points into Server.client_stores
+  arena_rel_t scratch; // used for read()
   size store_reset; // after initialisation, before work; only slightly breaks arena concept
   struct sockaddr_in address;
   char ip[INET_ADDRSTRLEN];
@@ -99,6 +99,7 @@ typedef struct client {
   Request receive; // only for buffering, prior to enqueueing
   Product deliver;
   enum mode mode;
+  struct rel data; // effectively void pointer to struct of arbitrary app data, in client store if appropriate; could also point back to server store
 } Client; // Server's resources for serving one client // TODO 2025-09-29 22:24:48 rename to Connection ?
 
 typedef struct {
@@ -138,15 +139,13 @@ typedef struct {
   i32 rcvtimeo;
   i32 sndtimeo;
   size server_mem;
-  size client_store_mem;
+  size client_store_mem; // likely the main overall contributor to memory use, live when client is connected
   size client_scratch_mem; // configure separately because there will be many and probably don't need to be as big as store
   size worker_mem;
   i32 clients; // max
   i32 workers; // exact
   size chunk_size; // outgoing
   // i32 chunk_queue_cap; // e.g. 31
-  arena store;
-  arena scratch;
 } Config;
 
 i32 nworkers(void);
@@ -170,7 +169,7 @@ typedef struct product Product; // forward decl
 
 typedef struct {
   Server *server; // stack allocated, no need for rel shenanigans
-  arena store;
+  arena store; // used by Handler to construct Response
   arena scratch;
   size store_reset; // after initialisation, before work; only slightly breaks arena concept
   pthread_t thread;
@@ -192,7 +191,7 @@ typedef struct server { // must not move
   char ip[INET_ADDRSTRLEN];
   i32 port;
   struct ev_loop *loop;
-  arena store;
+  arena store; // used for enqueued requests
   arena scratch;
   Handler handler;
   Workshops workshops;
@@ -203,6 +202,7 @@ typedef struct server { // must not move
   arenas client_stores;
   arenas client_scratches;
   size nclients; // should always match `clients` occpancy
+  struct rel data; // see client.data doc
 } Server;
 
 // ────────────────────────────────────────────────────────────────────── Server
@@ -580,8 +580,7 @@ arena *add_client(Server *server, arena client_store, arena client_scratch) {
       break;
     }
   }
-  if (!success)
-    goto add_fail;
+  if (!success) goto add_fail;
   DEBUG("%p:%p added client\n", (void *)client_store_in_server, (void *)client_store_in_server->beg);
   return client_store_in_server;
 add_fail:
