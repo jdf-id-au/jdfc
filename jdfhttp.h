@@ -116,12 +116,12 @@ typedef struct {
   };
 } Response;
 
-// Runs within worker thread with its store and scratch arenas.
-typedef Response (*Handler)(arena *store, arena *scratch, Request req);
+// Runs within worker thread
+typedef Response (*Handler)(arena *workshop_store, arena *workshop_scratch, Request req);
 //                 ^^^^^^^
 
 // Returns pointer to appropriate struct of parsed parameters, or 0 if no match.
-typedef void *(*UriParser)(arena *store, arena *scratch, s8 uri);
+typedef void *(*UriParser)(arena *workhop_store, arena *workshop_scratch, s8 uri);
 //              ^^^^^^^^^
 
 typedef struct {
@@ -299,7 +299,7 @@ s8 mutate_lowercase(s8 s) {
 }
 
 // Store raw request, "parse" into zero-copy s8s.
-Request parse_request(arena *store, arena *scratch, s8 raw) {
+Request parse_request(arena *client_store, arena *client_scratch, s8 raw) {
   //log_debug(raw);
   Request req = {.raw = raw};
   // https://developer.mozilla.org/en-US/docs/Web/HTTP/Guides/Messages
@@ -325,17 +325,17 @@ Request parse_request(arena *store, arena *scratch, s8 raw) {
     if (s8blank(line.head)) {
       // TODO 2025-10-03 12:48:25 maybe divert body elsewhere for large
       // requests, deal with separately...
-      req.body = s8l_rel(store, s8l_append(store, s8l_abs(req.body), line.tail));
+      req.body = s8l_rel(client_store, s8l_append(client_store, s8l_abs(req.body), line.tail));
       break; // blank line indicating end of metadata
     }
     s8pair header = s8cut(line.head, s8(": "));
     if (!header.ok) ReqErr(BAD_REQUEST);
-    headers = s8m_assoc(store, headers, mutate_lowercase(header.head), header.tail);
+    headers = s8m_assoc(client_store, headers, mutate_lowercase(header.head), header.tail);
     if (!headers) {
       fprintf(stderr, "💣 OOM saving headers \n");
       ReqErr(SERVICE_UNAVAILABLE);
     }
-    req.headers = s8m_rel(store, headers);
+    req.headers = s8m_rel(client_store, headers);
   }
 
   s8m *cookies = {0};
@@ -349,12 +349,12 @@ Request parse_request(arena *store, arena *scratch, s8 raw) {
       else line = (s8pair){.head = line.tail, .tail = (s8){0}};
       s8pair cookie = s8cutu8(line.head, '=');
       if (!cookie.ok) ReqErr(BAD_REQUEST);
-      cookies = s8m_assoc(store, cookies, cookie.head, cookie.tail);
+      cookies = s8m_assoc(client_store, cookies, cookie.head, cookie.tail);
       if (!cookies) {
         fprintf(stderr, "💣 OOM saving cookies \n");
         ReqErr(SERVICE_UNAVAILABLE);
       }
-      req.cookies = s8m_rel(store, cookies);
+      req.cookies = s8m_rel(client_store, cookies);
     }
   }
   return req;
@@ -400,17 +400,17 @@ s8m *s8m_assoc_clonev(arena *store, s8m *head, s8 k, s8 v) {
 }
 
 // TODO 2025-10-01 17:49:58 optimal return type?
-void add_header(arena *store, Response *res, enum header h, s8 v) {
+void add_header(arena *workshop_store, Response *res, enum header h, s8 v) {
   if (!res) {
     fprintf(stderr, "Tried to add_header to null Response.\n");
     return;
   }
-  res->headers = s8m_rel(store, s8m_assoc_clonev(store, s8m_abs(res->headers), spell_header[h], v));
+  res->headers = s8m_rel(workshop_store, s8m_assoc_clonev(workshop_store, s8m_abs(res->headers), spell_header[h], v));
 }
 
 // TODO 2025-10-01 17:49:58 optimal return type?
 // Generally headers should be set in handlers.
-void add_headers(arena *store, arena *scratch, Response *res) {
+void add_headers(arena *workshop_store, arena *workshop_scratch, Response *res) {
   if (!res) {
     fprintf(stderr, "Tried to add_headers to null Response.\n");
     return;
@@ -428,16 +428,16 @@ void add_headers(arena *store, arena *scratch, Response *res) {
     break;
   }
   
-  add_header(store, res, CONNECTION, s8("keep-alive"));
+  add_header(workshop_store, res, CONNECTION, s8("keep-alive"));
   if (res->type != INVALID_CONTENT_TYPE)
-    add_header(store, res, CONTENT_TYPE, describe_content_type[res->type]);
+    add_header(workshop_store, res, CONTENT_TYPE, describe_content_type[res->type]);
   if (res->type == EVENT_STREAM) return;
 
   s8l *body = s8l_abs(res->body);
-  s8 v = s8printf(scratch, "%ti", body ? s8l_len(body) : 0);
-  if (v.len) add_header(store, res, CONTENT_LENGTH, v);
+  s8 v = s8printf(workshop_scratch, "%ti", body ? s8l_len(body) : 0);
+  if (v.len) add_header(workshop_store, res, CONTENT_LENGTH, v);
   else fprintf(stderr, "Error setting Content-Length\n");
-  reset_scratch(scratch);
+  reset_scratch(workshop_scratch);
 }
 
 b32 flushc(Chunk *workshop_pending) {
@@ -622,10 +622,10 @@ remove_fail:
   return 0;
 }
 
-void client_cleanup_basics(arena *store, arena *scratch, i32 fd) {
+void client_cleanup_basics(arena *client_store, arena *client_scratch, i32 fd) {
   close(fd);
-  if (scratch) free_arena(scratch); // needs to be freed first because *client itself is within client->store span
-  if (store) free_arena(store);
+  if (client_scratch) free_arena(client_scratch); // needs to be freed first because *client itself is within client->store span
+  if (client_store) free_arena(client_store);
 }
 
 void cleanup_client(EV_P_ ev_io *w) {
