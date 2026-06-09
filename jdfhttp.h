@@ -444,7 +444,7 @@ void add_headers(arena *store, arena *scratch, Response *res) {
   if (res->type == EVENT_STREAM) return;
 
   s8l *body = s8l_abs(res->body);
-  s8 v = s8sprintf(scratch, "%ti", body ? s8l_len(body) : 0);
+  s8 v = s8aprintf(scratch, "%ti", body ? s8l_len(body) : 0);
   if (v.len) add_header(store, res, CONTENT_LENGTH, v);
   else fprintf(stderr, "Error setting Content-Length\n");
   reset_scratch(scratch);
@@ -534,8 +534,8 @@ void serialise_response(Workshop *shop, Response res) {
     add_headers(store, scratch, &res); // reassigning to pass-by-value parameter
     s8m *header = s8m_abs(res.headers);
     INFO("HTTP/1.1 %i %s\r\n", res.status, s8_array_abs(spell_http_status[res.status]));
-    s8printf(scratch, s8writec, out, "HTTP/1.1 %i %s\r\n",
-             res.status, s8_array_abs(spell_http_status[res.status]));
+    s8writec(out, s8aprintf(scratch, "HTTP/1.1 %i %s\r\n",
+                            res.status, s8_array_abs(spell_http_status[res.status])));
     while (header) { // grug approve
       s8writec(out, header->key);
       s8writec(out, s8(": "));
@@ -832,7 +832,6 @@ void read_client(EV_P_ ev_io *w, i32 events) {
       cleanup_client(EV_A_ w);
       return;
     }
-    // s8arenaprintf(&client->scratch, "🔔 %s\n");
     reset_scratch(arena_abs(client->scratch));
     // Keep track of the arena object (which won't move because
     // preallocated in server arena), not the client pointer (which is

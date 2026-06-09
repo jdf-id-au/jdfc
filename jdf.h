@@ -692,25 +692,23 @@ s8 u8fill(arena *a, u8 with, size count) {
   return ret;
 }
 
-// Does effectively allocate by moving buf.cur, so can fail.
-// Also see s8printf.
-s8 s8sprintf(arena *buf, const char *format, ...) {
-  if (!buf || !buf->cur) return (s8){0};
-  byte *start = buf->cur;
-  size avail = available(buf);
+s8 s8aprintf(arena *a, const char *format, ...) {
+  assert(a, "no arena");
   va_list args;
   va_start(args, format);
-  // returns misleading n which disregards available size!
-  // also disregards terminal \0, as usual
-  // would drop a character if avail didn't have room for \0
-  i32 n = vsnprintf(start, avail, format, args);
+  i32 needed_excl_term = vsnprintf(0, 0, format, args);
   va_end(args);
-  if (n > 0) {
-    buf->cur += n > avail ? avail : n;
-    return (s8) {
-      .rel = u8_rel(buf, start), .len = buf->cur - start
-    };
-  } else return (s8){0};
+  if (needed_excl_term <= 0) return (s8){0};
+  i32 needed = 1 + needed_excl_term;
+  s8 buf = make_s8(a, needed);
+  if (!buf.len) return (s8){0};
+  va_start(args, format); // apparently ok to do second va_start,va_end pair
+  i32 n = vsnprintf((char *)s8_array_abs(buf), needed, format, args);
+  va_end(args);
+  assert(n == needed_excl_term, "inconsistent vsnprintf return");
+  buf.len--;
+  a->cur--; // don't keep terminator
+  return buf;
 }
 
 // ───────────────────────────────────────────────── Lock-free concurrent queues
@@ -861,25 +859,6 @@ size s8write(void *out, s8 s) {
     if (b->len == b->cap) flush(b);
   }
   return total_copied;
-}
-
-// Also see s8sprintf.
-i32 s8printf(arena *scratch, Writer writer, void *out, const char *format, ...) {
-  if (!scratch->beg) return -1;
-  assert(scratch->beg == scratch->cur, "scratch buffer cursor not at beginning");
-  size avail = available(scratch); // TODO 2026-05-23 23:35:59 could resize if needed
-  va_list args;
-  va_start(args, format);
-  // returns misleading n which disregards available size!
-  // also disregards terminal \0, as usual
-  i32 n = vsnprintf(scratch->beg, avail, format, args);
-  va_end(args);
-  if (n > 0) {
-    scratch->cur += (n > avail ? avail : n); // at terminal \0
-    return writer(out, (s8){.abs = (u8 *)scratch->beg,
-                            .len = used(scratch),
-                            .absolute = 1});
-  } else return n;
 }
 
 u32 oswrite(i32 fd, u8 *buf, i32 len);

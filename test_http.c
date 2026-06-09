@@ -35,7 +35,7 @@
 Response handler(arena *store, arena *scratch, Request req) {
   Response res = (Response){.type = HTML};
   Client *client = Client_abs(req.client);
-  s8 body = s8sprintf(
+  s8 body = s8aprintf(
       store,
       "<!doctype html>"
       "<html>"
@@ -55,7 +55,7 @@ Response handler(arena *store, arena *scratch, Request req) {
   print(s8("<table><thead><th>Used</th><th>Available</th></thead><tbody>"));
 
   for (size i = 0; i < ws->len; i++) {
-    s8 row = s8sprintf(store, "<tr><td>%ti</td><td>%ti</td></tr>",
+    s8 row = s8aprintf(store, "<tr><td>%ti</td><td>%ti</td></tr>",
                        used(&Workshops_array_abs(*ws)[i].store),
                        available(&Workshops_array_abs(*ws)[i].store));
     if (row.len) print(row);
@@ -86,7 +86,7 @@ Response send_handler(arena *store, arena *scratch, Request req) {
     Client *cur = client_from_arena(a);
     if (!cur) continue;
     if (cur->mode == SERVER_SENT_EVENTS) {
-      s8 msg = s8sprintf(a, // recipient's arena!
+      s8 msg = s8aprintf(a, // recipient's arena!
                           "event: message\ndata: hello from %s:%d to %s:%d\n\n",
                           client->ip, client->port, cur->ip, cur->port);
       if (!msg.len) return (Response){.status = SERVICE_UNAVAILABLE};

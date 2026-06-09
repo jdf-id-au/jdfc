@@ -84,8 +84,7 @@ void render_enum(arena *store, arena *scratch, bufout *b, s8 id, enum_values *va
     W(ind);
     W(cur->val.symbol);
     if (cur->val.number || cur->val.defines_zero) {
-      s8printf(scratch, s8write, b, " = %i,\n",
-               cur->val.number); // trailing comma ok in C99
+      W(s8aprintf(scratch , " = %i,\n", cur->val.number)); // trailing comma ok in C99
       reset_scratch(scratch);
     } else {
       S(",\n");
@@ -130,8 +129,7 @@ void render_enum(arena *store, arena *scratch, bufout *b, s8 id, enum_values *va
   }
   
   S("enum "); W(id); S(" parse_"); W(id); S("(s8 s) {\n");
-  s8printf(scratch, s8write, b, "  for (size i = 0; i < %ti; i++)\n",
-           count(values));
+  W(s8aprintf(scratch, "  for (size i = 0; i < %ti; i++)\n", count(values)));
   reset_scratch(scratch);
   S("    if(s8equal(s, spell_"); W(id); S("[i]))\n");
   S("      return (enum "); W(id); S(")i;\n");
