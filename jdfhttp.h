@@ -24,15 +24,6 @@
 #define INFO(...)
 #endif
 
-// Dump s8 in desperation (debugging)
-void dumbp(s8 s) {
-  DEBUG("%*ti B ✏ ", 5, s.len);
-  u8 *buf = s8_array_abs(s);
-  for (size i = 0; i < s.len; i++) printf("%c", buf[i]);
-  printf("\n");
-  fflush(0); // flush all open output streams
-}
-
 typedef struct server Server;
 REL(Server)
 
@@ -403,9 +394,8 @@ s8m *s8m_assoc_clonev(arena *store, s8m *head, s8 k, s8 v) {
     s8m *ret = s8m_assoc(store, head, k, vc);
     if (ret) return ret;
   }
-  fprintf(stderr, "Store usage %td/%td\n", used(store), available(store));
-  fprintf(stderr, "Problem setting kv\n");
-  dumbp(k); dumbp(v);
+  DEBUG("Problem setting kv");
+  log_debug(k); log_debug(v);
   return head;
 }
 
@@ -444,7 +434,7 @@ void add_headers(arena *store, arena *scratch, Response *res) {
   if (res->type == EVENT_STREAM) return;
 
   s8l *body = s8l_abs(res->body);
-  s8 v = s8aprintf(scratch, "%ti", body ? s8l_len(body) : 0);
+  s8 v = s8printf(scratch, "%ti", body ? s8l_len(body) : 0);
   if (v.len) add_header(store, res, CONTENT_LENGTH, v);
   else fprintf(stderr, "Error setting Content-Length\n");
   reset_scratch(scratch);
@@ -534,7 +524,7 @@ void serialise_response(Workshop *shop, Response res) {
     add_headers(store, scratch, &res); // reassigning to pass-by-value parameter
     s8m *header = s8m_abs(res.headers);
     INFO("HTTP/1.1 %i %s\r\n", res.status, s8_array_abs(spell_http_status[res.status]));
-    s8writec(out, s8aprintf(scratch, "HTTP/1.1 %i %s\r\n",
+    s8writec(out, s8printf(scratch, "HTTP/1.1 %i %s\r\n",
                             res.status, s8_array_abs(spell_http_status[res.status])));
     while (header) { // grug approve
       s8writec(out, header->key);

@@ -46,6 +46,10 @@ typedef size_t    usize;
 #define TRACE(...)
 #endif
 
+// TODO 2026-05-19 21:40:22 compiler flag to choose between:
+#define assert(c, ...) while (!(c)) { printf("💥 "); printf(__VA_ARGS__); printf("\n"); __builtin_unreachable(); } // probably not optimised away?
+// #define assert(c, ...) while (!(c)) __builtin_unreachable() // probably optimisable away
+
 /*
   Relative pointers, with respect to host arena (not anything else).
   Allows arena resizing and maybe serialisation. NB +1 keeps
@@ -74,21 +78,28 @@ struct rel {
 
 #define MAX_CAP PTRDIFF_MAX - 1
 
+struct rel rel_ptr(arena *a, void *p) {
+  struct rel ret = { a, 0 };
+  if (!p) return ret;
+  byte *b = (byte *)p;
+  assert(a->beg <= b && b < a->cur && b < a->beg + MAX_CAP,
+         "invalid rel_ptr call");
+  ret.ptr = b - a->beg + 1;
+  return ret;
+}
+
+void *abs_ptr(struct rel r) {
+  return r.ptr ? r.arena->beg + r.ptr - 1 : 0;
+}
+
+// some attempt at type safety
 #define REL(t)                                                                 \
   typedef struct rel t##_rel_t;                                                \
-  t##_rel_t t##_rel(arena *a, void *p) {                                       \
-    if (!p)                                                                    \
-      return (t##_rel_t){.arena = a, 0};                                       \
-    byte *b = (byte *)p;                                                       \
-    assert(a->beg <= b && b < a->cur && b < a->beg + MAX_CAP,                  \
-           "invalid <t>_rel call");                                            \
-    return (t##_rel_t){.arena = a, .ptr = b - a->beg + 1};                     \
-  }                                                                            \
-  t *t##_abs(t##_rel_t r) {                                                    \
-    return r.ptr ? (t *)(r.arena->beg + r.ptr - 1) : 0;                        \
-  }
+  t##_rel_t t##_rel(arena *a, void *p) { return rel_ptr(a, p); }               \
+  t *t##_abs(t##_rel_t r) { return (t *)abs_ptr(r); }
 
 #define rel(a, t, n) t##_rel(a, new (a, t, n))
+
 #define ARRAY(tn, t) /* new type name, el type */                              \
   typedef struct {                                                             \
     union {                                                                    \
@@ -149,9 +160,6 @@ struct rel {
   put UBSan in trap mode with -fsanitize-trap
   and then enable at least -fsanitize=unreachable.
 */
-// TODO 2026-05-19 21:40:22 compiler flag to choose between:
-#define assert(c, ...) while (!(c)) { printf("💥 "); printf(__VA_ARGS__); printf("\n"); __builtin_unreachable(); } // probably not optimised away?
-// #define assert(c, ...) while (!(c)) __builtin_unreachable() // probably optimisable away
 
 // ──────────────────────────────────────────────────────────────── Linked lists
 typedef struct { size next; } node_t; // can be either direction; ignore subsequent fields; 0 indicates none, not self
@@ -692,7 +700,7 @@ s8 u8fill(arena *a, u8 with, size count) {
   return ret;
 }
 
-s8 s8aprintf(arena *a, const char *format, ...) {
+s8 s8printf(arena *a, const char *format, ...) {
   assert(a, "no arena");
   va_list args;
   va_start(args, format);
