@@ -98,7 +98,7 @@ void *abs_ptr(struct rel r) {
   t##_rel_t t##_rel(arena *a, void *p) { return rel_ptr(a, p); }               \
   t *t##_abs(t##_rel_t r) { return (t *)abs_ptr(r); }
 
-#define rel(a, t, n) t##_rel(a, new (a, t, n))
+#define rel(a, t, n) rel_ptr(a, new (a, t, n)) // "void rel pointer"
 
 #define ARRAY(tn, t) /* new type name, el type */                              \
   typedef struct {                                                             \
@@ -110,7 +110,7 @@ void *abs_ptr(struct rel r) {
     b32 absolute;                                                              \
   } tn;                                                                        \
   tn make_##tn(arena *a, size len) {                                           \
-    t##_rel_t r = rel(a, t, len);                                              \
+    t##_rel_t r = t##_rel(a, new (a, t, len));                                 \
     return r.ptr ? (tn){.rel = r, .len = len} : (tn){0};                       \
   }                                                                            \
   t##_rel_t tn##_array_rel(tn v, t *p) {                                       \

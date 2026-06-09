@@ -103,9 +103,6 @@ typedef struct client {
   struct rel data; // effectively void pointer to struct of arbitrary app data, in client store if appropriate; could also point back to server store
 } Client; // Server's resources for serving one client // TODO 2025-09-29 22:24:48 rename to Connection ?
 
-typedef b32 (*Client_updown)(Server server, Client client, b32 up);
-typedef b32 (*Server_updown)(Server server, b32 up);
-
 typedef struct {
   Client_rel_t client;
   enum mode mode; // tags the following union:
@@ -135,6 +132,11 @@ typedef struct {
   Handler handler; // TODO 2025-10-01 08:57:59 maybe http method as part of route?
 } Route;
 
+// Supplied by application to be called when initialising or shutting down
+// server or client. Return whether up. TOOD 2026-06-10 01:35:59 could have stauts enum...
+typedef b32 (*UpDown)(Server *server, arena *client_store, b32 up);
+//            ^^^^^^
+
 typedef struct {
   i32 domain; // PF_INET or PF_UNIX protocol families ~aka address families
   i32 port;
@@ -150,6 +152,8 @@ typedef struct {
   i32 workers; // exact
   size chunk_size; // outgoing
   // i32 chunk_queue_cap; // e.g. 31
+  UpDown server_updown;
+  UpDown client_updown;
 } Config;
 
 i32 nworkers(void);
@@ -244,6 +248,12 @@ Server make_server_fn(Handler h, Config c) {
     perror("Socket listen failed");
     exit(1);
   }
+  // ╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴ Arenas
+  server.store = alloc_arena(server.config.server_mem, 0);
+  server.scratch = alloc_arena(server.config.server_mem, 0);
+  if (!server.store.beg || !server.scratch.beg)
+    failwith(1, "Failed to allocate %td KB server arenas.\n", server.config.server_mem/KiB(1));
+
   return server;
 }
 
@@ -564,7 +574,7 @@ arena *add_client(Server *server, arena client_store, arena client_scratch) {
       *cur = client_store;
       client_store_in_server = cur;
       client = client_from_arena(client_store_in_server); // Client must be first alloc
-      if (!client) break;
+      if (!client) break; // is this possible?
       client->store = arena_rel(&server->store, client_store_in_server);
       success = 1;
       break;
@@ -584,14 +594,19 @@ arena *add_client(Server *server, arena client_store, arena client_scratch) {
   }
   if (!success) goto add_fail;
   // DEBUG("%p:%p added client\n", (void *)client_store_in_server, (void *)client_store_in_server->beg);
+  if (server->config.client_updown)
+    server->config.client_updown(0, &client_store, 1);
   return client_store_in_server;
 add_fail:
   fprintf(stderr, "Unable to add client!\n");
   return 0;
 }
 
-// FIXME 2026-05-27 08:43:13 this could race? safe because only removing?
-b32 remove_client(Server *server, Client *client) {
+// TODO 2026-06-10 02:00:14 ensure nothing could be using updown's resources?
+b32 remove_client(Server *server, arena *client_store) {
+  if (server->config.client_updown)
+    server->config.client_updown(0, client_store, 0);
+  Client *client = client_from_arena(client_store);
   server->nclients--;
   b32 success = 0;
   arena *freed_store = {0};
@@ -609,14 +624,14 @@ b32 remove_client(Server *server, Client *client) {
   from = &server->client_stores;
   for (size i = 0; i < from->len; i++) {
     arena *cur = &arenas_array_abs(*from)[i];
-    if (cur != arena_abs(client->store)) continue;
+    if (cur != client_store) continue;
     freed_store = cur;
     freed_store_beg = cur->beg;
     success = free_arena(cur);
     break;
   }
   if (!success) goto remove_fail;
-  // DEBUG("%p:%p removing client\n", (void *)freed_store, (void *)freed_store_beg);
+  DEBUG("%p:%p removing client\n", (void *)freed_store, (void *)freed_store_beg);
   return 1;
 remove_fail:
   fprintf(stderr, "Unable to remove client!\n");
@@ -630,7 +645,8 @@ void client_cleanup_basics(arena *client_store, arena *client_scratch, i32 fd) {
 }
 
 void cleanup_client(EV_P_ ev_io *w) {
-  Client *client = client_from_arena((arena *)w->data);
+  arena *client_store = w->data;
+  Client *client = client_from_arena(client_store);
   if (!client) return;
   Server *server = client->server;
   // https://metacpan.org/dist/EV/view/libev/ev.pod#ev_TYPE_stop-(loop,-ev_TYPE-*watcher)
@@ -638,7 +654,7 @@ void cleanup_client(EV_P_ ev_io *w) {
   ev_io_stop(EV_A_ & client->write_io);
   ev_timer_stop(EV_A_ &client->timeout);
   close(w->fd);
-  remove_client(server, client);
+  remove_client(server, client_store);
 }
 
 enum direction client_get_direction(EV_P_ ev_io *w) {
@@ -969,7 +985,6 @@ void accept_client(EV_P_ ev_io *w, i32 events) {
       cleanup_client(EV_A_ &client->read_io);
       return;
     }
-    
     // ╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴ event setup
     ev_io_init(&client->read_io, read_client, new_socket, EV_READ);
     // FIXME 2026-05-27 10:03:14 pointer moves when resized
@@ -1079,7 +1094,7 @@ Work make_work(arena *server_store, i32 len) {
 }
 
 void sigint_cb(EV_P_ ev_signal *w, i32 events) {
-  fprintf(stderr, "Shutting down\n");
+  INFO("Shutting down\n");
   Server *server = (Server *)w->data;
   ev_io_stop(server->loop, &server->accept_watcher);
   for (size i = 0; i < server->config.workers; i++)
@@ -1089,6 +1104,7 @@ void sigint_cb(EV_P_ ev_signal *w, i32 events) {
   // TODO 2026-06-10 00:45:35 complete requests in flight and reject
   // new requests from existing clients. e.g. somehow wait for all
   // Client .deliver.q's to be empty
+  // DEBUG("Stopping event loop\n");
   ev_break (EV_A_ EVBREAK_ALL);
 }
 
@@ -1098,14 +1114,7 @@ void sigpipe_cb(EV_P_ ev_signal *w, i32 events) {
 }
 
 void launch(Server *server) {
-  // TODO 2026-06-07 11:35:33 validate config more
-  if (server->config.client_scratch_mem < KiB(8))
-    failwith(1, "Need >%td KiB for client scratch. Suggest 8 KiB.\n", server->config.client_scratch_mem/KiB(1));
-  // ╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴ Arenas
-  server->store = alloc_arena(server->config.server_mem, 0);
-  server->scratch = alloc_arena(server->config.server_mem, 0);
-  if (!server->store.beg || !server->scratch.beg)
-    failwith(1, "Failed to allocate %td KB server arenas.\n", server->config.server_mem/KiB(1));
+  if (server->config.server_updown) server->config.server_updown(server, 0, 1);
   // ╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴ Resources
   server->work = make_work(&server->store, 32);
   if (!server->work.requests.len) 
@@ -1113,6 +1122,11 @@ void launch(Server *server) {
   server->work_waiting = (pthread_cond_t)PTHREAD_COND_INITIALIZER;
   pthread_mutex_init(&server->work_waiting_lock, 0);
   // ╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴╴ Client tracking
+  // TODO 2026-06-07 11:35:33 validate config more
+  if (server->config.client_scratch_mem < KiB(8))
+    failwith(1, "Need >%td KiB for client scratch. Suggest 8 KiB.\n",
+             server->config.client_scratch_mem / KiB(1));
+  
   server->client_stores = make_arenas(&server->store, server->config.clients); 
   if (!server->client_stores.len) 
     failwith(1, "Failed to allocate client store tracking array for %d clients\n",
@@ -1187,6 +1201,7 @@ void launch(Server *server) {
   // within sigint_cb?
   // - return from `worker` then pthread_join (vs pthread_cancel)
   ev_loop_destroy(server->loop);
+  if (server->config.server_updown) server->config.server_updown(server, 0, 0);
 }
 
 #endif // jdfhttp_h

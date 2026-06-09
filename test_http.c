@@ -156,9 +156,38 @@ Response router(arena *store, arena *scratch, Request req) {
 typedef struct {
   sqlite3 *db;
 } server_resources;
+
 typedef struct {
   s8 user;
 } client_resources;
+
+b32 server_updown(Server *server, arena *ignore, b32 up) {
+  if (up) {
+    DEBUG("Server up\n");
+    server_resources *data = new (&server->store, server_resources, 1);
+    sqlite3_open_v2(":memory:", &data->db, SQLITE_OPEN_READWRITE, 0);
+    server->data = rel_ptr(&server->store, data);
+    return 1;
+  } else {
+    server_resources *data = abs_ptr(server->data);
+    sqlite3_close(data->db);
+    DEBUG("Server down\n");
+    return 0;
+  }
+}
+b32 client_updown(Server *ignore, arena *client_store, b32 up) {
+  Client *client = client_from_arena(client_store);
+  if (up) {
+    DEBUG("Client up %p\n", client);
+    struct rel data = rel(client_store, client_resources, 1);
+    client = client_from_arena(client_store); // because ral() can theoretically realloc ugh
+    client->data = data;
+    return 1;
+  } else {
+    DEBUG("Client down %p\n", client);
+    return 0;
+  }
+}
 
 i32 main(int argc, char **argv) {
   arena init = alloc_arena(KiB(1), 0);
@@ -168,7 +197,8 @@ i32 main(int argc, char **argv) {
   i32_ port = int_arg(args, "port");
   if (!port.ok) failwith(1, "Please specify a port.");
   Server server = make_server(router, .port = port.val);
-  // 
+  server.config.server_updown = server_updown;
+  server.config.client_updown = client_updown;
   // server.data = 
   launch(&server);
   return 0;
