@@ -1144,6 +1144,7 @@ void *worker(Workshop *workshop) { // ──────────────
         cleanup_client(server->loop, &client->write_io);
         goto reset_store;
       }
+      res = apply_middleware(workshop, server->config.middleware, req);
       break;
     case SHUTDOWN:
       // DEBUG("Shutting down worker %p\n", (void *)workshop);
@@ -1166,7 +1167,6 @@ void *worker(Workshop *workshop) { // ──────────────
     // client->deliver queue simultaneously. Pipelining is prevented
     // by half-duplex `client_set_direction`. Writer is on main thread
     // so libev can deal with delays writing.
-    res = apply_middleware(workshop, server->config.middleware, req);
     if (!Client_abs(res.client)) res.client = req.client;
     workshop->pending.dest = res.client;
     serialise_response(workshop, res);
