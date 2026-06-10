@@ -296,17 +296,16 @@ Message apply_middleware_rec(Workshop *w, Middlewares ms, size i, Message before
   case REQUEST:
     switch (after.type) {
     case REQUEST:
-      if (i >= ms.len) { // pre-handler middleware is done TODO 2026-06-10 23:26:17 should routing be middleware? could set req.handler
+      if (i >= ms.len - 1) { // pre-handler middleware is done TODO 2026-06-10 23:26:17 should routing be middleware? could set req.handler
         Handler h = w->server->config.handler;
         after = (Message){.type = RESPONSE, .res = h(w, after.req)};
-        // TOOD reverse up ms
-      }
-      return apply_middleware_rec(w, ms, i++, after);
+        return apply_middleware_rec(w, ms, --i, after); // handle then ascend
+      } else return apply_middleware_rec(w, ms, ++i, after); // descend
     case RESPONSE:
-      return apply_middleware_rec(w, ms, i--, after); // short circuit
+      return apply_middleware_rec(w, ms, --i, after); // short circuit ascend
     }
   case RESPONSE:
-    return apply_middleware_rec(w, ms, i--, after);
+    return apply_middleware_rec(w, ms, --i, after); // ascend
   }
 }
 
