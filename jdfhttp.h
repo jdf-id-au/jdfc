@@ -118,19 +118,24 @@ typedef struct {
   };
 } Response;
 
-// Runs within worker thread.
-typedef Response (*Handler)(arena *workshop_store, arena *workshop_scratch, Request req);
-//                 ^^^^^^^
-
+typedef struct workshop Workshop;
+REL(Workshop)
+  
 // Returns pointer to appropriate struct of parsed parameters, or 0 if no match.
-typedef void *(*UriParser)(arena *workhop_store, arena *workshop_scratch, s8 uri);
+typedef void *(*UriParser)(Workshop *workshop, s8 uri);
 //              ^^^^^^^^^
+
+// Runs within worker thread.
+typedef Response (*Handler)(Workshop *workshop, Request req);
+//                 ^^^^^^^
 
 typedef struct {
   s8 uri; // blank for default handler
   UriParser parser; // 0 for exact match
   Handler handler; // TODO 2025-10-01 08:57:59 maybe http method as part of route?
 } Route;
+REL(Route)
+ARRAY(Routes, Route)
 
 // Supplied by application to be called when initialising or shutting down
 // server or client. Return whether up. TOOD 2026-06-10 01:35:59 could have stauts enum...
@@ -154,6 +159,8 @@ typedef struct {
   // i32 chunk_queue_cap; // e.g. 31
   UpDown server_updown;
   UpDown client_updown;
+  Routes routes; // constant for the moment (Wellons style doesn't const things...)
+  Handler handler; // e.g. default_router
 } Config;
 
 i32 nworkers(void);
@@ -171,11 +178,12 @@ i32 nworkers(void);
     .worker_mem = KiB(1),                       \
     .clients = 256,                             \
     .workers = nworkers(),                      \
-    .chunk_size = KiB(4)
+    .chunk_size = KiB(4),                       \
+    .handler = default_router
 
 typedef struct product Product; // forward decl
 
-typedef struct {
+typedef struct workshop {
   Server *server; // stack allocated, no need for rel shenanigans
   arena store; // used by Handler to construct Response
   arena scratch;
@@ -183,9 +191,8 @@ typedef struct {
   pthread_t thread;
   Chunk pending; // under construction, before copy to Product->chunks
 } Workshop; // Resources for one worker!
-REL(Workshop)
 ARRAY(Workshops, Workshop)
-  
+
 typedef struct { // allocated in Server arena
   Requests requests;
   queue q;
@@ -200,7 +207,6 @@ typedef struct server { // must not move
   struct ev_loop *loop;
   arena store; // used for enqueued requests
   arena scratch;
-  Handler handler;
   Workshops workshops;
   Work work;
   // https://randu.org/tutorials/threads/
@@ -211,7 +217,37 @@ typedef struct server { // must not move
   size nclients; // should always match `clients` occpancy
   ev_io accept_watcher; 
   struct rel data; // see client.data doc
-} Server;
+} Server;  
+
+Response default_router(Workshop *w, Request req) {
+  // Updates bypass routing but should be in handler for app logic
+  if (req.mode == SERVER_SENT_EVENTS) // just to allow enqueueing, not real Request
+    return (Response){.client = req.client, .mode = req.mode, .update = req.update};
+  // Other requests:
+  Routes routes = w->server->config.routes;
+  for (size i = 0; i < routes.len; i++) {
+    Route r = Routes_array_abs(routes)[i];
+    Handler h = r.handler;
+    if (r.uri.len) {
+      if (r.parser) {
+        void *params = r.parser(w, req.uri);
+        if (!params) continue; // NB 2026-04-21 13:19:23 parser also needs to handle uri match
+        req.params = rel_ptr(&w->store, params);
+        return h(w, req);
+      } else if (s8equal(req.uri, r.uri))
+        return h(w, req);
+    } else { // default route
+      if (h) return h(w, req);
+      else {
+        INFO("No handler for default route\n");
+        return (Response){.status = NOT_FOUND};
+      }
+    }
+  }
+  INFO("No matching route\n");
+  log_debug(req.uri);
+  return (Response){.status = NOT_FOUND};
+}
 
 // ────────────────────────────────────────────────────────────────────── Server
 #define ipstr(stem, addr)                                               \
@@ -219,15 +255,15 @@ typedef struct server { // must not move
   int stem##port = ntohs(addr.sin_port);                                \
   inet_ntop(PF_INET, &addr.sin_addr, stem##ip, INET_ADDRSTRLEN)
 
-Server make_server_fn(Handler h, Config c) {
+Server make_server_fn(Config c) {
+  if (!c.routes.len) failwith(1, "No routes defined\n");
   Server server = {
     .config = c,
-      // learn about SOCK_DGRAM, SOCK_RAW types later
+    // learn about SOCK_DGRAM, SOCK_RAW types later
     .socket = socket(c.domain, SOCK_STREAM, 0), // 0 is IP, internet protocol!
     .address = {.sin_family = c.domain,
                 .sin_port = htons(c.port), // convert byte order
                 .sin_addr = {.s_addr = htonl(c.interface)}},
-    .handler = h
   };
   if (server.socket < 0) {
     perror("Socket creation failed");
@@ -262,7 +298,7 @@ Client *client_from_arena(arena *a) {
 }
 
 // Slightly misleading name because launch does most of resource alloc.
-#define make_server(h, ...) make_server_fn(h, (Config){DEFAULT_CONFIG, __VA_ARGS__})
+#define make_server(...) make_server_fn((Config){DEFAULT_CONFIG, __VA_ARGS__})
 
 i32 nproc(void) { return sysconf(_SC_NPROCESSORS_ONLN); }
 
@@ -1073,7 +1109,7 @@ void *worker(Workshop *workshop) { // ──────────────
 
     if (req.mode == SERVER_SENT_EVENTS ||
         (req.mode == REQUEST_RESPONSE && !req.error))
-      res = server->handler(&workshop->store, &workshop->scratch, req);
+      res = server->config.handler(workshop, req);
     if (!Client_abs(res.client)) res.client = req.client;
     workshop->pending.dest = res.client;
     serialise_response(workshop, res);
@@ -1099,12 +1135,13 @@ void sigint_cb(EV_P_ ev_signal *w, i32 events) {
   ev_io_stop(server->loop, &server->accept_watcher);
   for (size i = 0; i < server->config.workers; i++)
     if (!enqueue_shutdown(server)) INFO("Struggling to shut down because queue full\n");
+  // NB 2026-06-10 02:57:48 sometimes fails to proceed; reason not yet clear
   for (size i = 0; i < server->config.workers; i++)
     pthread_join(Workshops_array_abs(server->workshops)[i].thread, 0);
   // TODO 2026-06-10 00:45:35 complete requests in flight and reject
   // new requests from existing clients. e.g. somehow wait for all
   // Client .deliver.q's to be empty
-  // DEBUG("Stopping event loop\n");
+  DEBUG("Stopping event loop\n");
   ev_break (EV_A_ EVBREAK_ALL);
 }
 

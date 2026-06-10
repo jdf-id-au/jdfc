@@ -31,9 +31,10 @@
 
 // TODO 2026-06-07 18:32:21 proper testing, incl big POST etc
 
-Response handler(arena *store, arena *scratch, Request req) {
+Response handler(Workshop *w, Request req) {
   Response res = (Response){.type = HTML};
   Client *client = Client_abs(req.client);
+  arena *store = &w->store;
   s8 body = s8printf(
       store,
       "<!doctype html>"
@@ -68,15 +69,16 @@ Response handler(arena *store, arena *scratch, Request req) {
   return res;
 }
 
-Response sse_handler(arena *store, arena *scratch, Request req) {
+Response sse_handler(Workshop *w, Request req) {
   Response res = (Response){.status = OK, .type = EVENT_STREAM};
+  arena *store = &w->store;
   add_header(store, &res, CACHE_CONTROL, s8("no-cache"));
   // NB 2025-10-01 17:56:45 nginx special
   add_header(store, &res, X_ACCEL_BUFFERING, s8("no"));
   return res;
 }
 
-Response send_handler(arena *store, arena *scratch, Request req) {
+Response send_handler(Workshop *w, Request req) {
   Client *client = Client_abs(req.client);
   Server *server = client->server;
   for (size i = 0; i < server->client_stores.len; i++) {
@@ -111,9 +113,10 @@ s8 view_sse = s8("<!doctype html>\n"
                  "console.log(\"Awaiting server-sent events...\");\n"
                  "</script>\n"
                  "</body></html>\n"
-    ); 
+    );
 
-Response receive_handler(arena *store, arena *scratch, Request req) {
+Response receive_handler(Workshop *w, Request req) {
+  arena *store = &w->store;
   return (Response) {
     .status = OK, .type = HTML,
     .body = s8l_rel(store, s8l_append(store, 0, view_sse)) 
@@ -127,38 +130,12 @@ const Route routes[] = {
     {.uri = s8("/receive"), .handler = receive_handler}
 };
 
-Response router(arena *store, arena *scratch, Request req) {
-  // Updates bypass routing but should be in handler for app logic
-  if (req.mode == SERVER_SENT_EVENTS)
-    return (Response){.client = req.client, .mode = SERVER_SENT_EVENTS, .update = req.update};
-  // Other requests:
-  for (size i = 0; i < countof(routes); i++) {
-    Handler h = routes[i].handler;
-    if (routes[i].uri.len) {
-      if (routes[i].parser) {
-        void *params = routes[i].parser(store, scratch, req.uri);
-        if (!params) continue; // NB 2026-04-21 13:19:23 parser also needs to handle uri match
-        req.params = (struct rel){.arena = store, .ptr = (byte *)params - store->beg + 1}; // FIXME 2026-05-26 22:10:04 fragile
-        return h(store, scratch, req);
-      } else if (s8equal(req.uri, routes[i].uri))
-        return h(store, scratch, req);
-    } else { // default route
-      if (h) return h(store, scratch, req);
-      else {
-        fprintf(stderr, "No handler for default route");
-        return (Response){.status = NOT_FOUND};
-      }
-    }
-  }
-  return (Response){.status = NOT_FOUND};
-}
-
 typedef struct {
-  sqlite3 *db;
+  sqlite3 *db; // TODO 2026-06-10 02:56:49 demo use
 } server_resources;
 
 typedef struct {
-  s8 user;
+  s8 user; // TODO 2026-06-10 02:56:54 demo use
 } client_resources;
 
 b32 server_updown(Server *server, arena *ignore, b32 up) {
@@ -196,10 +173,9 @@ i32 main(int argc, char **argv) {
   struct args args = argparse(&init, "--port=int --workers=int", argc, argv);
   i32_ port = int_arg(args, "port");
   if (!port.ok) failwith(1, "Please specify a port.");
-  Server server = make_server(router, .port = port.val);
+  Server server = make_server(.routes = wrap(Routes, routes), .port = port.val);
   server.config.server_updown = server_updown;
   server.config.client_updown = client_updown;
-  // server.data = 
   launch(&server);
   return 0;
 }

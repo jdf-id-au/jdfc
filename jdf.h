@@ -152,6 +152,7 @@ void *abs_ptr(struct rel r) {
       s.len = 0; /* refuse to slice backwards */                               \
     return s;                                                                  \
   }
+#define wrap(tn, arr) (tn){ .abs=(void *)arr, .len=countof(arr), .absolute = 1 }
 
 #define MAYBE(t) typedef struct { t val ; b32 ok ; } t##_;
 
