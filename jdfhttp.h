@@ -129,6 +129,17 @@ typedef void *(*UriParser)(Workshop *workshop, s8 uri);
 typedef Response (*Handler)(Workshop *workshop, Request req);
 //                 ^^^^^^^
 
+enum message_type { REQUEST, RESPONSE };
+// Request stored in Client, Response stored in Workshop
+typedef struct { enum message_type type; union { Request req; Response res; }; } Message;
+// Applied by apply_middleware as if by function composition:
+//   middlewares: m1 m2 m3
+//   pipeline: request -> m1pre -> m2pre -> m3pre -> handler -> m3post -> m2post -> m1post -> response
+// and short-circuiting if returns RESPONSE before reaching the handler.
+typedef Message (*Middleware)(Workshop *workshop, Message mutates_store);
+//                ^^^^^^^^^^
+REL(Middleware)
+ARRAY(Middlewares, Middleware)
 typedef struct {
   s8 uri; // blank for default handler
   UriParser parser; // 0 for exact match
@@ -161,6 +172,7 @@ typedef struct {
   UpDown client_updown;
   Routes routes; // constant for the moment (Wellons style doesn't const things...)
   Handler handler; // e.g. default_router
+  Middlewares middleware; // constant for the moment
 } Config;
 
 i32 nworkers(void);
@@ -179,7 +191,8 @@ i32 nworkers(void);
     .clients = 256,                             \
     .workers = nworkers(),                      \
     .chunk_size = KiB(4),                       \
-    .handler = default_router
+    .handler = default_router,                  \
+    .middleware = wrap(Middlewares, default_middleware)
 
 typedef struct product Product; // forward decl
 
@@ -215,19 +228,25 @@ typedef struct server { // must not move
   arenas client_stores;
   arenas client_scratches;
   size nclients; // should always match `clients` occpancy
-  ev_io accept_watcher; 
+  ev_io accept_watcher;
   struct rel data; // see client.data doc
-} Server;  
+} Server;
+
+Response sse_sendthrough(Workshop *w, Request req) {
+  assert(req.mode == SERVER_SENT_EVENTS, "Not a server sent event!");// just to allow enqueueing, not real Request
+  return (Response){.client = req.client, .mode = req.mode, .update = req.update};
+}
 
 Response default_router(Workshop *w, Request req) {
   // Updates bypass routing but should be in handler for app logic
-  if (req.mode == SERVER_SENT_EVENTS) // just to allow enqueueing, not real Request
+  if (req.mode == SERVER_SENT_EVENTS) 
     return (Response){.client = req.client, .mode = req.mode, .update = req.update};
   // Other requests:
   Routes routes = w->server->config.routes;
   for (size i = 0; i < routes.len; i++) {
     Route r = Routes_array_abs(routes)[i];
     Handler h = r.handler;
+    if (!h) INFO("No handler for route\n");
     if (r.uri.len) {
       if (r.parser) {
         void *params = r.parser(w, req.uri);
@@ -247,6 +266,55 @@ Response default_router(Workshop *w, Request req) {
   INFO("No matching route\n");
   log_debug(req.uri);
   return (Response){.status = NOT_FOUND};
+}
+
+Message default_error_middleware(Workshop *w, Message m) {
+  switch (m.type) {
+    case REQUEST:
+    assert(m.req.mode == REQUEST_RESPONSE, "Wrong mode");
+    // application could provide shinier error_middleware instead
+    if (m.req.error)
+      return (Message){.type = RESPONSE, .res = {.status = m.req.error}};
+    break;
+  case RESPONSE:
+    break;
+    // up to handler to format as it wishes
+  }
+  return m;
+}
+
+const Middleware default_middleware[] = {
+  default_error_middleware
+};
+
+// NB 2026-06-10 22:55:38 hopefully not too stack-blowing passing by value
+Message apply_middleware_rec(Workshop *w, Middlewares ms, size i, Message before) {
+  if (i < 0) return before;
+  Middleware m = Middlewares_array_abs(ms)[i];
+  Message after = m(w, before); // NB may mutate heap (arena) allocd contents of `before`
+  switch (before.type) {
+  case REQUEST:
+    switch (after.type) {
+    case REQUEST:
+      if (i >= ms.len) { // pre-handler middleware is done TODO 2026-06-10 23:26:17 should routing be middleware? could set req.handler
+        Handler h = w->server->config.handler;
+        after = (Message){.type = RESPONSE, .res = h(w, after.req)};
+        // TOOD reverse up ms
+      }
+      return apply_middleware_rec(w, ms, i++, after);
+    case RESPONSE:
+      return apply_middleware_rec(w, ms, i--, after); // short circuit
+    }
+  case RESPONSE:
+    return apply_middleware_rec(w, ms, i--, after);
+  }
+}
+
+Response apply_middleware(Workshop *w, Middlewares ms, Request mutated) {
+  Message m = (Message){.type = REQUEST, .req = mutated};
+  m = apply_middleware_rec(w, ms, 0, m);
+  assert(m.type == RESPONSE, "Middleware didn't return a RESPONSE");
+  return m.res;
 }
 
 // ────────────────────────────────────────────────────────────────────── Server
@@ -1072,18 +1140,10 @@ void *worker(Workshop *workshop) { // ──────────────
     Response res = {0};
     switch (req.mode) {
     case REQUEST_RESPONSE:
-      switch (req.error) {
-      case INVALID_HTTP_STATUS: // i.e. no error
-        break;
-      case SERVICE_UNAVAILABLE: // mainly being some disaster allocating memory
+      if (req.error == SERVICE_UNAVAILABLE) { // mainly being some disaster allocating memory
         unavailable(client->write_io.fd, "parse request");
         cleanup_client(server->loop, &client->write_io);
         goto reset_store;
-      case BAD_REQUEST: // fall throughs, relating only to request parsing
-      case CONTENT_TOO_LARGE:
-      case LENGTH_REQUIRED:
-      default:
-        res = (Response){.status = req.error};
       }
       break;
     case SHUTDOWN:
@@ -1092,6 +1152,7 @@ void *worker(Workshop *workshop) { // ──────────────
       free_arena(&workshop->scratch);
       return 0; // exit worker
     case SERVER_SENT_EVENTS:
+      res = sse_sendthrough(workshop, req);
       break;
     }
     // NB 2025-09-29 16:13:45 handler is currently also responsible for routing!
@@ -1106,10 +1167,7 @@ void *worker(Workshop *workshop) { // ──────────────
     // client->deliver queue simultaneously. Pipelining is prevented
     // by half-duplex `client_set_direction`. Writer is on main thread
     // so libev can deal with delays writing.
-
-    if (req.mode == SERVER_SENT_EVENTS ||
-        (req.mode == REQUEST_RESPONSE && !req.error))
-      res = server->config.handler(workshop, req);
+    res = apply_middleware(workshop, server->config.middleware, req);
     if (!Client_abs(res.client)) res.client = req.client;
     workshop->pending.dest = res.client;
     serialise_response(workshop, res);
@@ -1136,6 +1194,7 @@ void sigint_cb(EV_P_ ev_signal *w, i32 events) {
   for (size i = 0; i < server->config.workers; i++)
     if (!enqueue_shutdown(server)) INFO("Struggling to shut down because queue full\n");
   // NB 2026-06-10 02:57:48 sometimes fails to proceed; reason not yet clear
+  DEBUG("Joining worker threads\n");
   for (size i = 0; i < server->config.workers; i++)
     pthread_join(Workshops_array_abs(server->workshops)[i].thread, 0);
   // TODO 2026-06-10 00:45:35 complete requests in flight and reject

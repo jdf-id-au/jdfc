@@ -173,9 +173,9 @@ i32 main(int argc, char **argv) {
   struct args args = argparse(&init, "--port=int --workers=int", argc, argv);
   i32_ port = int_arg(args, "port");
   if (!port.ok) failwith(1, "Please specify a port.");
-  Server server = make_server(.routes = wrap(Routes, routes), .port = port.val);
-  server.config.server_updown = server_updown;
-  server.config.client_updown = client_updown;
+  Server server = make_server(.routes = wrap(Routes, routes), .port = port.val,
+                              .server_updown = server_updown,
+                              .client_updown = client_updown);
   launch(&server);
   return 0;
 }

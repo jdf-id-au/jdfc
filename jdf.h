@@ -261,7 +261,14 @@ node_t *insert(node_t *after, node_t *from, size count) {
   }                                                                            \
   tn *tn##_insert(tn *after, tn *from, size n) {                               \
     return (tn *)insert((node_t *)after, (node_t *)from, n);                   \
+  }                                                                            \
+  tn *tn##_from(arena *a, t *arr, size len) {                                  \
+    tn *head = {0};                                                            \
+    for (size i = 0; i < len; i++)                                             \
+      head = tn##_append(a, head, arr[i]);                                     \
+    return head;                                                               \
   }
+#define to_list(a, tn, arr) tn##_from(a, (void *)arr, countof(arr));
 
 /*
   Define new association list type with ...assoc, ...dissoc, ...get.
