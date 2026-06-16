@@ -99,7 +99,7 @@ i32 in_days(date from, date to) { return date_epoch(to) - date_epoch(from); }
 i32 in_weeks(date from, date to) { return in_days(from, to) / 7; }
 
 s8 s8date(arena *store, date d) {
-  return s8sprintf(store, date_format, d.y, d.m, d.d);
+  return s8printf(store, date_format, d.y, d.m, d.d);
 }
 
 date s8parsedate(s8 s) {

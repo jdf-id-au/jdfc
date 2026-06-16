@@ -135,7 +135,7 @@ typedef struct { enum message_type type; union { Request req; Response res; }; }
 // Applied by apply_middleware as if by function composition:
 //   middlewares: m1 m2 m3
 //   pipeline: request -> m1pre -> m2pre -> m3pre -> handler -> m3post -> m2post -> m1post -> response
-// and short-circuiting if returns RESPONSE before reaching the handler.
+// and short-circuiting if a step returns RESPONSE before reaching the handler.
 typedef Message (*Middleware)(Workshop *workshop, Message mutates_store);
 //                ^^^^^^^^^^
 REL(Middleware)
@@ -149,7 +149,7 @@ REL(Route)
 ARRAY(Routes, Route)
 
 // Supplied by application to be called when initialising or shutting down
-// server or client. Return whether up. TOOD 2026-06-10 01:35:59 could have stauts enum...
+// server or client. Return whether up. TOOD 2026-06-10 01:35:59 could have status enum...
 typedef b32 (*UpDown)(Server *server, arena *client_store, b32 up);
 //            ^^^^^^
 
@@ -524,13 +524,13 @@ void add_header(arena *workshop_store, Response *res, enum header h, s8 v) {
 }
 
 // TODO 2025-10-01 17:49:58 optimal return type?
-// Generally headers should be set in handlers.
+// Generally headers should be set in handlers or middleware.
 void add_headers(arena *workshop_store, arena *workshop_scratch, Response *res) {
   if (!res) {
     fprintf(stderr, "Tried to add_headers to null Response.\n");
     return;
   }
-  // TODO  2025-09-29 13:40:10 Transfer-Encoding: chunked
+  // TODO 2025-09-29 13:40:10 Transfer-Encoding: chunked
   // https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Content-Length
   // TODO should be conditional on client's invitation
   switch (res->status) {
@@ -657,7 +657,7 @@ void serialise_response(Workshop *shop, Response res) {
       client->mode = SERVER_SENT_EVENTS;
       finishc(out, WRITE);
     }
-    else finishc(out, READ); // FIXME  2026-06-05 23:00:29 
+    else finishc(out, READ); // FIXME 2026-06-05 23:00:29 
     INFO("📣 %i\n", res.status);
   }
   arena_abs(client->store)->cur = arena_abs(client->store)->beg + client->store_reset;
